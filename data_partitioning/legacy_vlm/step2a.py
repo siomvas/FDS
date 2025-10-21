@@ -42,7 +42,7 @@ def read_file_to_string(filename):
 # ------------------------- Step 2 funcs ------------------------------------------------------
 # ---- Step 1: Prepare captions in batch----
 def format_prompt(caption: List[str]) -> str:
-    """Format captions into a prompt asking for criteria."""
+    """Format captions into a prompt asking for exact description."""
     return f'''
     Image description: {caption}. 
     Your response:
@@ -108,6 +108,7 @@ def process_descriptions(model, tokenizer, args, inference_batch_size: int = 16)
     logger.info(f"Loaded {len(data)} items")
     
     # Process in batches
+    logger.info("Starting LLM inference...")
     for i in range(0, len(data), inference_batch_size):
         batch = data[i:i+inference_batch_size]
         
@@ -116,7 +117,7 @@ def process_descriptions(model, tokenizer, args, inference_batch_size: int = 16)
         prompts = [
             build_chat_prompt(model, tokenizer, system_prompt, item["description"]) for item in batch]
         
-        logger.info(f"Processing batch {i // inference_batch_size + 1}/{(len(data) + inference_batch_size - 1) // inference_batch_size}")
+        print(f"Processing batch {i // inference_batch_size + 1}/{(len(data) + inference_batch_size - 1) // inference_batch_size}")
         
         # Run batch inference
         responses = query_llm_batch(model, tokenizer, prompts, max_new_tokens=100)
@@ -125,7 +126,7 @@ def process_descriptions(model, tokenizer, args, inference_batch_size: int = 16)
         for j, response in enumerate(responses):
             batch[j]["description"] = response
         
-        logger.info(f"  - Completed {min(i + inference_batch_size, len(data))}/{len(data)} items\n")
+        print(f"  - Completed {min(i + inference_batch_size, len(data))}/{len(data)} items\n")
     
     # Save results
     with open(output_path, 'w', encoding='utf-8') as f:
