@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 from dataset import BaseDataset
-from utils.constants import INTERNVL3_38B, INTERNVL3_5_8B, MINICPM_26
+from utils.constants import INTERNVL3_38B, INTERNVL35_8B, MINICPM26
 
 import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
@@ -113,8 +113,7 @@ def print_gpu_memory():
 # ------- Main VLM pipeline functions -------------
 # STEP 1: Prepare batch question, questions passed in, read from txt file
 def prepare_batch_questions(data: Dataset,
-                            question: str, max_samples: int = None, 
-                            convert_to_RGB: bool = True) -> List[List[Dict[str, Any]]]:
+                            question: str, max_samples: int = None) -> List[List[Dict[str, Any]]]:
     """
     Prepare batch questions in the format expected by MiniCPM.
     
@@ -137,12 +136,14 @@ def prepare_batch_questions(data: Dataset,
         
         image_path = data.data[i] 
         label = data.labels[i]
+
+        #print(f"Type of image_path[{i}]: {type(image_path)}")
         
         questions.append({
             'question': question,
             'label': label,
             'index': i,
-            'filename': image_path,  # Original path
+            'filename': str(image_path)  # Original path
             #'saved_name': f"{label}_{processed_count:04}.jpg"
         })
         
@@ -240,10 +241,10 @@ def process_batch_minicpm(model, tokenizer, batch_data: List[Dict[str, Any]],
         
     return results
 
-# ------------ For InternVL3 --------------------------------
+# ------------ For InternVL3 & 3.5 --------------------------------
 def process_batch_internvl(model, tokenizer, batch_data):
     """Process with InternVL in batch"""
-    print_gpu_memory()
+    #print_gpu_memory()
     results = []
     generation_config = dict(max_new_tokens=512, do_sample=False)
     pixel_values_list = []
@@ -252,14 +253,14 @@ def process_batch_internvl(model, tokenizer, batch_data):
     # Load and process all images in the batch
     for batch_item in batch_data:    
         # Load image
-        pixel_values = load_image(batch_item['filename'], input_size=448, max_num=12).to(torch.bfloat16).cuda()
+        pixel_values = load_image(batch_item['filename'], input_size=448, max_num=8).to(torch.bfloat16).cuda()
         
         # Track number of patches
         num_patches_list.append(pixel_values.size(0))
         pixel_values_list.append(pixel_values)
 
     # Concatenate all pixel values
-    pixel_values = torch.cat(pixel_values_list, dim=0).cuda()
+    pixel_values = torch.cat(pixel_values_list, dim=0)
 
     # Extract question text
     question_text = batch_data[0]['question']
@@ -275,7 +276,7 @@ def process_batch_internvl(model, tokenizer, batch_data):
             questions=questions,
             generation_config=generation_config)
 
-    print_gpu_memory()
+    #print_gpu_memory()
 
     # Combine results with metadata
     for i, (batch_item, response) in enumerate(zip(batch_data, responses)):
@@ -332,9 +333,9 @@ def main(model, tokenizer, data: BaseDataset,
 
         # Different inference method for different model
         # todo: refactor this to not use if else
-        if args.vlm_model == MINICPM_26:
+        if args.vlm_model == MINICPM26:
             batch_results = process_batch_minicpm(model=model, tokenizer=tokenizer, batch_data=batch)
-        if args.vlm_model == INTERNVL3_5_8B or args.vlm_model == INTERNVL3_38B:
+        if args.vlm_model == INTERNVL35_8B or args.vlm_model == INTERNVL3_38B:
             batch_results = process_batch_internvl(model=model, tokenizer=tokenizer, batch_data=batch)
     
         all_results.extend(batch_results)
@@ -358,7 +359,7 @@ if __name__ == "__main__":
     data = util_loader.load_data(args.dataset)
     
     # Process dataset
-    main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=16)
+    main(model=model, tokenizer=tokenizer, data=data, max_samples=2, batch_size=32)
 
 
 

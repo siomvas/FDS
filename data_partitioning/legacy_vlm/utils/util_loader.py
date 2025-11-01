@@ -7,9 +7,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from dataset import BaseDataset
 import math
 import torchvision.transforms as T
-from utils.constants import FOOD101, INTERNVL3_38B, LLAMA_33_70B, LLAMA31_8B_INSTRUCT , MINICPM_26, INTERNVL3_5_8B
+from utils.constants import FOOD101, INTERNVL3_38B, LLAMA33_70B, LLAMA31_8B_INSTRUCT, MINICPM26, INTERNVL35_8B
 
-
+# used with InternVL3 38B to split models across multiple GPUs
 def split_model(path):
     device_map = {}
     world_size = torch.cuda.device_count()
@@ -43,11 +43,11 @@ def split_model(path):
 # note: change to custom path when run
 # Model paths
 MODEL_PATHS = {
-    MINICPM_26: "/path/to/archive/vision-saved/minicpm26",
+    MINICPM26: "/path/to/archive/vision-saved/minicpm26",
     INTERNVL3_38B: "/path/to/archive/vision-saved/internVl3",
-    INTERNVL3_5_8B: "/path/to/archive/vision-saved/internVl3_5",
+    INTERNVL35_8B: "/path/to/archive/vision-saved/internVl3_5",
     LLAMA31_8B_INSTRUCT: "/path/to/archive/vision-saved/llama3.1-instruct",
-    LLAMA_33_70B: "/path/to/archive/vision-saved/llama3.3"
+    LLAMA33_70B: "/path/to/archive/vision-saved/llama3.3"
 }
 
 # Model Registry
@@ -67,11 +67,11 @@ def get_model_loader(name: str):
     return MODEL_REGISTRY[name]
 
 # Register VLM models
-@register_model(MINICPM_26)
+@register_model(MINICPM26)
 def load_minicpm():
     """Load MiniCPM 2.6"""
-    print(f"Loading {MINICPM_26}...")
-    model_path = MODEL_PATHS[MINICPM_26]
+    print(f"Loading {MINICPM26}...")
+    model_path = MODEL_PATHS[MINICPM26]
     model = AutoModel.from_pretrained(model_path, trust_remote_code=True, dtype=torch.bfloat16)
     model = model.to(device='cuda', dtype=torch.bfloat16)
     model.eval()
@@ -101,12 +101,12 @@ def load_internvl3_38b():
     
     return model, tokenizer
 
-@register_model(INTERNVL3_5_8B)
+@register_model(INTERNVL35_8B)
 def load_internvl3_5_8b():
     """Load InternVL3.5-8B with auto device map"""
-    print(f"Loading {INTERNVL3_5_8B}...")
-    model_path = MODEL_PATHS[INTERNVL3_5_8B]
-    device_map = split_model(model_path)
+    print(f"Loading {INTERNVL35_8B}...")
+    model_path = MODEL_PATHS[INTERNVL35_8B]
+    #device_map = split_model(model_path)
     
     model = AutoModel.from_pretrained(
         model_path,
@@ -115,7 +115,6 @@ def load_internvl3_5_8b():
         low_cpu_mem_usage=True,
         use_flash_attn=True,
         trust_remote_code=True,
-        #local_files_only=True,  # Add this!
         device_map="auto").eval()
     
     tokenizer = AutoTokenizer.from_pretrained(
@@ -147,11 +146,11 @@ def load_llama_8b():
 
     return model, tokenizer
 
-@register_model(LLAMA_33_70B)
+@register_model(LLAMA33_70B)
 def load_llama_70b():
     """Load LLaMA 3.3 70B"""
-    print(f"Loading {LLAMA_33_70B}...")
-    model_path = MODEL_PATHS[LLAMA_33_70B]
+    print(f"Loading {LLAMA33_70B}...")
+    model_path = MODEL_PATHS[LLAMA33_70B]
     
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
@@ -169,12 +168,12 @@ def load_llama_70b():
     return model, tokenizer
 
 # Main loading functions
-def load_vlm(ver: str = INTERNVL3_5_8B):
+def load_vlm(ver: str = INTERNVL35_8B):
     """Load the VLM model and tokenizer."""
     loader_func = get_model_loader(ver)
     return loader_func()
 
-def load_llm(ver: str = LLAMA_33_70B):
+def load_llm(ver: str = LLAMA33_70B):
     """Load the LLM model and tokenizer."""
     loader_func = get_model_loader(ver)
     return loader_func()
