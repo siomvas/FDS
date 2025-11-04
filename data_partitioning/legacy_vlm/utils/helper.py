@@ -1,7 +1,14 @@
 # Read from from txt file
 import json
-from typing import List, Dict
 import re
+from typing import List, Dict, Tuple, Any
+
+# Save batch results to JSONL
+def append_batch_to_jsonl(path: str, data_list: List[Dict[str, Any]]) -> None:
+    """Append multiple results to JSONL file."""
+    with open(path, "a", encoding='utf-8') as f:
+        for data in data_list:
+            f.write(json.dumps(data, ensure_ascii=False) + '\n')
 
 def read_file_to_string(filename):
     with open(filename, 'r') as file:
@@ -27,10 +34,18 @@ def clean_response(response: str) -> str:
     return response.strip()
 
 # --- Load captions from JSONL ---
-def load_data(json_path: str) -> List[Dict]:
+def load_json(json_path: str) -> List[Dict]:
     """Load data from JSONL file."""
     with open(json_path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+def load_jsonl(path: str) -> List[Dict]:
+    """Load JSONL file."""
+    data = []
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            data.append(json.loads(line))
+    return data
 
 # ---- Read class list for step 3 ---
 def read_class_list(step2b_result_path):
@@ -68,3 +83,10 @@ def extract_categories(step2b_result_path) -> List[str]:
         categories.append(category)
     
     return categories
+
+    # Save results
+def save_to_json(path: str, data: Any) -> None:
+    """Save data to JSON file."""
+    with open(path, "w") as f:
+        json.dump(data, f, indent=4)
+    #logger.info(f"Results saved to {path}")

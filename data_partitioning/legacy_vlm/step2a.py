@@ -1,9 +1,6 @@
-import torch
-import os
-import json
-from typing import List, Dict
+import torch, gc
+from typing import List
 import logging
-import sys, os
 from utils.argument import args
 from utils import util_loader
 from utils import helper
@@ -87,7 +84,7 @@ def main(model, tokenizer, inference_batch_size: int = 16):
     input_path=args.step1_result_path
     output_path=args.step2a_result_path
 
-    data = helper.load_data(input_path)
+    data = helper.load_jsonl(input_path)
     logger.info(f"Loaded {len(data)} items")
     
     system_prompt = helper.read_file_to_string(args.step2a_prompt_path)
@@ -106,23 +103,30 @@ def main(model, tokenizer, inference_batch_size: int = 16):
         print(f"Processing batch {i // inference_batch_size + 1}/{(len(data) + inference_batch_size - 1) // inference_batch_size}")
         
         # Run batch inference
-        responses = query_llm_batch(model, tokenizer, prompts, max_new_tokens=100)
+        responses = query_llm_batch(model, tokenizer, prompts, max_new_tokens=20)
         
-        # Update descriptions with LLM responses
+        # Update labels with LLM responses
         for j, response in enumerate(responses):
             batch[j]["label"] = response
+
+         # Write results immediately to JSONL and free memory
+        helper.append_batch_to_jsonl(output_path, batch)
+
+        del batch, responses, prompts
+        gc.collect()
+        torch.cuda.empty_cache()
         
-        print(f"  - Completed {min(i + inference_batch_size, len(data))}/{len(data)} items\n")
+        print(f"  - Completed and saved {min(i + inference_batch_size, len(data))}/{len(data)} items\n")
     
     # Save results
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    # with open(output_path, 'w', encoding='utf-8') as f:
+    #     json.dump(data, f, indent=4, ensure_ascii=False)
     
-    logger.info(f"Results saved to {output_path}")
+    logger.info(f"Done. Results saved to {output_path}")
 
 # Usage
 if __name__ == "__main__":
     model, tokenizer = util_loader.load_llm(args.llama_ver)
 
     # ----- Run flow -----
-    main(model=model, tokenizer=tokenizer, inference_batch_size=64)
+    main(model=model, tokenizer=tokenizer, inference_batch_size=48)

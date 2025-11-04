@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 from dataset import BaseDataset
-from utils.constants import INTERNVL3_38B, INTERNVL35_8B, MINICPM26
+from utils.constants import INTERNVL3_38B, INTERNVL3_8B, MINICPM26
 
 import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
@@ -253,7 +253,7 @@ def process_batch_internvl(model, tokenizer, batch_data):
     # Load and process all images in the batch
     for batch_item in batch_data:    
         # Load image
-        pixel_values = load_image(batch_item['filename'], input_size=448, max_num=8).to(torch.bfloat16).cuda()
+        pixel_values = load_image(batch_item['filename'], input_size=448, max_num=12).to(torch.bfloat16).cuda()
         
         # Track number of patches
         num_patches_list.append(pixel_values.size(0))
@@ -293,12 +293,77 @@ def process_batch_internvl(model, tokenizer, batch_data):
 
     return results
 
-# Save results
-def save_to_json(path: str, data: Any) -> None:
-    """Save data to JSON file."""
-    with open(path, "w") as f:
-        json.dump(data, f, indent=4)
-    logger.info(f"Results saved to {path}")
+def process_batch_qwen(model, processor, batch_data):
+    """
+    Batch inference with Qwen3-VL model.
+
+    Args:
+        model: Qwen3VLForConditionalGeneration model.
+        processor: AutoProcessor for Qwen3VL.
+        batch_data: list of dicts like:
+            {
+                "filename": str,  # image file path
+                "question": str,  # text prompt
+                "label": str,     # optional label
+                "index": int,     # index for reference
+            }
+        max_new_tokens: int, number of tokens to generate.
+
+    Returns:
+        List of dicts with keys ["image", "label", "description", "original_index"].
+    """
+
+    results = []
+
+    # Prepare all message pairs for batch
+    messages = []
+    question = batch_data[0]['question']
+    for item in batch_data:
+        #image = load_image_qwen(item['filename'])
+        messages.append([
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": item['filename']},
+                {"type": "text", "text": question},
+            ],
+        }])
+
+    # Apply processor to batch
+    inputs = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        padding=True, 
+        return_tensors="pt"
+    ).to(model.device)
+
+    # Generate batched responses
+    generated_ids = model.generate(**inputs, max_new_tokens=128)
+
+    # Decode each output
+    generated_ids_trimmed = [
+        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+    ]
+    responses = processor.batch_decode(
+        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+    )
+
+    # Combine results with metadata
+    for i, (batch_item, response) in enumerate(zip(batch_data, responses)):
+        results.append({
+            "image": batch_item['filename'],
+            "label": batch_item['label'],
+            "description": response.strip(),
+            "original_index": batch_item['index']
+        })
+
+    # Cleanup
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return results
 
 #================================= ENTIRE FLOW FOR STEP 1 ========================================
 def main(model, tokenizer, data: BaseDataset,
@@ -313,7 +378,7 @@ def main(model, tokenizer, data: BaseDataset,
         batch_size: Number of samples to process in each batch
         dataset_split: Dataset split to use
     """
-    all_results = []
+    #all_results = []
     logger.info("Starting dataset processing...")
     question = helper.read_file_to_string(args.step1_prompt_path)
     question = question.replace("[__CRITERION__]", str((args.prompt_label).lower()))
@@ -322,7 +387,12 @@ def main(model, tokenizer, data: BaseDataset,
     print("Preparing batch question.... ")
     print(f"Question: {question}")
     prepared_data = prepare_batch_questions(data, question, max_samples)
+
+    jsonl_path = os.path.expanduser(args.step1_result_path)
+    with open(jsonl_path, 'w', encoding='utf-8') as f:
+        pass  # Create empty file
     
+    total_processed = 0
     # Process in batches
     for i in range(0, len(prepared_data), batch_size):
         batch = prepared_data[i:i + batch_size]
@@ -335,21 +405,28 @@ def main(model, tokenizer, data: BaseDataset,
         # todo: refactor this to not use if else
         if args.vlm_model == MINICPM26:
             batch_results = process_batch_minicpm(model=model, tokenizer=tokenizer, batch_data=batch)
-        if args.vlm_model == INTERNVL35_8B or args.vlm_model == INTERNVL3_38B:
+        if "internvl" in args.vlm_model.lower():
             batch_results = process_batch_internvl(model=model, tokenizer=tokenizer, batch_data=batch)
+        else:
+            batch_results = process_batch_qwen(model=model, processor=tokenizer, batch_data=batch)
     
-        all_results.extend(batch_results)
+        #all_results.extend(batch_results)
+        # Write results immediately to JSONL and free memory
+        helper.append_batch_to_jsonl(jsonl_path, batch_results)
+        total_processed += len(batch_results)
+
+        del batch, batch_results
+        gc.collect()
+        torch.cuda.empty_cache()
         
         # Log progress
-        logger.info(f"Batch {batch_num} complete. Total processed: {len(all_results)}/{len(prepared_data)}")
+        logger.info(f"Batch {batch_num} complete. Total processed: {total_processed}/{len(prepared_data)}")
         
         if batch_num % 5 == 0:  # Log every 5 batches
-            logger.info(f"Progress update: {len(all_results)} samples processed so far...")
+            logger.info(f"Progress update: {total_processed} samples processed so far...")
 
-    # Save all results to JSON
-    json_path = os.path.expanduser(args.step1_result_path)
-    save_to_json(json_path, all_results)
-    logger.info(f"Processing complete! Processed {len(all_results)} samples. Saved to {json_path}")
+    # Done all batches
+    logger.info(f"Processing complete! Processed {total_processed} samples. Saved to {jsonl_path}")
 
 
 if __name__ == "__main__":
@@ -357,9 +434,11 @@ if __name__ == "__main__":
 
     model, tokenizer = util_loader.load_vlm(args.vlm_model)
     data = util_loader.load_data(args.dataset)
+
+    #torch.set_grad_enabled(False)
     
     # Process dataset
-    main(model=model, tokenizer=tokenizer, data=data, max_samples=2, batch_size=32)
+    main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=32)
 
 
 

@@ -2,10 +2,10 @@ import os
 import shutil
 import argparse
 from pathlib import Path
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 from time import strftime, localtime
 from utils.constants import TINY_IMAGENET, FOOD101, PASCALVOC, ADE20K
-from utils.constants import INTERNVL3_38B, INTERNVL35_8B, LLAMA33_70B, LLAMA31_8B_INSTRUCT , MINICPM26
+from utils.constants import INTERNVL3_38B, INTERNVL3_8B, LLAMA33_70B, LLAMA31_8B_INSTRUCT , MINICPM26, QWEN3_8B
 
 
 def str2bool(v):
@@ -41,19 +41,24 @@ if args.dataset == TINY_IMAGENET:
         4: {"prompt": "Location", "examplar": "Field", "num_classes": 5},
     }
 elif args.dataset == FOOD101:
-    criteria_choices = ["type", "ingredient", "cuisine", "time", "method"]
+    criteria_choices = ["main_object", "size", "color", "ingredient", "angle"]
     criteria_config = {
-    #TODO: Input the Examplar
-        0: {"prompt": "Food Type", "examplar": "Pancake", "num_classes": 8},
-        1: {"prompt": "Main Ingredient", "examplar": "Flour", "num_classes": 8},
-        2: {"prompt": "Cuisine", "examplar": "American", "num_classes": 8},
-        3: {"prompt": "Meal Time", "examplar": "Breakfast", "num_classes": 5},
-        4: {"prompt": "Cooking Method", "examplar": "Fried", "num_classes": 8},
+        0: {"prompt": "Main Food", "examplar": "Pancake", "num_classes": 7},
+        1: {"prompt": "Size and Scale of the dish", "examplar": "Big", "num_classes": 8},
+        2: {"prompt": "Base Color of the dish", "examplar": "Golden", "num_classes": 8},
+        3: {"prompt": "Texture of the dish", "examplar": "Soft", "num_classes": 8},
+        4: {"prompt": "Camera Angle", "examplar": "Overhead", "num_classes": 5},
+    }
+elif args.dataset == ADE20K:
+    criteria_choices = ["main_object", "scene", "time", "color", "weather"]
+    criteria_config = {
+        0: {"prompt": "Main Object", "examplar": "Tree", "num_classes": 8},
+        1: {"prompt": "Location", "examplar": "Field", "num_classes": 4},
+        2: {"prompt": "Time of day", "examplar": "Morning", "num_classes": 4},
+        3: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
+        4: {"prompt": "Weather", "examplar": "Sunny", "num_classes": 5},
     }
 elif args.dataset == PASCALVOC:
-    # TODO: CHANGE THIS
-    criteria_choices = ["", ""]
-elif args.dataset == ADE20K:
     # TODO: CHANGE THIS
     criteria_choices = ["", ""]
 else:
@@ -65,15 +70,18 @@ parser.add_argument("--criteria", type=str, default="main_object", choices=crite
 # for llama
 parser.add_argument("--llama_ver", type=str, default=LLAMA33_70B, choices = [LLAMA33_70B, LLAMA31_8B_INSTRUCT])
 # for vlm
-parser.add_argument("--vlm_model", type=str, default=INTERNVL35_8B, choices = [MINICPM26, INTERNVL35_8B, INTERNVL3_38B])
+parser.add_argument("--vlm_model", type=str, default=INTERNVL3_38B, choices = [MINICPM26, INTERNVL3_8B, INTERNVL3_38B, QWEN3_8B])
 
 args = parser.parse_args()
 
-load_dotenv()
-args.home_path = os.getenv("HOME_PATH")
+# load_dotenv()
+# args.home_path = os.getenv("HOME_PATH")
 
-if not args.home_path:
-    raise EnvironmentError("HOME_PATH not found in .env file. Please define it before running.")
+# if not args.home_path:
+    #raise EnvironmentError("HOME_PATH not found in .env file. Please define it before running.")
+
+# Set this to the local git dir
+args.home_path = "/path/to/FDS/"
 
 #------ Setting the params ------- #
 args.general_data_dir = f"{args.home_path}/data_partitioning/legacy_vlm/data/"
@@ -83,9 +91,9 @@ args.output_path = args.specific_dataset_dir + f"/output_{args.criteria}_{args.e
 # ------ Create output folder for each run ------
 Path(args.output_path).mkdir(parents=True, exist_ok=True)
 args.step1_result_path = f"{args.output_path}/step1_result.jsonl"
-args.step2a_result_path = f"{args.output_path}/step2a_result.json"
+args.step2a_result_path = f"{args.output_path}/step2a_result.jsonl"
 args.step2b_result_path = f"{args.output_path}/step2b_result.txt"
-args.step3_result_path = f"{args.output_path}/step3_result.json"
+args.step3_result_path = f"{args.output_path}/step3_result.jsonl"
 
 # ----- Prompt setting
 # Direction for each prompt

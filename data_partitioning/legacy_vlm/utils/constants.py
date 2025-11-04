@@ -7,7 +7,10 @@ PASCALVOC = "pascalvoc"
 
 # model
 INTERNVL3_38B = "internVl3-38B"
+INTERNVL3_8B = "internVl3-8B"
+INTERNVL3_14B = "internVl3-14B"
 INTERNVL35_8B = "internVl3.5-7B"
-LLAMA33_70B = "llama_70b"
-LLAMA31_8B_INSTRUCT = "llama_7b"
-MINICPM26 = "minicpm"
+LLAMA33_70B = "llama-70b"
+LLAMA31_8B_INSTRUCT = "llama-7b"
+MINICPM26 = "minicpm2-6"
+QWEN3_8B = "qwen3-8b"

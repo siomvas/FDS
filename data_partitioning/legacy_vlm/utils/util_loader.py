@@ -7,7 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from dataset import BaseDataset
 import math
 import torchvision.transforms as T
-from utils.constants import FOOD101, INTERNVL3_38B, LLAMA33_70B, LLAMA31_8B_INSTRUCT, MINICPM26, INTERNVL35_8B
+from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+from utils.constants import FOOD101, INTERNVL3_38B, LLAMA33_70B, LLAMA31_8B_INSTRUCT, MINICPM26, INTERNVL35_8B, INTERNVL3_8B, QWEN3_8B
 
 # used with InternVL3 38B to split models across multiple GPUs
 def split_model(path):
@@ -32,9 +33,9 @@ def split_model(path):
     device_map['language_model.model.rotary_emb'] = 0
     device_map['language_model.lm_head'] = 0
 
-    #device_map['language_model.model.tok_embeddings'] = 0
-    #device_map['language_model.output'] = 0
-    #device_map[f'language_model.model.layers.{num_layers - 1}'] = 0
+    device_map['language_model.model.tok_embeddings'] = 0
+    device_map['language_model.output'] = 0
+    device_map[f'language_model.model.layers.{num_layers - 1}'] = 0
 
     return device_map
 
@@ -42,13 +43,23 @@ def split_model(path):
 #----- Load model ----
 # note: change to custom path when run
 # Model paths
+model_path = "/path/to/archive/vision-saved"
 MODEL_PATHS = {
-    MINICPM26: "/path/to/archive/vision-saved/minicpm26",
-    INTERNVL3_38B: "/path/to/archive/vision-saved/internVl3",
-    INTERNVL35_8B: "/path/to/archive/vision-saved/internVl3_5",
-    LLAMA31_8B_INSTRUCT: "/path/to/archive/vision-saved/llama3.1-instruct",
-    LLAMA33_70B: "/path/to/archive/vision-saved/llama3.3"
+    # vlm
+    MINICPM26: f"{model_path}/minicpm26",
+    INTERNVL3_38B: f"{model_path}/internVl3",
+    INTERNVL3_8B: f"{model_path}/internVl3_8B",
+    #INTERNVL3_14B: f"{model_path}/internVl3_14B",
+    INTERNVL35_8B: f"{model_path}/internVl3_5",
+    QWEN3_8B: f"{model_path}/qwen3_8B",
+
+    # llm
+    LLAMA31_8B_INSTRUCT: f"{model_path}/llama3.1-instruct",
+    LLAMA33_70B: f"{model_path}/llama3.3"
 }
+
+# Data path
+data_path = "/path/to/gtai/FDS"
 
 # Model Registry
 MODEL_REGISTRY = {}
@@ -78,11 +89,53 @@ def load_minicpm():
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     return model, tokenizer
 
+# Register VLM models
+@register_model(QWEN3_8B)
+def load_minicpm():
+    """Load Qwen3 VL 8B"""
+    print(f"Loading {QWEN3_8B}...")
+    model_path = MODEL_PATHS[QWEN3_8B]
+    model = Qwen3VLForConditionalGeneration.from_pretrained(model_path,
+                                                            dtype=torch.bfloat16,
+                                                            attn_implementation="flash_attention_2",
+                                                            device_map="auto")
+    processor = AutoProcessor.from_pretrained(model_path)
+    tokenizer = processor.tokenizer  # get the inner tokenizer
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token  # safe default
+
+    tokenizer.padding_side = "left"
+    return model, processor
+
 @register_model(INTERNVL3_38B)
 def load_internvl3_38b():
     """Load InternVL3-38B with custom device map"""
     print(f"Loading {INTERNVL3_38B}...")
     model_path = MODEL_PATHS[INTERNVL3_38B]
+    device_map = split_model(model_path)
+    
+    model = AutoModel.from_pretrained(
+        model_path,
+        dtype=torch.bfloat16,
+        load_in_8bit=False,
+        low_cpu_mem_usage=True,
+        use_flash_attn=True,
+        trust_remote_code=True,
+        device_map=device_map).eval()
+    
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, 
+        trust_remote_code=True, 
+        use_fast=False)
+    
+    return model, tokenizer
+
+@register_model(INTERNVL3_8B)
+def load_internvl3_8b():
+    """Load InternVL3-8B with custom device map"""
+    print(f"Loading {INTERNVL3_8B}...")
+    model_path = MODEL_PATHS[INTERNVL3_8B]
     device_map = split_model(model_path)
     
     model = AutoModel.from_pretrained(
@@ -181,13 +234,12 @@ def load_llm(ver: str = LLAMA33_70B):
 # Dataset loading
 def load_data(dataset: str):
     """Load dataset based on params set when run script."""
-    path = "/path/to/gtai/FDS"
     split = "val"
     if dataset == FOOD101:
         split = "test"
     
     print("Dataset: ", dataset)
-    data = BaseDataset(dataset, path, split)
+    data = BaseDataset(dataset, data_path, split)
     return data
 
 # Optional: Print available models
