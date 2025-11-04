@@ -154,40 +154,6 @@ def prepare_batch_questions(data: Dataset,
 
 # STEP 2: Process questions by batch through batch API
 # ------------- For MiniCPM ------------------------------
-def process_questions_batch_minicpm(questions: List[List[Dict[str, Any]]], model, tokenizer, 
-                            temperature: float, sampling: bool) -> List[str]:
-    """
-    Process questions in true batch mode using MiniCPM's batch API.
-    
-    Args:
-        questions: List of question batches in MiniCPM format
-        temperature: Sampling temperature
-        sampling: Whether to use sampling
-        
-    Returns:
-        List of response strings
-    """
-    try:
-        # Use the batch processing format: msgs=[msgs, msgs] with image=None
-        res = model.chat(
-            image=None,
-            msgs=questions,  # Pass the list of message batches directly
-            tokenizer=tokenizer,
-            sampling=sampling,
-            temperature=temperature,
-            stream=False
-        )
-        
-        responses = res
-        
-        logger.info(f"Successfully processed batch of {len(questions)} questions")
-        return responses
-        
-    except Exception as e:
-        logger.error(f"Batch processing failed: {e}")
-        raise e
-
-# ----- Error handling for batch, used only when batch processing failed ------
 def process_batch_minicpm(model, tokenizer, batch_data: List[Dict[str, Any]], 
                   temperature: float = 0.7, sampling: bool = True) -> List[Dict[str, str]]:
     """
@@ -206,19 +172,32 @@ def process_batch_minicpm(model, tokenizer, batch_data: List[Dict[str, Any]],
     # Load images and reconstruct questions for batch processing
     questions = []
     for item in batch_data:
-        # Load the actual image
+        # Load image
         pil_image = Image.open(item['filename']).convert('RGB')
         
         # Get question text
         question_text = item['question']
         
-        # Reconstruct question with real image
+        # Reconstruct question with image
         question_batch = [{"role": "user", "content": [pil_image, question_text]}]
         questions.append(question_batch)
     
     try:
         # Process batch using batch API
-        responses = process_questions_batch_minicpm(questions, model, tokenizer, temperature, sampling)
+        # Use the batch processing format: msgs=[msgs, msgs] with image=None
+        res = model.chat(
+            image=None,
+            msgs=questions,  # Pass the list of message batches directly
+            tokenizer=tokenizer,
+            sampling=sampling,
+            temperature=temperature,
+            stream=False
+        )
+        
+        responses = res
+        
+        logger.info(f"Successfully processed batch of {len(questions)} questions")
+        #return responses
         
         # Ensure there's a right number of responses
         if len(responses) != len(batch_data):
@@ -293,6 +272,7 @@ def process_batch_internvl(model, tokenizer, batch_data):
 
     return results
 
+# ---------------------- For Qwen3 -------------------------
 def process_batch_qwen(model, processor, batch_data):
     """
     Batch inference with Qwen3-VL model.
@@ -407,8 +387,10 @@ def main(model, tokenizer, data: BaseDataset,
             batch_results = process_batch_minicpm(model=model, tokenizer=tokenizer, batch_data=batch)
         if "internvl" in args.vlm_model.lower():
             batch_results = process_batch_internvl(model=model, tokenizer=tokenizer, batch_data=batch)
-        else:
+        if "qwen" in args.vlm_model.lower():
             batch_results = process_batch_qwen(model=model, processor=tokenizer, batch_data=batch)
+        else:
+            logger.error("Model does not registered in step 1 yet...")
     
         #all_results.extend(batch_results)
         # Write results immediately to JSONL and free memory
