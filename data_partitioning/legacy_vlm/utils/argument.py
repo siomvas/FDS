@@ -43,9 +43,9 @@ if args.dataset == TINY_IMAGENET:
 elif args.dataset == FOOD101:
     criteria_choices = ["main_object", "size", "color", "ingredient", "angle"]
     criteria_config = {
-        0: {"prompt": "Main Food", "examplar": "Pancake", "num_classes": 7},
+        0: {"prompt": "Main Dish", "examplar": "Pancake", "num_classes": 7},
         1: {"prompt": "Size and Scale of the dish", "examplar": "Big", "num_classes": 8},
-        2: {"prompt": "Base Color of the dish", "examplar": "Golden", "num_classes": 8},
+        2: {"prompt": "Dominant color of the dish", "examplar": "Golden-brown", "num_classes": 8},
         3: {"prompt": "Texture of the dish", "examplar": "Soft", "num_classes": 8},
         4: {"prompt": "Camera Angle", "examplar": "Overhead", "num_classes": 5},
     }
