@@ -5,7 +5,7 @@ from pathlib import Path
 #from dotenv import load_dotenv
 from time import strftime, localtime
 from utils.constants import TINY_IMAGENET, FOOD101, PASCALVOC, ADE20K
-from utils.constants import INTERNVL3_38B, INTERNVL3_8B, LLAMA33_70B, LLAMA31_8B_INSTRUCT , MINICPM26, QWEN3_8B
+from utils.constants import INTERNVL3_38B, INTERNVL3_8B, LLAMA33_70B, LLAMA31_8B_INSTRUCT , MINICPM26, QWEN3_8B, QWEN3_30B
 
 
 def str2bool(v):
@@ -70,7 +70,7 @@ parser.add_argument("--criteria", type=str, default="main_object", choices=crite
 # for llama
 parser.add_argument("--llama_ver", type=str, default=LLAMA33_70B, choices = [LLAMA33_70B, LLAMA31_8B_INSTRUCT])
 # for vlm
-parser.add_argument("--vlm_model", type=str, default=INTERNVL3_38B, choices = [MINICPM26, INTERNVL3_8B, INTERNVL3_38B, QWEN3_8B])
+parser.add_argument("--vlm_model", type=str, default=INTERNVL3_38B, choices = [MINICPM26, INTERNVL3_8B, INTERNVL3_38B, QWEN3_8B, QWEN3_30B])
 
 args = parser.parse_args()
 

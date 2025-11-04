@@ -434,8 +434,6 @@ if __name__ == "__main__":
 
     model, tokenizer = util_loader.load_vlm(args.vlm_model)
     data = util_loader.load_data(args.dataset)
-
-    #torch.set_grad_enabled(False)
     
     # Process dataset
     main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=32)

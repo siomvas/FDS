@@ -1,5 +1,6 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import AutoModel, AutoTokenizer, AutoConfig
+from transformers import Qwen3VLMoeForConditionalGeneration
 import sys
 import torch
 from pathlib import Path
@@ -8,7 +9,8 @@ from dataset import BaseDataset
 import math
 import torchvision.transforms as T
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
-from utils.constants import FOOD101, INTERNVL3_38B, LLAMA33_70B, LLAMA31_8B_INSTRUCT, MINICPM26, INTERNVL35_8B, INTERNVL3_8B, QWEN3_8B
+from utils.constants import FOOD101, INTERNVL3_38B, LLAMA33_70B, LLAMA31_8B_INSTRUCT, MINICPM26
+from utils.constants import INTERNVL35_8B, INTERNVL3_8B, QWEN3_8B, QWEN3_30B
 
 # used with InternVL3 38B to split models across multiple GPUs
 def split_model(path):
@@ -46,14 +48,18 @@ def split_model(path):
 model_path = "/path/to/archive/vision-saved"
 MODEL_PATHS = {
     # vlm
+    # minicpm & internVL
     MINICPM26: f"{model_path}/minicpm26",
     INTERNVL3_38B: f"{model_path}/internVl3",
     INTERNVL3_8B: f"{model_path}/internVl3_8B",
-    #INTERNVL3_14B: f"{model_path}/internVl3_14B",
     INTERNVL35_8B: f"{model_path}/internVl3_5",
+
+    # qwen
     QWEN3_8B: f"{model_path}/qwen3_8B",
+    QWEN3_30B: f"{model_path}/qwen3_30B",
 
     # llm
+    # llama
     LLAMA31_8B_INSTRUCT: f"{model_path}/llama3.1-instruct",
     LLAMA33_70B: f"{model_path}/llama3.3"
 }
@@ -96,6 +102,24 @@ def load_minicpm():
     print(f"Loading {QWEN3_8B}...")
     model_path = MODEL_PATHS[QWEN3_8B]
     model = Qwen3VLForConditionalGeneration.from_pretrained(model_path,
+                                                            dtype=torch.bfloat16,
+                                                            attn_implementation="flash_attention_2",
+                                                            device_map="auto")
+    processor = AutoProcessor.from_pretrained(model_path)
+    tokenizer = processor.tokenizer  # get the inner tokenizer
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token  # safe default
+
+    tokenizer.padding_side = "left"
+    return model, processor
+
+@register_model(QWEN3_30B)
+def load_minicpm():
+    """Load Qwen3 VL 30B"""
+    print(f"Loading {QWEN3_8B}...")
+    model_path = MODEL_PATHS[QWEN3_30B]
+    model = Qwen3VLMoeForConditionalGeneration.from_pretrained(model_path,
                                                             dtype=torch.bfloat16,
                                                             attn_implementation="flash_attention_2",
                                                             device_map="auto")
