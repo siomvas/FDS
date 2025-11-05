@@ -26,8 +26,10 @@ def post_process(json_path: str):
     """
     answer_list = {}
     
+    data = []
     with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+        for line in f:
+            data.append(json.loads(line))
     
     for item in data:
         label = item["label"]

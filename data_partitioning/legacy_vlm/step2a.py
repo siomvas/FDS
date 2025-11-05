@@ -90,6 +90,9 @@ def main(model, tokenizer, inference_batch_size: int = 16):
     system_prompt = helper.read_file_to_string(args.step2a_prompt_path)
     system_prompt = system_prompt.replace("[__CRITERION__]", str(args.prompt_label.lower()))
     system_prompt = system_prompt.replace("[__EXAMPLAR__]", str(args.examplar.lower()))
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        pass  # Create empty file
     
     # Process in batches
     logger.info("Starting LLM inference...")
@@ -129,4 +132,4 @@ if __name__ == "__main__":
     model, tokenizer = util_loader.load_llm(args.llama_ver)
 
     # ----- Run flow -----
-    main(model=model, tokenizer=tokenizer, inference_batch_size=48)
+    main(model=model, tokenizer=tokenizer, inference_batch_size=64)

@@ -1,5 +1,4 @@
-import torch
-import json
+import torch, gc
 from typing import List
 import logging
 import os
@@ -18,7 +17,11 @@ def format_prompt(caption, class_list):
     return f'''
 Task: Based on the image description, determine the category for the "{args.prompt_label}" in the image. You must choose one option from this list: {class_list}
 
-Image description: "{caption}"
+Image description: "{caption}".
+
+Base your decision on the primary/dominant characteristic. If a situation arises where nothing is allocated, please assign it to the object that has the closest resemblance. 
+
+Output only the category name.
 Your response:
 '''
 
@@ -89,8 +92,11 @@ def main(model, tokenizer, inference_batch_size: int = 16):
     input_path=args.step1_result_path
     output_path=args.step3_result_path
 
-    data = helper.load_data(input_path)
+    data = helper.load_jsonl(input_path)
     logger.info(f"Loaded {len(data)} items")
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        pass  # Create empty file
     
     # Process in batches
     logger.info("Starting LLM inference...")
@@ -115,12 +121,17 @@ def main(model, tokenizer, inference_batch_size: int = 16):
         # Update descriptions with LLM responses
         for j, response in enumerate(responses):
             batch[j]["class"] = response
+
+        helper.append_batch_to_jsonl(output_path, batch)
+        del batch, responses, prompts
+        gc.collect()
+        torch.cuda.empty_cache()
         
         print(f"  - Completed {min(i + inference_batch_size, len(data))}/{len(data)} items\n")
     
     # Save results
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    # with open(output_path, 'w', encoding='utf-8') as f:
+    #     json.dump(data, f, indent=4, ensure_ascii=False)
     
     logger.info(f"Results saved to {output_path}")
 
@@ -130,4 +141,4 @@ if __name__ == "__main__":
 
     model, tokenizer = util_loader.load_llm(args.llama_ver)
 
-    main(model=model, tokenizer=tokenizer, inference_batch_size=32)
+    main(model=model, tokenizer=tokenizer, inference_batch_size=80)

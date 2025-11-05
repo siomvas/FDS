@@ -35,7 +35,7 @@ if args.dataset == TINY_IMAGENET:
     # examplar: in step 2a, num_class: embedded in step 2b & 3 for the num of class for clustering
     criteria_config = {
         0: {"prompt": "Main Object", "examplar": "Tree", "num_classes": 7},
-        1: {"prompt": "Size and Scale", "examplar": "Large", "num_classes": 4},
+        1: {"prompt": "Size and Scale of the main object", "examplar": "Large", "num_classes": 4},
         2: {"prompt": "Time of day", "examplar": "Morning", "num_classes": 4},
         3: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
         4: {"prompt": "Location", "examplar": "Field", "num_classes": 5},
@@ -70,7 +70,7 @@ parser.add_argument("--criteria", type=str, default="main_object", choices=crite
 # for llama
 parser.add_argument("--llama_ver", type=str, default=LLAMA33_70B, choices = [LLAMA33_70B, LLAMA31_8B_INSTRUCT])
 # for vlm
-parser.add_argument("--vlm_model", type=str, default=INTERNVL3_38B, choices = [MINICPM26, INTERNVL3_8B, INTERNVL3_38B, QWEN3_8B, QWEN3_30B])
+parser.add_argument("--vlm_model", type=str, default=QWEN3_30B, choices = [MINICPM26, INTERNVL3_8B, INTERNVL3_38B, QWEN3_8B, QWEN3_30B])
 
 args = parser.parse_args()
 

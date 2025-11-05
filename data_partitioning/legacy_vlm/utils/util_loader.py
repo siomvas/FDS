@@ -97,7 +97,7 @@ def load_minicpm():
 
 # Register VLM models
 @register_model(QWEN3_8B)
-def load_minicpm():
+def load_qwen_8b():
     """Load Qwen3 VL 8B"""
     print(f"Loading {QWEN3_8B}...")
     model_path = MODEL_PATHS[QWEN3_8B]
@@ -115,9 +115,9 @@ def load_minicpm():
     return model, processor
 
 @register_model(QWEN3_30B)
-def load_minicpm():
+def load_qwen3_30b():
     """Load Qwen3 VL 30B"""
-    print(f"Loading {QWEN3_8B}...")
+    print(f"Loading {QWEN3_30B}...")
     model_path = MODEL_PATHS[QWEN3_30B]
     model = Qwen3VLMoeForConditionalGeneration.from_pretrained(model_path,
                                                             dtype=torch.bfloat16,

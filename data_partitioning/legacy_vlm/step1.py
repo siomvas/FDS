@@ -1,8 +1,7 @@
 import gc, torch
 import os
-import json
 from datasets import Dataset
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Any
 import logging
 import sys, os
 from utils.argument import args
@@ -16,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 from dataset import BaseDataset
-from utils.constants import INTERNVL3_38B, INTERNVL3_8B, MINICPM26
 
 import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
@@ -383,7 +381,7 @@ def main(model, tokenizer, data: BaseDataset,
 
         # Different inference method for different model
         # todo: refactor this to not use if else
-        if args.vlm_model == MINICPM26:
+        if "minicpm" in args.vlm_model.lower():
             batch_results = process_batch_minicpm(model=model, tokenizer=tokenizer, batch_data=batch)
         if "internvl" in args.vlm_model.lower():
             batch_results = process_batch_internvl(model=model, tokenizer=tokenizer, batch_data=batch)
@@ -418,7 +416,7 @@ if __name__ == "__main__":
     data = util_loader.load_data(args.dataset)
     
     # Process dataset
-    main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=32)
+    main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=64)
 
 
 

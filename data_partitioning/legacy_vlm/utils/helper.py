@@ -39,13 +39,45 @@ def load_json(json_path: str) -> List[Dict]:
     with open(json_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def load_jsonl(path: str) -> List[Dict]:
-    """Load JSONL file."""
-    data = []
-    with open(path, 'r', encoding='utf-8') as f:
-        for line in f:
-            data.append(json.loads(line))
-    return data
+# def load_jsonl(path: str) -> List[Dict]:
+#     """Load JSONL file."""
+#     data = []
+#     with open(path, 'r', encoding='utf-8') as f:
+#         for line in f:
+#             data.append(json.loads(line))
+#     return data
+
+def load_jsonl(filepath):
+    """Load JSON or JSONL file"""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        # Try to load as regular JSON first
+        try:
+            f.seek(0)
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except json.JSONDecodeError:
+            pass
+        
+        # If that fails, try JSONL format
+        f.seek(0)
+        data = []
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line in ['[', ']', ',']:
+                continue
+            
+            # Remove trailing comma if present
+            if line.endswith(','):
+                line = line[:-1]
+            
+            try:
+                data.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                print(f"Warning: Skipping invalid JSON on line {line_num}: {e}")
+                continue
+        
+        return data
 
 # ---- Read class list for step 3 ---
 def read_class_list(step2b_result_path):
