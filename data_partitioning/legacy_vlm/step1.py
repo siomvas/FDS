@@ -416,7 +416,7 @@ if __name__ == "__main__":
     data = util_loader.load_data(args.dataset)
     
     # Process dataset
-    main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=64)
+    main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=144)
 
 
 

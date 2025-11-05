@@ -30,13 +30,13 @@ parser.add_argument("--exp_name", type=str, default="test")
 
 # ---*** criteria choices and set up (depends on dataset) ***------------------
 if args.dataset == TINY_IMAGENET:
-    criteria_choices = ["main_object", "size", "time", "color", "location"]
+    criteria_choices = ["main_object", "size", "angle", "color", "location"]
     # prompt: embedded as a criterion in all prompts
     # examplar: in step 2a, num_class: embedded in step 2b & 3 for the num of class for clustering
     criteria_config = {
         0: {"prompt": "Main Object", "examplar": "Tree", "num_classes": 7},
         1: {"prompt": "Size and Scale of the main object", "examplar": "Large", "num_classes": 4},
-        2: {"prompt": "Time of day", "examplar": "Morning", "num_classes": 4},
+        2: {"prompt": "Camera Angle", "examplar": "Wide-Shot", "num_classes": 4},
         3: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
         4: {"prompt": "Location", "examplar": "Field", "num_classes": 5},
     }
