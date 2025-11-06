@@ -98,17 +98,17 @@ def main(model, tokenizer, inference_batch_size: int = 16):
     with open(output_path, 'w', encoding='utf-8') as f:
         pass  # Create empty file
     
+    # Build prompt
+    class_list = helper.extract_categories(args.step2b_result_path)
+    #class_list = ["landscape", "human", "animal", "plant", "inanimate object", "unknown"]
+    system_prompt = helper.read_file_to_string(args.step3_prompt_path)
+    system_prompt = system_prompt.replace("[__CLASSES__]", str(class_list))
+    system_prompt = system_prompt.replace("[__CRITERION__]", str((args.prompt_label).lower()))
+
     # Process in batches
     logger.info("Starting LLM inference...")
     for i in range(0, len(data), inference_batch_size):
         batch = data[i:i+inference_batch_size]
-        
-        # Build prompts for this batch
-        class_list = helper.extract_categories(args.step2b_result_path)
-        #class_list = ["landscape", "human", "animal", "plant", "inanimate object", "unknown"]
-        system_prompt = helper.read_file_to_string(args.step3_prompt_path)
-        system_prompt = system_prompt.replace("[__CLASSES__]", str(class_list))
-        system_prompt = system_prompt.replace("[__CRITERION__]", str((args.prompt_label).lower()))
 
         prompts = [
             build_chat_prompt(model, tokenizer, system_prompt, class_list, item["description"]) for item in batch]
