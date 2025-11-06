@@ -123,6 +123,7 @@ def main(model, tokenizer, inference_batch_size: int = 16):
             batch[j]["class"] = response
 
         helper.append_batch_to_jsonl(output_path, batch)
+
         del batch, responses, prompts
         gc.collect()
         torch.cuda.empty_cache()
@@ -140,5 +141,4 @@ if __name__ == "__main__":
     # ----- Run flow -----
 
     model, tokenizer = util_loader.load_llm(args.llama_ver)
-
     main(model=model, tokenizer=tokenizer, inference_batch_size=88)
