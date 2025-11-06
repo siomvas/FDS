@@ -60,7 +60,7 @@ valid_cats = helper.extract_categories(args.step2b_result_path)
 class_groups = defaultdict(list)
 for item in data:
     cleaned = clean_llama_output(item['class'], valid_cats)
-    print("Clean: ", cleaned)
+    #print("Clean: ", cleaned)
     item['class'] = cleaned  
     class_groups[cleaned].append(item)  
 
