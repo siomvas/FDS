@@ -38,7 +38,7 @@ if args.dataset == TINY_IMAGENET:
         1: {"prompt": "Size and Scale of the main object", "examplar": "Large", "num_classes": 4},
         2: {"prompt": "Camera Angle", "examplar": "Wide-Shot", "num_classes": 4},
         3: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
-        4: {"prompt": "Location", "examplar": "Field", "num_classes": 5},
+        4: {"prompt": "Location of the main object", "examplar": "Field", "num_classes": 5},
     }
 elif args.dataset == FOOD101:
     criteria_choices = ["main_object", "size", "color", "ingredient", "angle"]

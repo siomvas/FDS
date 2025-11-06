@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def format_prompt(caption, class_list):
     """Format captions into a prompt asking for exact description and list of class."""
     return f'''
-Task: Based on the image description, determine the category for the "{args.prompt_label}" in the image. You must choose one option from this list: {class_list}
+Task: Based on the image description, determine the category for the {args.prompt_label} in the image. You must choose one option from this list: {class_list}
 
 Image description: "{caption}".
 
