@@ -30,20 +30,20 @@ parser.add_argument("--exp_name", type=str, default="test")
 
 # ---*** criteria choices and set up (depends on dataset) ***------------------
 if args.dataset == TINY_IMAGENET:
-    criteria_choices = ["main_object", "size", "angle", "color", "location"]
+    criteria_choices = ["main_object", "size", "angle", "color", "location", "time"]
     # prompt: embedded as a criterion in all prompts
     # examplar: in step 2a, num_class: embedded in step 2b & 3 for the num of class for clustering
     criteria_config = {
         0: {"prompt": "Main Object", "examplar": "Tree", "num_classes": 7},
         1: {"prompt": "Size and Scale of the main object", "examplar": "Large", "num_classes": 4},
-        2: {"prompt": "Camera Angle", "examplar": "Wide-Shot", "num_classes": 4},
+        2: {"prompt": "Time of day", "examplar": "Morning", "num_classes": 4},
         3: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
         4: {"prompt": "Location of the main object", "examplar": "Field", "num_classes": 5},
     }
 elif args.dataset == FOOD101:
-    criteria_choices = ["main_object", "size", "color", "ingredient", "angle"]
+    criteria_choices = ["main_object", "size", "color", "texture", "angle"]
     criteria_config = {
-        0: {"prompt": "Main Dish", "examplar": "Pancake", "num_classes": 7},
+        0: {"prompt": "Main Dish", "examplar": "Pancake", "num_classes": 7}, # rerun this
         1: {"prompt": "Size and Scale of the dish", "examplar": "Big", "num_classes": 8},
         2: {"prompt": "Dominant color of the dish", "examplar": "Golden-brown", "num_classes": 8},
         3: {"prompt": "Texture of the dish", "examplar": "Soft", "num_classes": 8},
