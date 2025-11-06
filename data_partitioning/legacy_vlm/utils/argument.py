@@ -109,10 +109,10 @@ args.step3_prompt_path += ".txt"
 
 
 # Copy the prompts for each experiment
-shutil.copy(args.step1_prompt_path, f"{args.output_path}/step1_prompt.txt")
-shutil.copy(args.step2a_prompt_path, f"{args.output_path}/step2a_prompt.txt")
-shutil.copy(args.step2b_prompt_path, f"{args.output_path}/step2b_prompt.txt")
-shutil.copy(args.step3_prompt_path, f"{args.output_path}/step3_prompt.txt")
+# shutil.copy(args.step1_prompt_path, f"{args.output_path}/step1_prompt.txt")
+# shutil.copy(args.step2a_prompt_path, f"{args.output_path}/step2a_prompt.txt")
+# shutil.copy(args.step2b_prompt_path, f"{args.output_path}/step2b_prompt.txt")
+# shutil.copy(args.step3_prompt_path, f"{args.output_path}/step3_prompt.txt")
 
 # ----- set up criteria for parsing into prompt --
 # find index of the chosen criteria
