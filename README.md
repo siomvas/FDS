@@ -14,7 +14,7 @@ Default params if not specified:
 * criteria: Main Object
 * exp_name: test
 * llama_ver: LLaMA 3.3 70B
-* vlm_model: InternVL3 38B
+* vlm_model: Qwen3-30B
 
 ### Output: 
 `data/<dataset_name>/<output_criteria_name_of_experiment>`
