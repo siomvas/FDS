@@ -46,9 +46,9 @@ elif args.dataset == FOOD101:
         0: {"prompt": "Main Dish", "examplar": "Pancake", "num_classes": 7}, # rerun this
         1: {"prompt": "Size and Scale of the dish", "examplar": "Big", "num_classes": 8},
         2: {"prompt": "Dominant color of the dish", "examplar": "Golden-brown", "num_classes": 8},
-        3: {"prompt": "Texture of the dish", "examplar": "Soft", "num_classes": 8},
+        3: {"prompt": "Texture of the dish", "examplar": "Soft", "num_classes": 8}, #**
         4: {"prompt": "Camera Angle", "examplar": "Overhead", "num_classes": 5},
-        5: {"prompt": "Lighting", "examplar": "Bright", "num_classes": 5},
+        5: {"prompt": "Lighting Intensity", "examplar": "Bright", "num_classes": 5},
     }
 elif args.dataset == ADE20K:
     criteria_choices = ["main_object", "scene", "time", "color", "weather"]
