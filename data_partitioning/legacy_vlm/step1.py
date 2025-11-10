@@ -297,7 +297,6 @@ def process_batch_qwen(model, processor, batch_data):
     messages = []
     question = batch_data[0]['question']
     for item in batch_data:
-        #image = load_image_qwen(item['filename'])
         messages.append([
         {
             "role": "user",
@@ -318,12 +317,14 @@ def process_batch_qwen(model, processor, batch_data):
     ).to(model.device)
 
     # Generate batched responses
-    generated_ids = model.generate(**inputs, max_new_tokens=128)
+    with torch.no_grad():
+        generated_ids = model.generate(**inputs, max_new_tokens=50)
 
     # Decode each output
     generated_ids_trimmed = [
         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
+
     responses = processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )
