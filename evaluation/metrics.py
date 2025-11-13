@@ -3,7 +3,10 @@ from torchvision import models, transforms
 import alibi_detect as ad
 import torch
 import scipy
+from scipy import stats
+from scipy.spatial.distance import cdist
 from PIL import Image
+from collections import Counter
 
 # We want:
 # Category 1: Operations on label distributions
@@ -139,7 +142,436 @@ def FID_distance(dataset_list, model_name='InceptionV3', device=None, return_all
     
 
 
-def KS_label_test(dataset1, dataset2, device=None):
+def KL_divergence(dataset1, dataset2, num_classes=None):
+    """
+    Calculate KL Divergence between label distributions of two datasets.
 
-    loaded_dataset1 = ImagePathDataset(dataset1)
-    loaded_dataset2 = ImagePathDataset(dataset2)
+    Args:
+        dataset1: List of dicts with 'label' field
+        dataset2: List of dicts with 'label' field
+        num_classes: Total number of classes (if None, inferred from data)
+
+    Returns:
+        KL divergence D_KL(P||Q) where P is dataset1, Q is dataset2
+    """
+    labels1 = np.array([item['label'] for item in dataset1])
+    labels2 = np.array([item['label'] for item in dataset2])
+
+    if num_classes is None:
+        num_classes = max(labels1.max(), labels2.max()) + 1
+
+    # Compute label distributions with smoothing to avoid log(0)
+    epsilon = 1e-10
+    counts1 = np.bincount(labels1, minlength=num_classes) + epsilon
+    counts2 = np.bincount(labels2, minlength=num_classes) + epsilon
+
+    p = counts1 / counts1.sum()
+    q = counts2 / counts2.sum()
+
+    kl_div = np.sum(p * np.log(p / q))
+    return kl_div
+
+
+def KS_label_test(dataset1, dataset2):
+    """
+    Perform Kolmogorov-Smirnov test on label distributions.
+
+    Args:
+        dataset1: List of dicts with 'label' field
+        dataset2: List of dicts with 'label' field
+
+    Returns:
+        dict with 'statistic' and 'pvalue'
+    """
+    labels1 = np.array([item['label'] for item in dataset1])
+    labels2 = np.array([item['label'] for item in dataset2])
+
+    # KS test for discrete distributions
+    statistic, pvalue = stats.ks_2samp(labels1, labels2)
+
+    return {'statistic': statistic, 'pvalue': pvalue}
+
+
+def MMD_rbf_kernel(X, Y, sigma=None):
+    """
+    Calculate Maximum Mean Discrepancy (MMD) using RBF kernel.
+
+    Args:
+        X: First sample (n_samples_X, n_features)
+        Y: Second sample (n_samples_Y, n_features)
+        sigma: RBF kernel bandwidth (if None, uses median heuristic)
+
+    Returns:
+        MMD^2 statistic
+    """
+    X = np.atleast_2d(X)
+    Y = np.atleast_2d(Y)
+
+    m, n = X.shape[0], Y.shape[0]
+
+    # Compute median heuristic for sigma if not provided
+    if sigma is None:
+        # Use median of pairwise distances
+        combined = np.vstack([X, Y])
+        dists = cdist(combined, combined, 'euclidean')
+        sigma = np.median(dists[dists > 0])
+
+    def rbf_kernel(A, B, sigma):
+        """Compute RBF kernel matrix between A and B"""
+        dists = cdist(A, B, 'sqeuclidean')
+        return np.exp(-dists / (2 * sigma**2))
+
+    # Compute kernel matrices
+    K_XX = rbf_kernel(X, X, sigma)
+    K_YY = rbf_kernel(Y, Y, sigma)
+    K_XY = rbf_kernel(X, Y, sigma)
+
+    # MMD^2 unbiased estimate
+    # Remove diagonal from K_XX and K_YY
+    np.fill_diagonal(K_XX, 0)
+    np.fill_diagonal(K_YY, 0)
+
+    mmd_squared = (K_XX.sum() / (m * (m - 1)) +
+                   K_YY.sum() / (n * (n - 1)) -
+                   2 * K_XY.sum() / (m * n))
+
+    return mmd_squared
+
+
+def MMD_label_distributions(dataset1, dataset2, num_classes=None):
+    """
+    Calculate MMD between label distributions (treating distributions as vectors).
+
+    Args:
+        dataset1: List of dicts with 'label' field
+        dataset2: List of dicts with 'label' field
+        num_classes: Total number of classes
+
+    Returns:
+        MMD between label distributions
+    """
+    labels1 = np.array([item['label'] for item in dataset1])
+    labels2 = np.array([item['label'] for item in dataset2])
+
+    if num_classes is None:
+        num_classes = max(labels1.max(), labels2.max()) + 1
+
+    # Convert to distribution vectors
+    counts1 = np.bincount(labels1, minlength=num_classes)
+    counts2 = np.bincount(labels2, minlength=num_classes)
+
+    p = counts1 / counts1.sum()
+    q = counts2 / counts2.sum()
+
+    # Reshape to 2D for MMD
+    p = p.reshape(1, -1)
+    q = q.reshape(1, -1)
+
+    # For single distributions, MMD simplifies to distance between means
+    return np.linalg.norm(p - q)
+
+
+def MMD_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, sigma=None):
+    """
+    Calculate MMD between feature distributions of two datasets.
+
+    Args:
+        dataset1: List of dicts with 'image_path' and 'label' fields
+        dataset2: List of dicts with 'image_path' and 'label' fields
+        model_name: Name of the model for feature extraction
+        device: Device to run model on
+        batch_size: Batch size for feature extraction
+        sigma: RBF kernel bandwidth (if None, uses median heuristic)
+
+    Returns:
+        MMD^2 statistic between feature distributions
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Load model
+    if model_name == 'InceptionV3':
+        model = models.inception_v3(pretrained=True, transform_input=False)
+        model.fc = torch.nn.Identity()
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+    model.to(device)
+    model.eval()
+
+    transform = transforms.Compose([
+        transforms.Resize((299, 299)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    def extract_features(dataset):
+        img_dataset = ImagePathDataset(dataset, transforms=transform)
+        dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
+        features = []
+        with torch.no_grad():
+            for images, _ in dataloader:
+                images = images.to(device)
+                feats = model(images)
+                features.append(feats.cpu().numpy())
+        return np.concatenate(features, axis=0)
+
+    features1 = extract_features(dataset1)
+    features2 = extract_features(dataset2)
+
+    mmd_squared = MMD_rbf_kernel(features1, features2, sigma=sigma)
+
+    # Cleanup
+    del features1, features2
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return mmd_squared
+
+
+def mahalanobis_distance_labels(dataset1, dataset2, num_classes=None):
+    """
+    Calculate Mahalanobis distance between label distributions.
+
+    Args:
+        dataset1: List of dicts with 'label' field
+        dataset2: List of dicts with 'label' field
+        num_classes: Total number of classes
+
+    Returns:
+        Mahalanobis distance
+    """
+    labels1 = np.array([item['label'] for item in dataset1])
+    labels2 = np.array([item['label'] for item in dataset2])
+
+    if num_classes is None:
+        num_classes = max(labels1.max(), labels2.max()) + 1
+
+    # Convert to distribution vectors
+    counts1 = np.bincount(labels1, minlength=num_classes)
+    counts2 = np.bincount(labels2, minlength=num_classes)
+
+    p = counts1 / counts1.sum()
+    q = counts2 / counts2.sum()
+
+    # Estimate covariance from both distributions
+    combined = np.vstack([p, q])
+    cov = np.cov(combined.T)
+
+    # Add small regularization to avoid singularity
+    cov += np.eye(cov.shape[0]) * 1e-6
+
+    # Compute Mahalanobis distance
+    diff = p - q
+    inv_cov = np.linalg.inv(cov)
+    mahal_dist = np.sqrt(diff @ inv_cov @ diff.T)
+
+    return mahal_dist
+
+
+def wasserstein_distance_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50):
+    """
+    Calculate Wasserstein distance (Earth Mover's Distance) between feature distributions.
+
+    Args:
+        dataset1: List of dicts with 'image_path' and 'label' fields
+        dataset2: List of dicts with 'image_path' and 'label' fields
+        model_name: Name of the model for feature extraction
+        device: Device to run model on
+        batch_size: Batch size for feature extraction
+
+    Returns:
+        Wasserstein distance (averaged across feature dimensions)
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Load model
+    if model_name == 'InceptionV3':
+        model = models.inception_v3(pretrained=True, transform_input=False)
+        model.fc = torch.nn.Identity()
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+    model.to(device)
+    model.eval()
+
+    transform = transforms.Compose([
+        transforms.Resize((299, 299)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    def extract_features(dataset):
+        img_dataset = ImagePathDataset(dataset, transforms=transform)
+        dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
+        features = []
+        with torch.no_grad():
+            for images, _ in dataloader:
+                images = images.to(device)
+                feats = model(images)
+                features.append(feats.cpu().numpy())
+        return np.concatenate(features, axis=0)
+
+    features1 = extract_features(dataset1)
+    features2 = extract_features(dataset2)
+
+    # Compute Wasserstein distance for each feature dimension and average
+    n_features = features1.shape[1]
+    wasserstein_dists = []
+
+    for i in range(n_features):
+        wd = stats.wasserstein_distance(features1[:, i], features2[:, i])
+        wasserstein_dists.append(wd)
+
+    avg_wasserstein = np.mean(wasserstein_dists)
+
+    # Cleanup
+    del features1, features2
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return avg_wasserstein
+
+
+def cramer_von_mises_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50):
+    """
+    Calculate Cramér-von Mises criterion between feature distributions.
+
+    Args:
+        dataset1: List of dicts with 'image_path' and 'label' fields
+        dataset2: List of dicts with 'image_path' and 'label' fields
+        model_name: Name of the model for feature extraction
+        device: Device to run model on
+        batch_size: Batch size for feature extraction
+
+    Returns:
+        Cramér-von Mises statistic (averaged across feature dimensions)
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Load model
+    if model_name == 'InceptionV3':
+        model = models.inception_v3(pretrained=True, transform_input=False)
+        model.fc = torch.nn.Identity()
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+    model.to(device)
+    model.eval()
+
+    transform = transforms.Compose([
+        transforms.Resize((299, 299)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    def extract_features(dataset):
+        img_dataset = ImagePathDataset(dataset, transforms=transform)
+        dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
+        features = []
+        with torch.no_grad():
+            for images, _ in dataloader:
+                images = images.to(device)
+                feats = model(images)
+                features.append(feats.cpu().numpy())
+        return np.concatenate(features, axis=0)
+
+    features1 = extract_features(dataset1)
+    features2 = extract_features(dataset2)
+
+    # Compute Cramér-von Mises test for each feature dimension and average
+    n_features = features1.shape[1]
+    cvm_statistics = []
+
+    for i in range(n_features):
+        result = stats.cramervonmises_2samp(features1[:, i], features2[:, i])
+        cvm_statistics.append(result.statistic)
+
+    avg_cvm = np.mean(cvm_statistics)
+
+    # Cleanup
+    del features1, features2
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return avg_cvm
+
+
+def KS_multivariate_test(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, alpha=0.05):
+    """
+    Perform multivariate KS test by combining multiple univariate KS tests
+    with Bonferroni correction.
+
+    Args:
+        dataset1: List of dicts with 'image_path' and 'label' fields
+        dataset2: List of dicts with 'image_path' and 'label' fields
+        model_name: Name of the model for feature extraction
+        device: Device to run model on
+        batch_size: Batch size for feature extraction
+        alpha: Significance level
+
+    Returns:
+        dict with 'reject_null' (bool), 'min_pvalue', 'corrected_alpha', and 'n_tests'
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Load model
+    if model_name == 'InceptionV3':
+        model = models.inception_v3(pretrained=True, transform_input=False)
+        model.fc = torch.nn.Identity()
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+    model.to(device)
+    model.eval()
+
+    transform = transforms.Compose([
+        transforms.Resize((299, 299)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    def extract_features(dataset):
+        img_dataset = ImagePathDataset(dataset, transforms=transform)
+        dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
+        features = []
+        with torch.no_grad():
+            for images, _ in dataloader:
+                images = images.to(device)
+                feats = model(images)
+                features.append(feats.cpu().numpy())
+        return np.concatenate(features, axis=0)
+
+    features1 = extract_features(dataset1)
+    features2 = extract_features(dataset2)
+
+    # Perform KS test for each feature dimension
+    n_features = features1.shape[1]
+    pvalues = []
+
+    for i in range(n_features):
+        statistic, pvalue = stats.ks_2samp(features1[:, i], features2[:, i])
+        pvalues.append(pvalue)
+
+    pvalues = np.array(pvalues)
+    min_pvalue = pvalues.min()
+
+    # Bonferroni correction: reject null hypothesis if minimum p-value < alpha/K
+    corrected_alpha = alpha / n_features
+    reject_null = min_pvalue < corrected_alpha
+
+    # Cleanup
+    del features1, features2
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return {
+        'reject_null': reject_null,
+        'min_pvalue': float(min_pvalue),
+        'corrected_alpha': corrected_alpha,
+        'n_tests': n_features,
+        'significant_dims': int(np.sum(pvalues < corrected_alpha))
+    }
