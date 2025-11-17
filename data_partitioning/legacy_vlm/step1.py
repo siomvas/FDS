@@ -271,78 +271,327 @@ def process_batch_internvl(model, tokenizer, batch_data):
     return results
 
 # ---------------------- For Qwen3 -------------------------
-def process_batch_qwen(model, processor, batch_data):
+# def process_batch_qwen(model, processor, batch_data):
+#     """
+#     Batch inference with Qwen3-VL model.
+
+#     Args:
+#         model: Qwen3VLForConditionalGeneration model.
+#         processor: AutoProcessor for Qwen3VL.
+#         batch_data: list of dicts like:
+#             {
+#                 "filename": str,  # image file path
+#                 "question": str,  # text prompt
+#                 "label": str,     # optional label
+#                 "index": int,     # index for reference
+#             }
+#         max_new_tokens: int, number of tokens to generate.
+
+#     Returns:
+#         List of dicts with keys ["image", "label", "description", "original_index"].
+#     """
+
+#     results = []
+
+#     # Prepare all message pairs for batch
+#     messages = []
+#     question = batch_data[0]['question']
+#     for item in batch_data:
+#         messages.append([
+#         {
+#             "role": "user",
+#             "content": [
+#                 {"type": "image", "image": item['filename']},
+#                 {"type": "text", "text": question},
+#             ],
+#         }])
+
+#     # Apply processor to batch
+#     inputs = processor.apply_chat_template(
+#         messages,
+#         tokenize=True,
+#         add_generation_prompt=True,
+#         return_dict=True,
+#         padding=True, 
+#         return_tensors="pt"
+#     ).to(model.device)
+
+#     # Generate batched responses
+#     with torch.no_grad():
+#         generated_ids = model.generate(**inputs, max_new_tokens=50)
+
+#     # Decode each output
+#     generated_ids_trimmed = [
+#         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+#     ]
+
+#     responses = processor.batch_decode(
+#         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+#     )
+
+#     # Combine results with metadata
+#     for i, (batch_item, response) in enumerate(zip(batch_data, responses)):
+#         results.append({
+#             "image": batch_item['filename'],
+#             "label": batch_item['label'],
+#             "description": response.strip(),
+#             "original_index": batch_item['index']
+#         })
+
+#     #finally:
+#     # CRITICAL: Clean up ALL intermediate tensors
+#     if 'inputs' in locals():
+#         del inputs
+#     if 'generated_ids' in locals():
+#         del generated_ids
+#     if 'generated_ids_trimmed' in locals():
+#         del generated_ids_trimmed
+#     if 'messages' in locals():
+#         del messages
+        
+#     gc.collect()
+#     torch.cuda.empty_cache()
+#     torch.cuda.synchronize()
+
+#     return results
+
+def clear_model_cache(model):
+    """Comprehensive cache clearing for Qwen models"""
+    
+    # Clear KV cache
+    if hasattr(model, 'past_key_values'):
+        model.past_key_values = None
+    
+    # Clear vision encoder cache
+    if hasattr(model, 'visual'):
+        if hasattr(model.visual, 'cache_clear'):
+            model.visual.cache_clear()
+        model.visual.zero_grad(set_to_none=True)
+    
+    # Clear transformer layer caches
+    if hasattr(model, 'transformer'):
+        for layer in model.transformer.h:
+            if hasattr(layer, 'attn'):
+                if hasattr(layer.attn, 'past_key_value'):
+                    layer.attn.past_key_value = None
+    
+    # Clear attention buffers
+    for module in model.modules():
+        if hasattr(module, '_buffers'):
+            for buf_name in list(module._buffers.keys()):
+                if any(kw in buf_name.lower() for kw in ['cache', 'past', 'hidden']):
+                    module._buffers[buf_name] = None
+
+
+def process_batch_qwen_optimized(model, processor, batch_data):
     """
-    Batch inference with Qwen3-VL model.
-
-    Args:
-        model: Qwen3VLForConditionalGeneration model.
-        processor: AutoProcessor for Qwen3VL.
-        batch_data: list of dicts like:
-            {
-                "filename": str,  # image file path
-                "question": str,  # text prompt
-                "label": str,     # optional label
-                "index": int,     # index for reference
-            }
-        max_new_tokens: int, number of tokens to generate.
-
-    Returns:
-        List of dicts with keys ["image", "label", "description", "original_index"].
+    Memory-optimized Qwen batch processing with aggressive cleanup.
+    
+    This version addresses multiple memory leak sources:
+    1. Vision encoder feature accumulation
+    2. KV cache persistence
+    3. Attention mask accumulation
+    4. Image processor hidden copies
+    5. Gradient graph creation
     """
-
     results = []
-
-    # Prepare all message pairs for batch
-    messages = []
-    question = batch_data[0]['question']
-    for item in batch_data:
-        messages.append([
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": item['filename']},
-                {"type": "text", "text": question},
-            ],
-        }])
-
-    # Apply processor to batch
-    inputs = processor.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        return_dict=True,
-        padding=True, 
-        return_tensors="pt"
-    ).to(model.device)
-
-    # Generate batched responses
-    with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=50)
-
-    # Decode each output
-    generated_ids_trimmed = [
-        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-    ]
-
-    responses = processor.batch_decode(
-        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-    )
-
-    # Combine results with metadata
-    for i, (batch_item, response) in enumerate(zip(batch_data, responses)):
-        results.append({
-            "image": batch_item['filename'],
-            "label": batch_item['label'],
-            "description": response.strip(),
-            "original_index": batch_item['index']
-        })
-
-    # Cleanup
-    gc.collect()
-    torch.cuda.empty_cache()
-
+    images_loaded = []
+    
+    try:
+        # Phase 1: Load images with explicit cleanup
+        logger.debug(f"Loading {len(batch_data)} images...")
+        for item in batch_data:
+            with Image.open(item['filename']) as img:
+                # Create copy and immediately close file
+                img_copy = img.convert('RGB').copy()
+                images_loaded.append(img_copy)
+        
+        # Phase 2: Build messages
+        messages = []
+        question = batch_data[0]['question']
+        for i, item in enumerate(batch_data):
+            messages.append([{
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": images_loaded[i]},
+                    {"type": "text", "text": question},
+                ],
+            }])
+        
+        # Phase 3: Process with comprehensive no_grad
+        with torch.no_grad():
+            # Tokenize and prepare inputs
+            inputs = processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                padding=True,
+                return_tensors="pt"
+            )
+            
+            # Move to device
+            inputs = {k: v.to(model.device) if isinstance(v, torch.Tensor) else v 
+                     for k, v in inputs.items()}
+            
+            # Generate with explicit cache management
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=50,
+                use_cache=True,  # Enable for efficiency
+                pad_token_id=processor.tokenizer.pad_token_id,
+                eos_token_id=processor.tokenizer.eos_token_id,
+            )
+            
+            # Immediately clear model caches
+            clear_model_cache(model)
+            
+            # Decode
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):] 
+                for in_ids, out_ids in zip(inputs['input_ids'], generated_ids)
+            ]
+            
+            responses = processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False
+            )
+        
+        # Phase 4: Build results (outside no_grad, no tensors)
+        for batch_item, response in zip(batch_data, responses):
+            results.append({
+                "image": batch_item['filename'],
+                "label": batch_item['label'],
+                "description": response.strip(),
+                "original_index": batch_item['index']
+            })
+        
+        logger.debug(f"Successfully processed batch of {len(results)} samples")
+        
+    except Exception as e:
+        logger.error(f"Error in batch processing: {e}")
+        raise
+        
+    finally:
+        # Phase 5: Aggressive cleanup
+        
+        # Close and delete images
+        for img in images_loaded:
+            try:
+                img.close()
+            except:
+                pass
+        del images_loaded
+        
+        # Delete all intermediate variables
+        if 'messages' in locals():
+            del messages
+        if 'inputs' in locals():
+            # Delete each tensor in inputs dict
+            for k in list(inputs.keys()):
+                if isinstance(inputs[k], torch.Tensor):
+                    del inputs[k]
+            del inputs
+        if 'generated_ids' in locals():
+            del generated_ids
+        if 'generated_ids_trimmed' in locals():
+            del generated_ids_trimmed
+        if 'responses' in locals():
+            del responses
+        
+        # Force CUDA operations to complete
+        torch.cuda.synchronize()
+        
+        # Clear CUDA cache
+        torch.cuda.empty_cache()
+        
+        # Force garbage collection
+        gc.collect()
+        
+        # Log memory status
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                allocated = torch.cuda.memory_allocated(i) / 1024**3
+                reserved = torch.cuda.memory_reserved(i) / 1024**3
+                logger.debug(f"GPU {i} after cleanup: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     return results
+
+
+def process_with_periodic_deep_cleanup(model, processor, all_batches, cleanup_interval=10):
+    """
+    Process batches with periodic deep cleanup.
+    
+    Args:
+        model: Qwen model
+        processor: Qwen processor
+        all_batches: List of batch_data
+        cleanup_interval: Perform deep cleanup every N batches
+    """
+    all_results = []
+    
+    for batch_idx, batch_data in enumerate(all_batches):
+        batch_num = batch_idx + 1
+        
+        # Process batch
+        logger.info(f"Processing batch {batch_num}/{len(all_batches)}")
+        batch_results = process_batch_qwen_optimized(model, processor, batch_data)
+        all_results.extend(batch_results)
+        
+        # Periodic deep cleanup
+        if batch_num % cleanup_interval == 0:
+            logger.info(f"Performing deep cleanup at batch {batch_num}...")
+            
+            # Clear all model caches
+            clear_model_cache(model)
+            
+            # Multiple rounds of cleanup
+            for _ in range(3):
+                gc.collect()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            
+            # Reset CUDA memory allocator
+            if hasattr(torch.cuda, 'reset_peak_memory_stats'):
+                torch.cuda.reset_peak_memory_stats()
+            
+            # Log detailed memory stats
+            for i in range(torch.cuda.device_count()):
+                allocated = torch.cuda.memory_allocated(i) / 1024**3
+                reserved = torch.cuda.memory_reserved(i) / 1024**3
+                max_allocated = torch.cuda.max_memory_allocated(i) / 1024**3
+                logger.info(f"GPU {i}: {allocated:.2f}GB allocated, "
+                          f"{reserved:.2f}GB reserved, "
+                          f"{max_allocated:.2f}GB peak")
+    
+    return all_results
+
+
+# Example usage in your main function
+def main_with_memory_optimization(model, tokenizer, data, max_samples=None, batch_size=4):
+    """Updated main function with memory optimization"""
+    
+    logger.info("Starting dataset processing with memory optimization...")
+    
+    # Prepare all data
+    question = "Your question here"
+    prepared_data = prepare_batch_questions(data, question, max_samples)
+    
+    # Split into batches
+    batches = [prepared_data[i:i + batch_size] 
+               for i in range(0, len(prepared_data), batch_size)]
+    
+    # Process with periodic cleanup
+    all_results = process_with_periodic_deep_cleanup(
+        model=model,
+        processor=tokenizer,  # processor in your case
+        all_batches=batches,
+        cleanup_interval=5  # Deep cleanup every 5 batches
+    )
+    
+    logger.info(f"Processing complete! Processed {len(all_results)} samples")
+    return all_results
 
 #================================= ENTIRE FLOW FOR STEP 1 ========================================
 def main(model, tokenizer, data: BaseDataset,
@@ -387,7 +636,7 @@ def main(model, tokenizer, data: BaseDataset,
         if "internvl" in args.vlm_model.lower():
             batch_results = process_batch_internvl(model=model, tokenizer=tokenizer, batch_data=batch)
         if "qwen" in args.vlm_model.lower():
-            batch_results = process_batch_qwen(model=model, processor=tokenizer, batch_data=batch)
+            batch_results = process_batch_qwen_optimized(model=model, processor=tokenizer, batch_data=batch)
         else:
             logger.error("Model does not registered in step 1 yet...")
     
@@ -413,11 +662,13 @@ def main(model, tokenizer, data: BaseDataset,
 if __name__ == "__main__":
     """Main execution function."""
 
-    model, tokenizer = util_loader.load_vlm(args.vlm_model)
+    #model, tokenizer = util_loader.load_vlm(args.vlm_model)
     data = util_loader.load_data(args.dataset)
+    # Run this on your ADE20K data
+    util_loader.analyze_dataset_images(data, sample_size=100)
     
     # Process dataset
-    main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=144)
+    #main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=144)
 
 
 

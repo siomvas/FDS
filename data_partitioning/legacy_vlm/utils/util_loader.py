@@ -41,6 +41,79 @@ def split_model(path):
 
     return device_map
 
+def analyze_dataset_images(data, sample_size=100):
+    """Analyze image dimensions and sizes in dataset"""
+    import random
+    from PIL import Image
+    
+    sample_paths = random.sample(data.data, min(sample_size, len(data.data)))
+    
+    resolutions = []
+    file_sizes = []
+    aspect_ratios = []
+    
+    for path in sample_paths:
+        try:
+            # Get file size
+            import os
+            file_size = os.path.getsize(path) / 1024  # KB
+            file_sizes.append(file_size)
+            
+            # Get dimensions
+            with Image.open(path) as img:
+                width, height = img.size
+                resolutions.append((width, height))
+                aspect_ratios.append(width / height)
+                
+        except Exception as e:
+            print(f"Error with {path}: {e}")
+    
+    import numpy as np
+    
+    print(f"\n=== Dataset Analysis (n={len(resolutions)}) ===")
+    print(f"\nResolutions:")
+    print(f"  Min: {min(resolutions, key=lambda x: x[0]*x[1])}")
+    print(f"  Max: {max(resolutions, key=lambda x: x[0]*x[1])}")
+    print(f"  Avg: {int(np.mean([w*h for w,h in resolutions])**0.5)}×{int(np.mean([w*h for w,h in resolutions])**0.5)}")
+    
+    print(f"\nFile Sizes:")
+    print(f"  Min: {min(file_sizes):.1f} KB")
+    print(f"  Max: {max(file_sizes):.1f} KB")
+    print(f"  Avg: {np.mean(file_sizes):.1f} KB")
+    print(f"  Median: {np.median(file_sizes):.1f} KB")
+    
+    print(f"\nAspect Ratios:")
+    print(f"  Min: {min(aspect_ratios):.2f}")
+    print(f"  Max: {max(aspect_ratios):.2f}")
+    print(f"  Avg: {np.mean(aspect_ratios):.2f}")
+    
+    # Estimate patches for Qwen
+    patches_per_image = []
+    for w, h in resolutions:
+        # Simulate Qwen's dynamic preprocessing
+        aspect_ratio = w / h
+        image_size = 448
+        max_num = 12
+        
+        # Rough estimation of patches
+        target_ratios = [(i, j) for i in range(1, 5) for j in range(1, 5) if i*j <= max_num]
+        best_ratio = min(target_ratios, key=lambda r: abs(aspect_ratio - r[0]/r[1]))
+        num_patches = best_ratio[0] * best_ratio[1]
+        patches_per_image.append(num_patches)
+    
+    print(f"\nEstimated Qwen Patches per Image:")
+    print(f"  Min: {min(patches_per_image)} patches")
+    print(f"  Max: {max(patches_per_image)} patches")
+    print(f"  Avg: {np.mean(patches_per_image):.1f} patches")
+    
+    print(f"\nMemory Estimate for batch_size=6:")
+    avg_patches = np.mean(patches_per_image)
+    total_patches = 6 * avg_patches
+    memory_gb = total_patches * (448*448*3*4) / 1024**3
+    print(f"  Total patches: {total_patches:.0f}")
+    print(f"  Raw pixel memory: {memory_gb:.2f} GB")
+    print(f"  With model overhead (3x): {memory_gb*3:.2f} GB")
+
 # model and tokenizer
 #----- Load model ----
 # note: change to custom path when run
