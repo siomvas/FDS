@@ -1,4 +1,4 @@
-from dataset import BaseDataset
+from .dataset import BaseDataset
 from typing import Dict, List, Optional, TypedDict, Any
 import numpy as np
 import torch

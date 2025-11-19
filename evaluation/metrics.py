@@ -34,7 +34,7 @@ class ImagePathDataset(torch.utils.data.Dataset):
         return len(self.file_dataset)
 
     def __getitem__(self, i):
-        img_path, label = self.file_dataset[i]['image_path'], self.file_dataset[i]['label']
+        img_path, label = self.file_dataset[i]['image'], self.file_dataset[i]['label']
         img = Image.open(img_path).convert("RGB")
         label = torch.tensor(label)
         if self.transforms is not None:

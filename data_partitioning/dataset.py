@@ -164,7 +164,7 @@ def _load_food101(self):
         for img_rel_path in img_list:
             img_path = images_dir / f"{img_rel_path}.jpg"
             if img_path.exists():
-                self.data.append(img_path)
+                self.data.append(str(img_path))
                 self.labels.append(label)
             else:
                 raise Warning(f"Image path {img_path} does not exist")
