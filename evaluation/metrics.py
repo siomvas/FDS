@@ -1,12 +1,13 @@
 import numpy as np
 from torchvision import models, transforms
-import alibi_detect as ad
+# import alibi_detect as ad
 import torch
 import scipy
 from scipy import stats
 from scipy.spatial.distance import cdist
 from PIL import Image
 from collections import Counter
+import os
 
 # We want:
 # Category 1: Operations on label distributions
@@ -61,9 +62,14 @@ def FID_distance(dataset_list, model_name='InceptionV3', device=None, return_all
 
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Set up model directory
+    torch.hub.set_dir('~/archive/.cache/torch/hub')
 
     if model_name == 'InceptionV3':
+        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
         model = models.inception_v3(pretrained=True, transform_input=False)
+        os.environ.pop('https_proxy', None)
     else:
         raise ValueError("Unsupported model for FID calculation")
 
@@ -288,11 +294,16 @@ def MMD_features(dataset1, dataset2, model_name='InceptionV3', device=None, batc
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Set up model directory
+    torch.hub.set_dir('~/archive/.cache/torch/hub')
 
     # Load model
     if model_name == 'InceptionV3':
+        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
         model = models.inception_v3(pretrained=True, transform_input=False)
         model.fc = torch.nn.Identity()
+        os.environ.pop('https_proxy', None)
     else:
         raise ValueError(f"Unsupported model: {model_name}")
 
@@ -386,9 +397,14 @@ def wasserstein_distance_features(dataset1, dataset2, model_name='InceptionV3', 
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # Set up model directory
+    torch.hub.set_dir('~/archive/.cache/torch/hub')
+
     # Load model
     if model_name == 'InceptionV3':
+        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
         model = models.inception_v3(pretrained=True, transform_input=False)
+        os.environ.pop('https_proxy', None)
         model.fc = torch.nn.Identity()
     else:
         raise ValueError(f"Unsupported model: {model_name}")
@@ -451,9 +467,14 @@ def cramer_von_mises_features(dataset1, dataset2, model_name='InceptionV3', devi
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # Set up model directory
+    torch.hub.set_dir('~/archive/.cache/torch/hub')
+
     # Load model
     if model_name == 'InceptionV3':
+        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
         model = models.inception_v3(pretrained=True, transform_input=False)
+        os.environ.pop('https_proxy', None)
         model.fc = torch.nn.Identity()
     else:
         raise ValueError(f"Unsupported model: {model_name}")
@@ -518,9 +539,14 @@ def KS_multivariate_test(dataset1, dataset2, model_name='InceptionV3', device=No
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # Set up model directory
+    torch.hub.set_dir('~/archive/.cache/torch/hub')
+
     # Load model
     if model_name == 'InceptionV3':
+        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
         model = models.inception_v3(pretrained=True, transform_input=False)
+        os.environ.pop('https_proxy', None)
         model.fc = torch.nn.Identity()
     else:
         raise ValueError(f"Unsupported model: {model_name}")
