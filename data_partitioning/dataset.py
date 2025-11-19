@@ -13,7 +13,7 @@ class ClassificationDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
-        image = Image.open(sample["image_path"]).convert("RGB")
+        image = Image.open(sample["image"]).convert("RGB")
         label = sample["label"]
 
         if self.transform:
@@ -29,7 +29,7 @@ class SegmentationDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
-        image = Image.open(sample["image_path"]).convert("RGB")
+        image = Image.open(sample["image"]).convert("RGB")
         mask = Image.open(sample["mask_path"])
 
         if self.transform:

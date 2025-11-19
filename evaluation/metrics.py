@@ -298,8 +298,8 @@ def MMD_features(dataset1, dataset2, model_name='InceptionV3', device=None, batc
     Calculate MMD between feature distributions of two datasets.
 
     Args:
-        dataset1: List of dicts with 'image_path' and 'label' fields
-        dataset2: List of dicts with 'image_path' and 'label' fields
+        dataset1: List of dicts with 'image' and 'label' fields
+        dataset2: List of dicts with 'image' and 'label' fields
         model_name: Name of the model for feature extraction
         device: Device to run model on
         batch_size: Batch size for feature extraction
@@ -404,8 +404,8 @@ def wasserstein_distance_features(dataset1, dataset2, model_name='InceptionV3', 
     Calculate Wasserstein distance (Earth Mover's Distance) between feature distributions.
 
     Args:
-        dataset1: List of dicts with 'image_path' and 'label' fields
-        dataset2: List of dicts with 'image_path' and 'label' fields
+        dataset1: List of dicts with 'image' and 'label' fields
+        dataset2: List of dicts with 'image' and 'label' fields
         model_name: Name of the model for feature extraction
         device: Device to run model on
         batch_size: Batch size for feature extraction
@@ -474,8 +474,8 @@ def cramer_von_mises_features(dataset1, dataset2, model_name='InceptionV3', devi
     Calculate Cramér-von Mises criterion between feature distributions.
 
     Args:
-        dataset1: List of dicts with 'image_path' and 'label' fields
-        dataset2: List of dicts with 'image_path' and 'label' fields
+        dataset1: List of dicts with 'image' and 'label' fields
+        dataset2: List of dicts with 'image' and 'label' fields
         model_name: Name of the model for feature extraction
         device: Device to run model on
         batch_size: Batch size for feature extraction
@@ -545,8 +545,8 @@ def KS_multivariate_test(dataset1, dataset2, model_name='InceptionV3', device=No
     with Bonferroni correction.
 
     Args:
-        dataset1: List of dicts with 'image_path' and 'label' fields
-        dataset2: List of dicts with 'image_path' and 'label' fields
+        dataset1: List of dicts with 'image' and 'label' fields
+        dataset2: List of dicts with 'image' and 'label' fields
         model_name: Name of the model for feature extraction
         device: Device to run model on
         batch_size: Batch size for feature extraction

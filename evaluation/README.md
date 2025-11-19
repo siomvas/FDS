@@ -9,8 +9,6 @@ This directory contains evaluation metrics for measuring heterogeneity in federa
 - **`validate_metrics_fixed.py`** - Validation script (use this one!)
 - **`metric_validation_fixed.ipynb`** - Interactive notebook for presentations
 - **`TESTING.md`** - Test documentation and guide
-- ~~`validate_metrics.py`~~ - **DEPRECATED** (incompatible with splitter API)
-- ~~`metric_validation.ipynb`~~ - **DEPRECATED** (incompatible with splitter API)
 
 ## ⚠️ Important: Splitter API Compatibility
 
@@ -58,24 +56,7 @@ client_0_train = splits["clients"]["client_0"]["train"]
 # Returns: [{"image": path_string, "label": label_string}, ...]
 ```
 
-### Metric Input Format
-```python
-# Metrics expect:
-# [{"image_path": "/path/img.jpg", "label": int_label}, ...]
 
-# Convert splitter output to metric format:
-def convert_to_metric_format(client_data):
-    # Build label mapping
-    all_labels = [item["label"] for item in client_data]
-    unique_labels = sorted(set(all_labels))
-    label_to_int = {label: idx for idx, label in enumerate(unique_labels)}
-
-    # Convert
-    return [
-        {"image_path": item["image"], "label": label_to_int[item["label"]]}
-        for item in client_data
-    ]
-```
 
 ## Testing
 

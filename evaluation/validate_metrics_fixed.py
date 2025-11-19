@@ -27,7 +27,7 @@ def convert_splits_to_metric_format(client_split_data):
     Convert splitter output format to metric format.
 
     Splitter format: [{"image": "/path", "label": "class_name"}, ...]
-    Metric format: [{"image_path": "/path", "label": int}, ...]
+    Metric format: [{"image": "/path", "label": int}, ...]
     """
     # Build label to int mapping
     all_labels = [item["label"] for item in client_split_data]
@@ -38,7 +38,7 @@ def convert_splits_to_metric_format(client_split_data):
     metric_data = []
     for item in client_split_data:
         metric_data.append({
-            "image_path": item["image"],
+            "image": item["image"],
             "label": label_to_int[item["label"]]
         })
 
