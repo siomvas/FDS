@@ -31,11 +31,11 @@ from evaluation import metrics
 def identical_distributions():
     """Two clients with identical label distributions."""
     # 100 samples, 10 classes, uniform distribution
-    labels = list(range(10)) * 10
+    labels = list(range(10)) * 100
     np.random.shuffle(labels)
 
-    dataset1 = [{"label": label} for label in labels[:50]]
-    dataset2 = [{"label": label} for label in labels[50:]]
+    dataset1 = [{"label": label} for label in labels[:500]]
+    dataset2 = [{"label": label} for label in labels[500:]]
 
     return dataset1, dataset2, 10
 

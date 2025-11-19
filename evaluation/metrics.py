@@ -1,6 +1,6 @@
 import numpy as np
 from torchvision import models, transforms
-import alibi_detect as ad
+# import alibi_detect as ad
 import torch
 import scipy
 from scipy import stats
@@ -154,6 +154,10 @@ def KL_divergence(dataset1, dataset2, num_classes=None):
     Returns:
         KL divergence D_KL(P||Q) where P is dataset1, Q is dataset2
     """
+    # raise ValueError if datasets are empty
+    if len(dataset1) == 0 or len(dataset2) == 0:
+        raise ValueError("Datasets must not be empty.")
+
     labels1 = np.array([item['label'] for item in dataset1])
     labels2 = np.array([item['label'] for item in dataset2])
 
@@ -214,7 +218,11 @@ def MMD_rbf_kernel(X, Y, sigma=None):
         # Use median of pairwise distances
         combined = np.vstack([X, Y])
         dists = cdist(combined, combined, 'euclidean')
-        sigma = np.median(dists[dists > 0])
+        non_zero_dists = dists[dists > 0]
+        if len(non_zero_dists) > 0:
+            sigma = np.median(dists[dists > 0])
+        else:
+            sigma = 1.0
 
     def rbf_kernel(A, B, sigma):
         """Compute RBF kernel matrix between A and B"""
@@ -235,7 +243,7 @@ def MMD_rbf_kernel(X, Y, sigma=None):
                    K_YY.sum() / (n * (n - 1)) -
                    2 * K_XY.sum() / (m * n))
 
-    return mmd_squared
+    return max(mmd_squared, 0)
 
 
 def MMD_label_distributions(dataset1, dataset2, num_classes=None):
@@ -355,16 +363,20 @@ def mahalanobis_distance_labels(dataset1, dataset2, num_classes=None):
     q = counts2 / counts2.sum()
 
     # Estimate covariance from both distributions
-    combined = np.vstack([p, q])
-    cov = np.cov(combined.T)
-
+    # combined = np.vstack([p, q])
+    # cov = np.cov(combined.T)
+    avg_dist = (p + q) / 2
+    cov = np.diag(avg_dist) - np.outer(avg_dist, avg_dist)
     # Add small regularization to avoid singularity
     cov += np.eye(cov.shape[0]) * 1e-6
 
     # Compute Mahalanobis distance
     diff = p - q
-    inv_cov = np.linalg.inv(cov)
-    mahal_dist = np.sqrt(diff @ inv_cov @ diff.T)
+    try:
+        inv_cov = np.linalg.inv(cov)
+        mahal_dist = np.sqrt(diff @ inv_cov @ diff.T)
+    except np.linalg.LinAlgError:
+        mahal_dist = np.linalg.norm(diff)  # Fallback to Euclidean if singular
 
     return mahal_dist
 
