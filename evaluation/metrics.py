@@ -160,6 +160,10 @@ def KL_divergence(dataset1, dataset2, num_classes=None):
     Returns:
         KL divergence D_KL(P||Q) where P is dataset1, Q is dataset2
     """
+    # raise ValueError if datasets are empty
+    if len(dataset1) == 0 or len(dataset2) == 0:
+        raise ValueError("Datasets must not be empty.")
+
     labels1 = np.array([item['label'] for item in dataset1])
     labels2 = np.array([item['label'] for item in dataset2])
 
@@ -220,7 +224,11 @@ def MMD_rbf_kernel(X, Y, sigma=None):
         # Use median of pairwise distances
         combined = np.vstack([X, Y])
         dists = cdist(combined, combined, 'euclidean')
-        sigma = np.median(dists[dists > 0])
+        non_zero_dists = dists[dists > 0]
+        if len(non_zero_dists) == 0:
+            sigma = 1.0
+        else:
+            sigma = np.median(non_zero_dists)
 
     def rbf_kernel(A, B, sigma):
         """Compute RBF kernel matrix between A and B"""
@@ -241,7 +249,7 @@ def MMD_rbf_kernel(X, Y, sigma=None):
                    K_YY.sum() / (n * (n - 1)) -
                    2 * K_XY.sum() / (m * n))
 
-    return mmd_squared
+    return max(mmd_squared, 0.0)
 
 
 def MMD_label_distributions(dataset1, dataset2, num_classes=None):
@@ -261,20 +269,28 @@ def MMD_label_distributions(dataset1, dataset2, num_classes=None):
 
     if num_classes is None:
         num_classes = max(labels1.max(), labels2.max()) + 1
+    
+    onehot1 = np.eye(num_classes)[labels1]
+    onehot2 = np.eye(num_classes)[labels2]
+
+    mean1 = onehot1.mean(axis=0).reshape(1, -1)
+    mean2 = onehot2.mean(axis=0).reshape(1, -1)
+    mmd_squared = np.sum((mean1 - mean2) ** 2)
+    return np.sqrt(mmd_squared)
 
     # Convert to distribution vectors
-    counts1 = np.bincount(labels1, minlength=num_classes)
-    counts2 = np.bincount(labels2, minlength=num_classes)
+    # counts1 = np.bincount(labels1, minlength=num_classes)
+    # counts2 = np.bincount(labels2, minlength=num_classes)
 
-    p = counts1 / counts1.sum()
-    q = counts2 / counts2.sum()
+    # p = counts1 / counts1.sum()
+    # q = counts2 / counts2.sum()
 
-    # Reshape to 2D for MMD
-    p = p.reshape(1, -1)
-    q = q.reshape(1, -1)
+    # # Reshape to 2D for MMD
+    # p = p.reshape(1, -1)
+    # q = q.reshape(1, -1)
 
-    # For single distributions, MMD simplifies to distance between means
-    return np.linalg.norm(p - q)
+    # # For single distributions, MMD simplifies to distance between means
+    # return np.linalg.norm(p - q)
 
 
 def MMD_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, sigma=None):
@@ -366,19 +382,22 @@ def mahalanobis_distance_labels(dataset1, dataset2, num_classes=None):
     q = counts2 / counts2.sum()
 
     # Estimate covariance from both distributions
-    combined = np.vstack([p, q])
-    cov = np.cov(combined.T)
-
+    # combined = np.vstack([p, q])
+    # cov = np.cov(combined.T)
+    avg_dist = (p + q) / 2
+    cov = np.diag(avg_dist) - np.outer(avg_dist, avg_dist)
     # Add small regularization to avoid singularity
     cov += np.eye(cov.shape[0]) * 1e-6
 
     # Compute Mahalanobis distance
     diff = p - q
-    inv_cov = np.linalg.inv(cov)
-    mahal_dist = np.sqrt(diff @ inv_cov @ diff.T)
+    try:
+        inv_cov = np.linalg.inv(cov)
+        mahal_dist = np.sqrt(diff @ inv_cov @ diff.T)
+    except np.linalg.LinAlgError:
+        mahal_dist = np.linalg.norm(diff)  # Fallback to Euclidean if singular
 
     return mahal_dist
-
 
 def wasserstein_distance_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50):
     """

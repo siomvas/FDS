@@ -30,12 +30,12 @@ from evaluation import metrics
 @pytest.fixture
 def identical_distributions():
     """Two clients with identical label distributions."""
-    # 100 samples, 10 classes, uniform distribution
-    labels = list(range(10)) * 10
+    # 1000 samples, 10 classes, uniform distribution
+    labels = list(range(10)) * 100
     np.random.shuffle(labels)
 
-    dataset1 = [{"label": label} for label in labels[:50]]
-    dataset2 = [{"label": label} for label in labels[50:]]
+    dataset1 = [{"label": label} for label in labels[:500]]
+    dataset2 = [{"label": label} for label in labels[500:]]
 
     return dataset1, dataset2, 10
 
@@ -92,7 +92,7 @@ def temp_image_datasets():
             img.save(img_path)
 
             dataset.append({
-                "image_path": str(img_path),
+                "image": str(img_path),
                 "label": i % 5
             })
 
@@ -378,13 +378,13 @@ class TestMMDRBFKernel:
 
     def test_median_heuristic(self):
         """Test that median heuristic for sigma is computed correctly."""
-        X = np.random.randn(50, 10)
-        Y = np.random.randn(50, 10)
+        X = np.random.randn(100, 10)
+        Y = np.random.randn(100, 10)
 
         # Should run without error when sigma=None
         mmd = metrics.MMD_rbf_kernel(X, Y, sigma=None)
 
-        assert isinstance(mmd, (float, np.floating)), "Should return float"
+        assert isinstance(mmd, (float, np.floating)), f"Should return float, instead got {type(mmd)}"
 
 
 # ============================================================================
