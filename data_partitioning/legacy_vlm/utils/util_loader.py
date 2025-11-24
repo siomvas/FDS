@@ -329,11 +329,11 @@ def load_llm(ver: str = LLAMA33_70B):
     return loader_func()
 
 # Dataset loading
-def load_data(dataset: str):
+def load_data(dataset: str, split: str):
     """Load dataset based on params set when run script."""
-    split = "val"
-    if dataset == FOOD101:
-        split = "test"
+    # split = "val"
+    # if dataset == FOOD101:
+    #     split = "test"
     
     print("Dataset: ", dataset)
     data = BaseDataset(dataset, data_path, split)
