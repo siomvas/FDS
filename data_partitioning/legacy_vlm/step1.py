@@ -90,14 +90,6 @@ def load_image(image_file, input_size=448, max_num=12):
     pixel_values = torch.stack(pixel_values)
     return pixel_values
 
-# ---- Set up directory path ----
-# from dotenv import load_dotenv, find_dotenv
-# env_path = find_dotenv()
-# load_dotenv(env_path)
-# home_path = os.getenv("HOME_PATH")
-# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-# print(">>> sys.path includes:", sys.path[-3:])
-
 # ----- Configure logging -----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -338,10 +330,19 @@ def process_batch_qwen(model, processor, batch_data):
             "original_index": batch_item['index']
         })
 
-    # Cleanup
+    # CRITICAL: Clean up ALL intermediate tensors
+    if 'inputs' in locals():
+        del inputs
+    if 'generated_ids' in locals():
+        del generated_ids
+    if 'generated_ids_trimmed' in locals():
+        del generated_ids_trimmed
+    if 'messages' in locals():
+        del messages
+        
     gc.collect()
     torch.cuda.empty_cache()
-    #torch.cuda.synchronize()
+    torch.cuda.synchronize()
 
     return results
 
@@ -416,9 +417,11 @@ if __name__ == "__main__":
 
     model, tokenizer = util_loader.load_vlm(args.vlm_model)
     data = util_loader.load_data(args.dataset)
+    # Run this on your ADE20K data
+    #util_loader.analyze_dataset_images(data, sample_size=100)
     
     # Process dataset
-    main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=144)
+    main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=4)
 
 
 
