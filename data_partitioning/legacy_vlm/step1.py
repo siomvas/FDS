@@ -341,6 +341,7 @@ def process_batch_qwen(model, processor, batch_data):
     # Cleanup
     gc.collect()
     torch.cuda.empty_cache()
+    #torch.cuda.synchronize()
 
     return results
 
