@@ -342,7 +342,7 @@ def process_batch_qwen(model, processor, batch_data):
         
     gc.collect()
     torch.cuda.empty_cache()
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
 
     return results
 
