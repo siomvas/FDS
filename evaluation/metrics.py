@@ -9,23 +9,6 @@ from PIL import Image
 from collections import Counter
 import os
 
-# We want:
-# Category 1: Operations on label distributions
-# - KL Divergence
-# - Kolmogorov-Smirnov two-sample univariate test
-# - MMD (Maximum Mean Discrepancy) 
-# - Mahalanobis distance
-
-# Category 2: Operations on feature distributions (features extracted from pre-trained models, e.g., ResNet)
-# - Wasserstein distance
-# - Cramér-von Mises criterion
-# - Frechet Inception Distance (FID)
-# - MMD (Maximum Mean Discrepancy)
-# - KS Multivariate test (K univariate tests combined)
-
-# Category 3: Operations on embeddings
-# - Similar to Category 2, but specifically for embeddings from models like DINO, UNILM, etc.
-
 class ImagePathDataset(torch.utils.data.Dataset):
     def __init__(self, file_dataset, transforms=None):
         self.file_dataset = file_dataset
@@ -620,3 +603,136 @@ def KS_multivariate_test(dataset1, dataset2, model_name='InceptionV3', device=No
         'n_tests': n_features,
         'significant_dims': int(np.sum(pvalues < corrected_alpha))
     }
+
+def vendi_score_from_kernel(kernel_matrix, q=2):
+
+    import vendi_score as vendi
+
+    # Use official implementation directly
+    vs = vendi.score_K(kernel_matrix, q=q)
+
+    return float(vs)
+
+def vendi_score_features(dataset_list, model_name='InceptionV3', device=None,
+                        batch_size=50, q=2, normalize=True, return_details=False):
+    """
+    Compute Vendi Score across multiple datasets using deep feature embeddings.
+
+    The Vendi Score measures the effective number of unique elements using
+    eigenvalue analysis of feature similarity matrices. Higher scores indicate
+    greater diversity.
+
+    Args:
+        dataset_list: List of datasets, each is [{"image": path, "label": int}, ...]
+            - Single dataset: measures internal diversity within that dataset
+            - Multiple datasets: measures diversity across all datasets combined
+        model_name: Feature extraction model (default: 'InceptionV3')
+        device: Computation device (auto-detects CUDA if None)
+        batch_size: Batch size for feature extraction (default: 50)
+        q: Diversity order parameter (default: 2)
+            - q=2: Standard Shannon entropy-based score (recommended)
+            - q>2: Emphasizes common elements more
+            - q<2: Emphasizes rare elements more
+        normalize: Normalize embeddings before computing score (default: True)
+        return_details: Return dict with score and metadata (default: False)
+
+    Returns:
+        float: Vendi Score in range [1, N] where N is total samples
+        dict: If return_details=True, includes score, n_samples, n_datasets
+
+    Examples:
+        # Single dataset diversity (internal)
+        >>> vs = vendi_score_features([client1_data])
+        >>> print(f"Client 1 has {vs:.2f} effective unique samples")
+
+        # Multi-client diversity (cross-dataset)
+        >>> vs = vendi_score_features([client1_data, client2_data, client3_data])
+        >>> print(f"Across 3 clients: {vs:.2f} effective distributions")
+
+    Notes:
+        - Uses official vendi_score package implementation
+        - Extracts 2048-dim Inception v3 features (consistent with FID metric)
+        - Computational complexity: O(N²D + N³) for N samples, D dimensions
+        - For large N (>1000), consider subsampling for performance
+
+    Reference:
+        Friedman, D., & Dieng, A. B. (2023). The Vendi Score: A Diversity
+        Evaluation Metric for Machine Learning. Transactions on Machine Learning
+        Research. https://github.com/vertaix/Vendi-Score
+    """
+    import vendi_score as vendi
+
+    # Setup device
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Extract features using existing infrastructure
+    # Reuse pattern from FID_distance and MMD_features
+    torch.hub.set_dir('~/archive/.cache/torch/hub')
+
+    if model_name == 'InceptionV3':
+        # Use proxy for model download
+        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+        model = models.inception_v3(pretrained=True, transform_input=False)
+        model.fc = torch.nn.Identity()  # Extract features before classification
+        os.environ.pop('https_proxy', None)
+    else:
+        raise ValueError(f"Unsupported model: {model_name}. Currently only 'InceptionV3' is supported.")
+
+    model.to(device)
+    model.eval()
+
+    # Image preprocessing (consistent with existing metrics)
+    transform = transforms.Compose([
+        transforms.Resize((299, 299)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    # Extract features from all datasets
+    all_features = []
+
+    for dataset in dataset_list:
+        img_dataset = ImagePathDataset(dataset, transforms=transform)
+        dataloader = torch.utils.data.DataLoader(
+            img_dataset,
+            batch_size=batch_size,
+            shuffle=False
+        )
+
+        features = []
+        with torch.no_grad():
+            for images, _ in dataloader:
+                images = images.to(device)
+                feats = model(images)
+                features.append(feats.cpu().numpy())
+
+        dataset_features = np.concatenate(features, axis=0)
+        all_features.append(dataset_features)
+
+    # Concatenate all features into single matrix (N_total, 2048)
+    features_matrix = np.concatenate(all_features, axis=0)
+    n_samples = features_matrix.shape[0]
+    n_datasets = len(dataset_list)
+
+    # Compute Vendi Score using official implementation
+    # Use score_dual() for efficiency since d=2048 << N in most cases
+    vs = vendi.score_dual(features_matrix, q=q, normalize=normalize)
+
+    # Cleanup
+    del features_matrix, all_features
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Return results
+    if return_details:
+        return {
+            'vendi_score': float(vs),
+            'n_samples': n_samples,
+            'n_datasets': n_datasets,
+            'model': model_name,
+            'q': q,
+            'normalized': normalize
+        }
+
+    return float(vs)
