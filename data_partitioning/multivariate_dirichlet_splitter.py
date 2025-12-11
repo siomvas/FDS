@@ -21,11 +21,11 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
     CRITERIA = ["color", "main_object", "size", "location", "time"]
     CRITERION_TO_DIR = {
-        "color": "output_color_test",
-        "main_object": "output_main_object_test",
-        "size": "output_size_test",
-        "location": "output_location_test",
-        "time": "output_time_test",
+        "color": "output_color_train",
+        "main_object": "output_main_object_train",
+        "size": "output_size_train",
+        "location": "output_location_train",
+        "time": "output_time_train",
     }
 
     def __init__(
