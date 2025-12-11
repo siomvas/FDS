@@ -1,433 +1,811 @@
 """
-Comprehensive Evaluation of Partitioning Methods
+Comprehensive Comparison of Data Partitioning Methods for Federated Learning.
 
-Compares three federated learning data partitioning strategies:
-1. MultivariateDirichletSplitter - Uses 5 VLM cluster criteria with Dirichlet preferences
-2. RandomSplitter - IID baseline
-3. DirichletSplitter - Standard Dirichlet on original dataset labels
-
-Test configurations:
-- n_clients: [3, 6, 10, 20]
-- heterogeneity: [0.1 (high), 10.0 (low)]
+Compares four partitioning approaches across multiple configurations:
+1. Random - IID baseline
+2. Dirichlet - Label-based heterogeneity (original labels)
+3. VLM - Multivariate Dirichlet with VLM clustering criteria
+4. Embedding - Semantic clustering (with multiple encoder/pooling/clustering variants)
 
 Metrics computed:
-- Label distribution metrics (KL divergence, MMD)
-- Distribution balance metrics
-- Cluster distribution metrics (for multivariate method)
+- Label-based: KL divergence, MMD, Mahalanobis, KS test, Vendi Score
+- Feature-based: FID, MMD, Wasserstein, Cramér-von Mises, KS multivariate, Vendi Score
+- Balance metrics: Distribution of samples across clients
 
-Outputs:
-- CSV: evaluation/results/partitioning_comparison.csv
-- JSON: evaluation/results/partitioning_comparison.json
+Features:
+- Checkpoint/resume functionality for long-running experiments
+- Separate execution of label vs feature metrics
+- Supports multiple embedding presets (default, fast, high_quality, spectral)
+- Exports results to CSV, JSON, and markdown summary
+
+Usage:
+    # Compare Random, Dirichlet, and VLM
+    python compare_partitioning_methods.py \\
+      --base_path /path/to/dataset \\
+      --methods random dirichlet vlm \\
+      --cluster_labels_dir /path/to/cluster_labels \\
+      --metrics label
+
+    # Compare all methods including embedding variants
+    python compare_partitioning_methods.py \\
+      --base_path /path/to/dataset \\
+      --methods random dirichlet vlm embedding \\
+      --cluster_labels_dir /path/to/cluster_labels \\
+      --embedding_presets default fast \\
+      --n_clients 3 6 10 \\
+      --heterogeneity 0.1 0.5 10.0 \\
+      --metrics both
 """
 
 import sys
 import os
+import argparse
 import json
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
+from dataclasses import dataclass, asdict, field
+from typing import Dict, List, Optional, Any
+from datetime import datetime
+from itertools import combinations
+
 import numpy as np
 import pandas as pd
-from collections import Counter
-from itertools import combinations
+from tqdm import tqdm
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data_partitioning.multivariate_dirichlet_splitter import MultivariateDirichletSplitter
 from data_partitioning.random_splitter import RandomSplitter
 from data_partitioning.dirichlet_splitter import DirichletSplitter
+from data_partitioning.multivariate_dirichlet_splitter import MultivariateDirichletSplitter
+from data_partitioning.embedding_pipeline.embedding_splitter import EmbeddingSplitter
+from data_partitioning.embedding_pipeline.config import get_preset_config
 from data_partitioning.dataset import BaseDataset
+from data_partitioning.base_splitter import BaseDatasetSplitter, DatasetSplits
 from evaluation import metrics
 
 
-# Configuration
-DATASET_NAME = "tiny_imagenet"
-BASE_PATH = "/path/to/gtai/FDS/"
-CLUSTER_LABELS_DIR = "../data_partitioning/legacy_vlm/data/tiny_imagenet"
-RESULTS_DIR = Path(__file__).parent / "results"
-SEED = 42
+# ============================================================================
+# Data Classes
+# ============================================================================
 
-# Test configurations
-N_CLIENTS_LIST = [3, 6, 10, 20]
-HETEROGENEITY_LIST = [0.1, 10.0]  # High and low heterogeneity
+@dataclass
+class ExperimentConfig:
+    """Configuration for a single experiment."""
+    method: str  # "random", "dirichlet", "vlm", "embedding"
+    n_clients: int
+    heterogeneity: float
+    seed: int
+    embedding_preset: Optional[str] = None  # For embedding method only
+    cluster_labels_dir: Optional[str] = None  # For VLM method only
 
-
-def ensure_results_dir():
-    """Create results directory if it doesn't exist."""
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def convert_labels_to_int(client_data: List[Dict], label_mapping: Dict[str, int]) -> List[Dict]:
-    """
-    Convert string labels to integers for metric computation.
-
-    Args:
-        client_data: List of {"image": path, "label": str}
-        label_mapping: Mapping from string labels to integers
-
-    Returns:
-        List of {"image": path, "label": int}
-    """
-    return [
-        {"image": item["image"], "label": label_mapping[item["label"]]}
-        for item in client_data
-    ]
+    def get_experiment_id(self) -> str:
+        """Generate unique experiment ID."""
+        if self.method == "embedding" and self.embedding_preset:
+            return f"embedding-{self.embedding_preset}_n{self.n_clients}_a{self.heterogeneity}_s{self.seed}"
+        return f"{self.method}_n{self.n_clients}_a{self.heterogeneity}_s{self.seed}"
 
 
-def create_label_mapping(splits: Dict) -> Dict[str, int]:
-    """
-    Create a mapping from string labels to integers.
+@dataclass
+class MetricResults:
+    """Results from a single experiment."""
+    # Label-based metrics (pairwise averaged)
+    kl_divergence_mean: float = 0.0
+    kl_divergence_std: float = 0.0
+    mmd_labels_mean: float = 0.0
+    mmd_labels_std: float = 0.0
+    mahalanobis_mean: float = 0.0
+    mahalanobis_std: float = 0.0
+    ks_test_mean_statistic: float = 0.0
+    ks_test_mean_pvalue: float = 0.0
 
-    Args:
-        splits: Client splits from splitter
+    # Feature-based metrics (pairwise averaged)
+    fid_mean: Optional[float] = None
+    fid_std: Optional[float] = None
+    mmd_features_mean: Optional[float] = None
+    wasserstein_mean: Optional[float] = None
+    cramer_von_mises_mean: Optional[float] = None
+    ks_multivariate_reject_rate: Optional[float] = None
 
-    Returns:
-        Dict mapping label strings to integers
-    """
-    all_labels = set()
-    for client_name, client_data in splits["clients"].items():
-        for item in client_data["train"]:
-            all_labels.add(item["label"])
+    # Multi-dataset feature metric
+    vendi_score_features: Optional[float] = None
 
-    sorted_labels = sorted(all_labels)
-    return {label: idx for idx, label in enumerate(sorted_labels)}
+    # Balance metrics
+    samples_per_client_mean: float = 0.0
+    samples_per_client_std: float = 0.0
+    samples_per_client_min: int = 0
+    samples_per_client_max: int = 0
+    coefficient_of_variation: float = 0.0
 
-
-def compute_label_distribution_metrics(splits: Dict, label_mapping: Dict[str, int], num_classes: int) -> Dict[str, float]:
-    """
-    Compute label distribution metrics between clients.
-
-    Args:
-        splits: Client splits
-        label_mapping: Label to integer mapping
-        num_classes: Total number of classes
-
-    Returns:
-        Dict with metric values
-    """
-    n_clients = len(splits["clients"])
-    client_names = sorted(splits["clients"].keys())
-
-    # Convert to integer labels
-    client_datasets = []
-    for client_name in client_names:
-        client_train = splits["clients"][client_name]["train"]
-        client_int_labels = convert_labels_to_int(client_train, label_mapping)
-        client_datasets.append(client_int_labels)
-
-    # Compute pairwise metrics
-    kl_divs = []
-    mmds = []
-
-    for i, j in combinations(range(n_clients), 2):
-        # KL divergence (symmetrized)
-        kl_ij = metrics.KL_divergence(client_datasets[i], client_datasets[j], num_classes=num_classes)
-        kl_ji = metrics.KL_divergence(client_datasets[j], client_datasets[i], num_classes=num_classes)
-        kl_divs.append((kl_ij + kl_ji) / 2)
-
-        # MMD
-        mmd = metrics.MMD_label_distributions(client_datasets[i], client_datasets[j], num_classes=num_classes)
-        mmds.append(mmd)
-
-    return {
-        "avg_kl_divergence": float(np.mean(kl_divs)),
-        "std_kl_divergence": float(np.std(kl_divs)),
-        "avg_mmd": float(np.mean(mmds)),
-        "std_mmd": float(np.std(mmds)),
-    }
+    # Timing
+    split_time: float = 0.0
+    label_metrics_time: float = 0.0
+    feature_metrics_time: Optional[float] = None
 
 
-def compute_cluster_distribution_metrics(
-    splits: Dict,
-    cluster_labels: Dict[str, Dict[str, str]],
-    criteria: List[str]
-) -> Dict[str, Any]:
-    """
-    Compute distribution metrics for cluster labels (only for multivariate method).
+@dataclass
+class ExperimentResult:
+    """Complete result from an experiment."""
+    config: ExperimentConfig
+    metrics: MetricResults
+    timestamp: str
+    completed: bool
 
-    Args:
-        splits: Client splits
-        cluster_labels: Cluster labels for each criterion
-        criteria: List of criteria names
-
-    Returns:
-        Dict with cluster distribution metrics per criterion
-    """
-    n_clients = len(splits["clients"])
-    client_names = sorted(splits["clients"].keys())
-
-    cluster_metrics = {}
-
-    for criterion in criteria:
-        # Get cluster label distribution for each client
-        client_cluster_counts = []
-
-        for client_name in client_names:
-            client_train = splits["clients"][client_name]["train"]
-            cluster_counter = Counter()
-
-            for item in client_train:
-                image_path = item["image"]
-                cluster_label = cluster_labels[criterion].get(image_path)
-                if cluster_label:
-                    cluster_counter[cluster_label] += 1
-
-            client_cluster_counts.append(cluster_counter)
-
-        # Compute entropy for each client (higher = more diverse)
-        entropies = []
-        for counter in client_cluster_counts:
-            total = sum(counter.values())
-            if total > 0:
-                probs = np.array([count / total for count in counter.values()])
-                entropy = -np.sum(probs * np.log(probs + 1e-10))
-                entropies.append(entropy)
-
-        cluster_metrics[criterion] = {
-            "avg_entropy": float(np.mean(entropies)) if entropies else 0.0,
-            "std_entropy": float(np.std(entropies)) if entropies else 0.0,
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "config": asdict(self.config),
+            "metrics": asdict(self.metrics),
+            "timestamp": self.timestamp,
+            "completed": self.completed
         }
 
-    return cluster_metrics
+
+# ============================================================================
+# Checkpoint Manager
+# ============================================================================
+
+class CheckpointManager:
+    """Manages checkpointing and resume functionality."""
+
+    def __init__(self, checkpoint_dir: str):
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_file = self.checkpoint_dir / "checkpoint.json"
+
+    def load_checkpoint(self) -> Dict[str, Any]:
+        """Load checkpoint if exists."""
+        if self.checkpoint_file.exists():
+            with open(self.checkpoint_file, 'r') as f:
+                return json.load(f)
+        return {"completed_experiments": []}
+
+    def save_checkpoint(self, results: List[ExperimentResult]):
+        """Save checkpoint."""
+        checkpoint_data = {
+            "checkpoint_version": "1.0",
+            "timestamp": datetime.now().isoformat(),
+            "completed_experiments": [r.to_dict() for r in results]
+        }
+
+        with open(self.checkpoint_file, 'w') as f:
+            json.dump(checkpoint_data, f, indent=2)
 
 
-def compute_balance_metrics(splits: Dict) -> Dict[str, float]:
+# ============================================================================
+# Splitter Factory
+# ============================================================================
+
+def create_splitter(
+    exp_config: ExperimentConfig,
+    train_dataset: BaseDataset,
+    val_dataset: Optional[BaseDataset],
+    base_path: str
+) -> BaseDatasetSplitter:
     """
-    Compute metrics about data balance across clients.
+    Create appropriate splitter based on experiment configuration.
 
     Args:
-        splits: Client splits
+        exp_config: Experiment configuration
+        train_dataset: Training dataset
+        val_dataset: Validation dataset
+        base_path: Base path for data
 
     Returns:
-        Dict with balance metrics
+        Configured splitter instance
     """
-    samples_per_client = []
+    if exp_config.method == "random":
+        return RandomSplitter(
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            n_clients=exp_config.n_clients,
+            heterogeneity=exp_config.heterogeneity,
+            valset_type="global",
+            seed=exp_config.seed,
+        )
 
-    for client_name, client_data in splits["clients"].items():
-        samples_per_client.append(len(client_data["train"]))
+    elif exp_config.method == "dirichlet":
+        return DirichletSplitter(
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            n_clients=exp_config.n_clients,
+            heterogeneity=exp_config.heterogeneity,
+            valset_type="global",
+            seed=exp_config.seed,
+            min_samples_per_client=10,
+        )
+
+    elif exp_config.method == "vlm":
+        if not exp_config.cluster_labels_dir:
+            raise ValueError("VLM method requires cluster_labels_dir to be specified")
+
+        return MultivariateDirichletSplitter(
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            n_clients=exp_config.n_clients,
+            heterogeneity=exp_config.heterogeneity,
+            cluster_labels_dir=exp_config.cluster_labels_dir,
+            valset_type="global",
+            seed=exp_config.seed,
+            min_samples_per_client=10,
+        )
+
+    elif exp_config.method == "embedding":
+        # Get preset configuration
+        preset = exp_config.embedding_preset or "default"
+        config = get_preset_config(preset, n_clients=exp_config.n_clients)
+
+        # Set proxy if needed
+        if hasattr(config.model, 'proxy') and config.model.proxy is None:
+            # Try to get proxy from environment or set default
+            config.model.proxy = os.environ.get('HTTP_PROXY', 'http://proxy.example.org:3128')
+
+        # Adjust clustering parameters based on heterogeneity
+        # Lower heterogeneity → larger clusters
+        # Higher heterogeneity → smaller clusters
+        if config.clustering.method == "hdbscan":
+            base_size = len(train_dataset) // (exp_config.n_clients * 3)
+            min_size = max(5, int(base_size * (1.0 - exp_config.heterogeneity)))
+            config.clustering.params["min_cluster_size"] = min_size
+        elif config.clustering.method == "kmeans":
+            # For k-means, adjust number of clusters
+            n_clusters = max(exp_config.n_clients, int(exp_config.n_clients * (1.0 + 2.0 * exp_config.heterogeneity)))
+            config.clustering.params["n_clusters"] = n_clusters
+
+        return EmbeddingSplitter(
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            n_clients=exp_config.n_clients,
+            heterogeneity=exp_config.heterogeneity,
+            valset_type="global",
+            config=config,
+            seed=exp_config.seed,
+        )
+
+    else:
+        raise ValueError(f"Unknown method: {exp_config.method}")
+
+
+# ============================================================================
+# Label Extraction
+# ============================================================================
+
+def extract_client_datasets(splits: DatasetSplits) -> List[List[Dict]]:
+    """Extract client datasets from splits."""
+    client_datasets = []
+
+    for client_name in sorted(splits["clients"].keys()):
+        client_split = splits["clients"][client_name]
+        client_datasets.append(client_split["train"])
+
+    return client_datasets
+
+
+def extract_client_datasets_with_original_labels(
+    splits: DatasetSplits,
+    train_dataset: BaseDataset
+) -> List[List[Dict]]:
+    """
+    Extract client datasets with original labels (not cluster labels).
+
+    For embedding-based methods, splits may contain cluster labels,
+    but metrics should be computed on original class labels.
+    """
+    # Build mapping once for efficiency
+    original_label_map = {
+        train_dataset[i][0]: train_dataset[i][1]
+        for i in range(len(train_dataset))
+    }
+
+    client_datasets = []
+
+    for client_name in sorted(splits["clients"].keys()):
+        client_split = splits["clients"][client_name]
+        client_data = []
+
+        for item in client_split["train"]:
+            image_path = item["image"]
+            original_label = original_label_map.get(image_path)
+
+            if original_label is None:
+                raise ValueError(f"Original label not found for {image_path}")
+
+            client_data.append({
+                "image": image_path,
+                "label": original_label
+            })
+
+        client_datasets.append(client_data)
+
+    return client_datasets
+
+
+# ============================================================================
+# Metric Computation
+# ============================================================================
+
+def compute_balance_metrics(client_datasets: List[List[Dict]]) -> Dict[str, float]:
+    """Compute data balance metrics across clients."""
+    samples_per_client = [len(dataset) for dataset in client_datasets]
+
+    mean_samples = np.mean(samples_per_client)
+    std_samples = np.std(samples_per_client)
 
     return {
-        "mean_samples_per_client": float(np.mean(samples_per_client)),
-        "std_samples_per_client": float(np.std(samples_per_client)),
-        "min_samples_per_client": int(np.min(samples_per_client)),
-        "max_samples_per_client": int(np.max(samples_per_client)),
-        "cv_samples_per_client": float(np.std(samples_per_client) / (np.mean(samples_per_client) + 1e-10)),
+        "samples_per_client_mean": float(mean_samples),
+        "samples_per_client_std": float(std_samples),
+        "samples_per_client_min": int(np.min(samples_per_client)),
+        "samples_per_client_max": int(np.max(samples_per_client)),
+        "coefficient_of_variation": float(std_samples / (mean_samples + 1e-10)),
     }
 
 
-def evaluate_method(
-    method_name: str,
-    splitter,
-    n_clients: int,
-    heterogeneity: float,
-    num_classes: int,
-    include_cluster_metrics: bool = False
-) -> Dict[str, Any]:
+def compute_pairwise_label_metrics(
+    client_datasets: List[List[Dict]],
+    num_classes: int
+) -> Dict[str, float]:
+    """Compute all pairwise label metrics and aggregate statistics."""
+    metrics_dict = {
+        'kl_divergence': [],
+        'mmd_labels': [],
+        'mahalanobis': [],
+        'ks_statistic': [],
+        'ks_pvalue': []
+    }
+
+    # Compute pairwise
+    for i, j in combinations(range(len(client_datasets)), 2):
+        dataset_i = client_datasets[i]
+        dataset_j = client_datasets[j]
+
+        # KL divergence (symmetrized)
+        kl_ij = metrics.KL_divergence(dataset_i, dataset_j, num_classes)
+        kl_ji = metrics.KL_divergence(dataset_j, dataset_i, num_classes)
+        metrics_dict['kl_divergence'].append((kl_ij + kl_ji) / 2)
+
+        # MMD
+        mmd = metrics.MMD_label_distributions(dataset_i, dataset_j, num_classes)
+        metrics_dict['mmd_labels'].append(mmd)
+
+        # Mahalanobis
+        mahal = metrics.mahalanobis_distance_labels(dataset_i, dataset_j, num_classes)
+        metrics_dict['mahalanobis'].append(mahal)
+
+        # KS test
+        ks_result = metrics.KS_label_test(dataset_i, dataset_j)
+        metrics_dict['ks_statistic'].append(ks_result['statistic'])
+        metrics_dict['ks_pvalue'].append(ks_result['pvalue'])
+
+    # Aggregate
+    results = {}
+    for metric_name, values in metrics_dict.items():
+        results[f"{metric_name}_mean"] = np.mean(values)
+        results[f"{metric_name}_std"] = np.std(values)
+
+    return results
+
+def compute_feature_metrics(
+    client_datasets: List[List[Dict]],
+    subsample: int = 100
+) -> Dict[str, float]:
     """
-    Evaluate a single partitioning method.
+    Compute feature-based metrics.
 
     Args:
-        method_name: Name of the method
-        splitter: Splitter instance
-        n_clients: Number of clients
-        heterogeneity: Heterogeneity parameter
-        num_classes: Number of classes in the dataset
-        include_cluster_metrics: Whether to compute cluster distribution metrics
-
-    Returns:
-        Dict with all evaluation metrics
+        client_datasets: List of client datasets
+        subsample: Max samples per client for efficiency
     """
-    print(f"\n  Evaluating {method_name} with n_clients={n_clients}, α={heterogeneity}...")
+    # Subsample for computational efficiency
+    client_datasets_sub = [dataset[:subsample] for dataset in client_datasets]
 
-    # Get splits
-    start_time = time.time()
-    splits = splitter.get_client_splits()
-    split_time = time.time() - start_time
+    results = {}
 
-    # Create label mapping
-    label_mapping = create_label_mapping(splits)
+    # 1. FID (pairwise)
+    print("    Computing FID...")
+    fid_scores = metrics.FID_distance(
+        client_datasets_sub,
+        return_all=True,
+        batch_size=50
+    )
+    results['fid_mean'] = np.mean(fid_scores)
+    results['fid_std'] = np.std(fid_scores)
 
-    # Compute metrics
-    label_metrics = compute_label_distribution_metrics(splits, label_mapping, num_classes)
-    balance_metrics = compute_balance_metrics(splits)
+    # 2. Pairwise feature metrics
+    print("    Computing pairwise feature metrics...")
+    mmd_values = []
+    wasserstein_values = []
+    cvm_values = []
+    ks_reject_count = 0
+    total_pairs = 0
 
-    # Combine results
-    results = {
-        "method": method_name,
-        "n_clients": n_clients,
-        "heterogeneity": heterogeneity,
-        "split_time_seconds": float(split_time),
-        **label_metrics,
-        **balance_metrics,
-    }
+    for i, j in combinations(range(len(client_datasets_sub)), 2):
+        dataset_i = client_datasets_sub[i]
+        dataset_j = client_datasets_sub[j]
 
-    # Add cluster metrics for multivariate method
-    if include_cluster_metrics and hasattr(splitter, 'cluster_labels'):
-        cluster_metrics = compute_cluster_distribution_metrics(
-            splits,
-            splitter.cluster_labels,
-            splitter.CRITERIA
-        )
-        results["cluster_metrics"] = cluster_metrics
+        # MMD
+        mmd = metrics.MMD_features(dataset_i, dataset_j, batch_size=50)
+        mmd_values.append(mmd)
 
-    print(f"    KL divergence: {label_metrics['avg_kl_divergence']:.4f} ± {label_metrics['std_kl_divergence']:.4f}")
-    print(f"    MMD: {label_metrics['avg_mmd']:.4f} ± {label_metrics['std_mmd']:.4f}")
-    print(f"    Samples/client: {balance_metrics['mean_samples_per_client']:.1f} ± {balance_metrics['std_samples_per_client']:.1f}")
-    print(f"    Time: {split_time:.2f}s")
+        # Wasserstein
+        wass = metrics.wasserstein_distance_features(dataset_i, dataset_j, batch_size=50)
+        wasserstein_values.append(wass)
+
+        # Cramér-von Mises
+        cvm = metrics.cramer_von_mises_features(dataset_i, dataset_j, batch_size=50)
+        cvm_values.append(cvm)
+
+        # KS multivariate
+        ks_result = metrics.KS_multivariate_test(dataset_i, dataset_j, batch_size=50)
+        if ks_result['reject_null']:
+            ks_reject_count += 1
+        total_pairs += 1
+
+    results['mmd_features_mean'] = np.mean(mmd_values)
+    results['wasserstein_mean'] = np.mean(wasserstein_values)
+    results['cramer_von_mises_mean'] = np.mean(cvm_values)
+    results['ks_multivariate_reject_rate'] = ks_reject_count / total_pairs
+
+    # 3. Vendi Score (multi-dataset)
+    print("    Computing Vendi Score (features)...")
+    vendi_features = metrics.vendi_score_features(
+        client_datasets_sub,
+        batch_size=50
+    )
+    results['vendi_score_features'] = vendi_features
 
     return results
 
 
-def run_comparison():
-    """Run comprehensive comparison of all methods."""
+# ============================================================================
+# Experiment Execution
+# ============================================================================
+
+def run_experiment(
+    exp_config: ExperimentConfig,
+    train_dataset: BaseDataset,
+    val_dataset: BaseDataset,
+    base_path: str,
+    num_classes: int,
+    metrics_mode: str,
+) -> ExperimentResult:
+    """
+    Execute a single experiment.
+
+    Args:
+        exp_config: Experiment configuration
+        train_dataset: Training dataset
+        val_dataset: Validation dataset
+        base_path: Base path for data
+        num_classes: Number of classes
+        metrics_mode: "label", "feature", or "both"
+
+    Returns:
+        ExperimentResult with all computed metrics
+    """
+    # Create splitter
+    splitter = create_splitter(exp_config, train_dataset, val_dataset, base_path)
+
+    # Generate splits
+    start_time = time.time()
+    splits = splitter.get_client_splits()
+    split_time = time.time() - start_time
+
+    # Prepare client datasets with original labels
+    # VLM and embedding methods use cluster labels internally, but we need original labels for metrics
+    if exp_config.method in ["vlm", "embedding"]:
+        client_datasets = extract_client_datasets_with_original_labels(splits, train_dataset)
+    else:
+        client_datasets = extract_client_datasets(splits)
+
+    # Compute balance metrics
+    balance_metrics_dict = compute_balance_metrics(client_datasets)
+
+    # Initialize results
+    metric_results = MetricResults(split_time=split_time, **balance_metrics_dict)
+
+    # Compute label metrics
+    if metrics_mode in ["label", "both"]:
+        print("  Computing label metrics...")
+        start_time = time.time()
+
+        # Pairwise label metrics
+        pairwise_label = compute_pairwise_label_metrics(client_datasets, num_classes)
+
+        # Multi-dataset label metrics
+        multi_label = compute_multi_dataset_label_metrics(client_datasets, num_classes)
+
+        label_time = time.time() - start_time
+
+        # Update results
+        for key, value in {**pairwise_label, **multi_label}.items():
+            setattr(metric_results, key, value)
+
+        metric_results.label_metrics_time = label_time
+
+    # Compute feature metrics
+    if metrics_mode in ["feature", "both"]:
+        print("  Computing feature metrics...")
+        start_time = time.time()
+
+        feature_results = compute_feature_metrics(client_datasets, subsample=100)
+
+        feature_time = time.time() - start_time
+
+        # Update results
+        for key, value in feature_results.items():
+            setattr(metric_results, key, value)
+
+        metric_results.feature_metrics_time = feature_time
+
+    # Mark as completed
+    return ExperimentResult(
+        config=exp_config,
+        metrics=metric_results,
+        timestamp=datetime.now().isoformat(),
+        completed=True
+    )
+
+
+# ============================================================================
+# Experiment Generation
+# ============================================================================
+
+def generate_experiment_configs(
+    methods: List[str],
+    n_clients_list: List[int],
+    heterogeneity_list: List[float],
+    embedding_presets: List[str],
+    cluster_labels_dir: Optional[str],
+    seed: int
+) -> List[ExperimentConfig]:
+    """Generate all experiment configurations."""
+    experiments = []
+
+    for n_clients in n_clients_list:
+        for heterogeneity in heterogeneity_list:
+            # Random and Dirichlet
+            for method in ["random", "dirichlet"]:
+                if method in methods:
+                    experiments.append(ExperimentConfig(
+                        method=method,
+                        n_clients=n_clients,
+                        heterogeneity=heterogeneity,
+                        seed=seed
+                    ))
+
+            # VLM
+            if "vlm" in methods:
+                if not cluster_labels_dir:
+                    raise ValueError("VLM method requires --cluster_labels_dir to be specified")
+                experiments.append(ExperimentConfig(
+                    method="vlm",
+                    n_clients=n_clients,
+                    heterogeneity=heterogeneity,
+                    seed=seed,
+                    cluster_labels_dir=cluster_labels_dir
+                ))
+
+            # Embedding with presets
+            if "embedding" in methods:
+                for preset in embedding_presets:
+                    experiments.append(ExperimentConfig(
+                        method="embedding",
+                        n_clients=n_clients,
+                        heterogeneity=heterogeneity,
+                        seed=seed,
+                        embedding_preset=preset
+                    ))
+
+    return experiments
+
+
+# ============================================================================
+# Results Export
+# ============================================================================
+
+def export_results(results: List[ExperimentResult], output_dir: Path):
+    """Export results to CSV and JSON."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Export to JSON
+    json_path = output_dir / "comparison_results.json"
+    with open(json_path, 'w') as f:
+        json.dump({
+            "timestamp": datetime.now().isoformat(),
+            "results": [r.to_dict() for r in results]
+        }, f, indent=2)
+    print(f"\n✓ Results saved to {json_path}")
+
+    # Export to CSV
+    csv_data = []
+    for result in results:
+        row = {
+            "method": result.config.method,
+            "n_clients": result.config.n_clients,
+            "heterogeneity": result.config.heterogeneity,
+            "embedding_preset": result.config.embedding_preset or "",
+            **asdict(result.metrics)
+        }
+        csv_data.append(row)
+
+    df = pd.DataFrame(csv_data)
+    csv_path = output_dir / "comparison_results.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"✓ Results saved to {csv_path}")
+
+
+def generate_summary_report(results: List[ExperimentResult], output_dir: Path):
+    """Generate markdown summary report."""
+    report = []
+    report.append("# Partitioning Methods Comparison Report\n")
+    report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    report.append(f"Total experiments: {len(results)}\n")
+
+    # Create summary DataFrame
+    df_data = []
+    for result in results:
+        row = {
+            "Method": result.config.method,
+            "Preset": result.config.embedding_preset or "-",
+            "n_clients": result.config.n_clients,
+            "α": result.config.heterogeneity,
+            "KL Div": f"{result.metrics.kl_divergence_mean:.4f}",
+            "MMD": f"{result.metrics.mmd_labels_mean:.4f}",
+            "CV": f"{result.metrics.coefficient_of_variation:.4f}",
+        }
+        df_data.append(row)
+
+    df = pd.DataFrame(df_data)
+
+    report.append("\n## Summary Table\n")
+    report.append("```")
+    report.append(df.to_string(index=False))
+    report.append("```\n")
+
+    # Save report
+    report_path = output_dir / "summary_report.md"
+    with open(report_path, 'w') as f:
+        f.write("\n".join(report))
+
+    print(f"✓ Summary report saved to {report_path}")
+
+
+# ============================================================================
+# Main Execution
+# ============================================================================
+
+def main():
+    """Main execution function."""
+    parser = argparse.ArgumentParser(
+        description="Compare data partitioning methods for federated learning"
+    )
+    parser.add_argument("--dataset", type=str, default="tiny_imagenet", help="Dataset name")
+    parser.add_argument("--base_path", type=str, default="/path/to/gtai/FDS/", help="Base path to dataset")
+    parser.add_argument("--n_clients", type=int, nargs="+", default=[3, 6],
+                       help="List of client counts to test")
+    parser.add_argument("--heterogeneity", type=float, nargs="+", default=[0.1, 10.0],
+                       help="List of heterogeneity (alpha) values to test")
+    parser.add_argument("--methods", type=str, nargs="+",
+                       default=["random", "dirichlet", "embedding"],
+                       help="Methods to compare (random, dirichlet, vlm, embedding)")
+    parser.add_argument("--embedding_presets", type=str, nargs="+",
+                       default=["default", "fast"],
+                       help="Embedding presets to test (default, fast, high_quality, spectral)")
+    parser.add_argument("--cluster_labels_dir", type=str, default="../data_partitioning/legacy_vlm/data/tiny_imagenet",
+                       help="Path to VLM cluster labels directory (required for VLM method)")
+    parser.add_argument("--metrics", type=str, default="both",
+                       choices=["label", "feature", "both"],
+                       help="Which metrics to compute")
+    parser.add_argument("--output_dir", type=str, default="../results",
+                       help="Output directory for results")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+
+    args = parser.parse_args()
+
     print("=" * 80)
     print("PARTITIONING METHODS COMPARISON")
     print("=" * 80)
 
-    ensure_results_dir()
+    # Setup
+    output_dir = Path(args.output_dir)
+    checkpoint_dir = output_dir / "checkpoints"
+    checkpoint_manager = CheckpointManager(str(checkpoint_dir))
 
     # Load datasets
     print("\nLoading datasets...")
-    train_dataset = BaseDataset(DATASET_NAME, BASE_PATH, "train")
-    val_dataset = BaseDataset(DATASET_NAME, BASE_PATH, "val")
+    train_dataset = BaseDataset(args.dataset, args.base_path, "train")
+    val_dataset = BaseDataset(args.dataset, args.base_path, "val")
     print(f"  Training samples: {len(train_dataset)}")
     print(f"  Validation samples: {len(val_dataset)}")
 
-    # Count number of unique classes
+    # Get number of classes
     all_labels = set(train_dataset[i][1] for i in range(len(train_dataset)))
     num_classes = len(all_labels)
     print(f"  Number of classes: {num_classes}")
 
-    # Store all results
-    all_results = []
+    # Load checkpoint
+    checkpoint = checkpoint_manager.load_checkpoint()
+    completed_experiments = checkpoint.get("completed_experiments", [])
+    completed_ids = {
+        ExperimentConfig(**exp["config"]).get_experiment_id()
+        for exp in completed_experiments
+    }
 
-    # Run experiments
-    for n_clients in N_CLIENTS_LIST:
-        for heterogeneity in HETEROGENEITY_LIST:
-            print(f"\n{'=' * 80}")
-            print(f"Configuration: n_clients={n_clients}, α={heterogeneity}")
-            print(f"{'=' * 80}")
+    # Generate all experiment configurations
+    all_experiments = generate_experiment_configs(
+        methods=args.methods,
+        n_clients_list=args.n_clients,
+        heterogeneity_list=args.heterogeneity,
+        embedding_presets=args.embedding_presets,
+        cluster_labels_dir=args.cluster_labels_dir,
+        seed=args.seed
+    )
 
-            # 1. Multivariate Dirichlet
-            print("\n[1/3] MultivariateDirichletSplitter")
-            mv_splitter = MultivariateDirichletSplitter(
-                train_dataset=train_dataset,
-                val_dataset=val_dataset,
-                n_clients=n_clients,
-                heterogeneity=heterogeneity,
-                cluster_labels_dir=CLUSTER_LABELS_DIR,
-                valset_type="global",
-                seed=SEED,
-                min_samples_per_client=10,
-            )
-            mv_results = evaluate_method(
-                "MultivariateDirichlet",
-                mv_splitter,
-                n_clients,
-                heterogeneity,
-                num_classes,
-                include_cluster_metrics=True
-            )
-            all_results.append(mv_results)
+    # Filter out completed
+    pending_experiments = [
+        exp for exp in all_experiments
+        if exp.get_experiment_id() not in completed_ids
+    ]
 
-            # 2. Random (IID)
-            print("\n[2/3] RandomSplitter (IID)")
-            random_splitter = RandomSplitter(
-                train_dataset=train_dataset,
-                val_dataset=val_dataset,
-                n_clients=n_clients,
-                heterogeneity=0.0,
-                valset_type="global",
-                seed=SEED,
-            )
-            random_results = evaluate_method(
-                "Random_IID",
-                random_splitter,
-                n_clients,
-                0.0,
-                num_classes,
-                include_cluster_metrics=False
-            )
-            all_results.append(random_results)
+    print(f"\nExperiment Status:")
+    print(f"  Total: {len(all_experiments)}")
+    print(f"  Completed: {len(completed_experiments)}")
+    print(f"  Pending: {len(pending_experiments)}")
 
-            # 3. Standard Dirichlet on original labels
-            print("\n[3/3] DirichletSplitter (original labels)")
-            dirichlet_splitter = DirichletSplitter(
-                train_dataset=train_dataset,
-                val_dataset=val_dataset,
-                n_clients=n_clients,
-                heterogeneity=heterogeneity,
-                valset_type="global",
-                seed=SEED,
-                min_samples_per_client=10,
-            )
-            dirichlet_results = evaluate_method(
-                "Dirichlet_OriginalLabels",
-                dirichlet_splitter,
-                n_clients,
-                heterogeneity,
-                num_classes,
-                include_cluster_metrics=False
-            )
-            all_results.append(dirichlet_results)
+    # Convert completed experiments back to ExperimentResult objects
+    results = [
+        ExperimentResult(
+            config=ExperimentConfig(**exp["config"]),
+            metrics=MetricResults(**exp["metrics"]),
+            timestamp=exp["timestamp"],
+            completed=exp["completed"]
+        )
+        for exp in completed_experiments
+    ]
 
-    # Save results
+    # Run pending experiments
+    if pending_experiments:
+        print(f"\nRunning experiments...")
+
+        for exp_config in tqdm(pending_experiments, desc="Progress"):
+            exp_id = exp_config.get_experiment_id()
+            print(f"\n[{exp_id}]")
+
+            try:
+                exp_result = run_experiment(
+                    exp_config=exp_config,
+                    train_dataset=train_dataset,
+                    val_dataset=val_dataset,
+                    base_path=args.base_path,
+                    num_classes=num_classes,
+                    metrics_mode=args.metrics,
+                )
+
+                results.append(exp_result)
+
+                # Save checkpoint after each experiment
+                checkpoint_manager.save_checkpoint(results)
+
+            except Exception as e:
+                print(f"  ✗ Error: {e}")
+                import traceback
+                traceback.print_exc()
+                # Save what we have so far
+                checkpoint_manager.save_checkpoint(results)
+                raise
+
+    # Export results
     print("\n" + "=" * 80)
-    print("SAVING RESULTS")
+    print("EXPORTING RESULTS")
     print("=" * 80)
 
-    # Save as JSON
-    json_path = RESULTS_DIR / "partitioning_comparison.json"
-    with open(json_path, 'w') as f:
-        json.dump({
-            "metadata": {
-                "dataset": DATASET_NAME,
-                "num_classes": num_classes,
-                "n_train_samples": len(train_dataset),
-                "n_val_samples": len(val_dataset),
-                "seed": SEED,
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            },
-            "results": all_results,
-        }, f, indent=2)
-    print(f"  JSON saved to: {json_path}")
-
-    # Save as CSV (flatten cluster_metrics for CSV)
-    csv_results = []
-    for result in all_results:
-        csv_row = {k: v for k, v in result.items() if k != "cluster_metrics"}
-
-        # Add cluster metrics as separate columns if present
-        if "cluster_metrics" in result:
-            for criterion, metrics_dict in result["cluster_metrics"].items():
-                for metric_name, value in metrics_dict.items():
-                    csv_row[f"{criterion}_{metric_name}"] = value
-
-        csv_results.append(csv_row)
-
-    df = pd.DataFrame(csv_results)
-    csv_path = RESULTS_DIR / "partitioning_comparison.csv"
-    df.to_csv(csv_path, index=False)
-    print(f"  CSV saved to: {csv_path}")
-
-    # Print summary table
-    print("\n" + "=" * 80)
-    print("SUMMARY TABLE")
-    print("=" * 80)
-
-    summary_cols = ["method", "n_clients", "heterogeneity", "avg_kl_divergence", "avg_mmd", "cv_samples_per_client"]
-    if all(col in df.columns for col in summary_cols):
-        summary_df = df[summary_cols].copy()
-        summary_df = summary_df.round(4)
-        print(summary_df.to_string(index=False))
-    else:
-        print(df.to_string(index=False))
+    export_results(results, output_dir)
+    generate_summary_report(results, output_dir)
 
     print("\n" + "=" * 80)
-    print("✓ EVALUATION COMPLETE!")
+    print("✓ ALL EXPERIMENTS COMPLETED!")
     print("=" * 80)
 
 
 if __name__ == "__main__":
-    run_comparison()
+    main()
