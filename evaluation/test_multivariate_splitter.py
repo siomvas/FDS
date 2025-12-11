@@ -113,8 +113,8 @@ def test_heterogeneity_effect():
 
     # Load dataset
     dataset_name = "tiny_imagenet"
-    base_path = "/vol/research/tubui/tiny-imagenet-200/"  # Adjust if needed
-    cluster_labels_dir = "/path/to/Documents/GitHub/FDS/data_partitioning/legacy_vlm/data/tiny_imagenet"
+    base_path = "/path/to/gtai/FDS/"
+    cluster_labels_dir = "../data_partitioning/legacy_vlm/data/tiny_imagenet"
 
     train_dataset = BaseDataset(dataset_name, base_path, "train")
 
@@ -176,8 +176,8 @@ def run_basic_test():
 
     # Paths (adjust if needed)
     dataset_name = "tiny_imagenet"
-    base_path = "/vol/research/tubui/tiny-imagenet-200/"
-    cluster_labels_dir = "/path/to/Documents/GitHub/FDS/data_partitioning/legacy_vlm/data/tiny_imagenet"
+    base_path = "/path/to/gtai/FDS/"
+    cluster_labels_dir = "../data_partitioning/legacy_vlm/data/tiny_imagenet"
 
     # Load datasets
     print("\nLoading datasets...")
