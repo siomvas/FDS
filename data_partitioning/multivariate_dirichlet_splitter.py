@@ -91,11 +91,27 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             # Load labels for this criterion
             criterion_labels = {}
             with open(jsonl_path, 'r') as f:
-                for line in f:
-                    entry = json.loads(line.strip())
-                    image_path = entry["image"]
-                    cluster_label = entry["class"]
-                    criterion_labels[image_path] = cluster_label
+                content = f.read().strip()
+
+                # Check if it's a JSON array (starts with '[') or JSONL (starts with '{')
+                if content.startswith('['):
+                    # JSON array format
+                    entries = json.loads(content)
+                    for entry in entries:
+                        image_path = entry["image"]
+                        cluster_label = entry["class"]
+                        criterion_labels[image_path] = cluster_label
+                else:
+                    # JSONL format (one JSON object per line)
+                    f.seek(0)  # Reset file pointer
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        entry = json.loads(line)
+                        image_path = entry["image"]
+                        cluster_label = entry["class"]
+                        criterion_labels[image_path] = cluster_label
 
             self.cluster_labels[criterion] = criterion_labels
 
