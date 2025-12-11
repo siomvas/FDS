@@ -105,7 +105,7 @@ class CacheManager:
         pooling_strategy: Optional[str] = None,
         layers: Optional[List[int]] = None,
         **kwargs,
-    ) -> Optional[Union[np.ndarray, Dict[int, np.ndarray]]]:
+    ) -> Optional[Union[np.ndarray, Dict[int, np.ndarray], Dict[str, np.ndarray]]]:
         """
         Retrieve cached embeddings if available.
 
@@ -118,6 +118,7 @@ class CacheManager:
 
         Returns:
             Cached embeddings if found, None otherwise
+            Can be: np.ndarray, Dict[int, np.ndarray], or Dict[str, np.ndarray]
         """
         if not self.enabled:
             return None
@@ -135,9 +136,16 @@ class CacheManager:
         try:
             data = np.load(cache_file, allow_pickle=True)
 
+            # Check if it's a path-indexed dictionary (image_path → embedding)
+            if "is_path_dict" in data and data["is_path_dict"]:
+                # Reconstruct dictionary: path → embedding
+                paths = data["image_paths"]
+                embeddings = data["embeddings"]
+                return {str(p): emb for p, emb in zip(paths, embeddings)}
+
             # Check if it's a dictionary of arrays (multi-layer)
-            if "is_dict" in data and data["is_dict"]:
-                # Reconstruct dictionary
+            elif "is_dict" in data and data["is_dict"]:
+                # Reconstruct dictionary: layer_id → array
                 result = {}
                 for key in data["keys"]:
                     result[int(key)] = data[f"layer_{key}"]
@@ -152,7 +160,7 @@ class CacheManager:
 
     def put(
         self,
-        embeddings: Union[np.ndarray, Dict[int, np.ndarray]],
+        embeddings: Union[np.ndarray, Dict[int, np.ndarray], Dict[str, np.ndarray]],
         model_name: str,
         image_paths: List[str],
         pooling_strategy: Optional[str] = None,
@@ -163,7 +171,7 @@ class CacheManager:
         Store embeddings in cache.
 
         Args:
-            embeddings: Embeddings to cache (array or dict of arrays)
+            embeddings: Embeddings to cache (array, dict of int→arrays, or dict of str→arrays)
             model_name: Name of the model
             image_paths: List of image paths
             pooling_strategy: Pooling strategy used
@@ -182,14 +190,27 @@ class CacheManager:
         # Save to cache
         try:
             if isinstance(embeddings, dict):
-                # Dictionary of arrays (multi-layer)
-                save_dict = {
-                    "is_dict": True,
-                    "keys": list(embeddings.keys()),
-                }
-                for key, array in embeddings.items():
-                    save_dict[f"layer_{key}"] = array
-                np.savez_compressed(cache_file, **save_dict)
+                # Check if dict has string keys (path-indexed)
+                if embeddings and all(isinstance(k, str) for k in embeddings.keys()):
+                    # Dictionary of path → embedding
+                    sorted_paths = sorted(embeddings.keys())
+                    embeddings_array = np.vstack([embeddings[p] for p in sorted_paths])
+
+                    np.savez_compressed(
+                        cache_file,
+                        is_path_dict=True,
+                        image_paths=np.array(sorted_paths, dtype=object),
+                        embeddings=embeddings_array,
+                    )
+                else:
+                    # Dictionary of int → arrays (multi-layer)
+                    save_dict = {
+                        "is_dict": True,
+                        "keys": list(embeddings.keys()),
+                    }
+                    for key, array in embeddings.items():
+                        save_dict[f"layer_{key}"] = array
+                    np.savez_compressed(cache_file, **save_dict)
             else:
                 # Single array
                 np.savez_compressed(cache_file, embeddings=embeddings, is_dict=False)

@@ -9,6 +9,18 @@ from PIL import Image
 from collections import Counter
 import os
 
+from evaluation.inception_cache import InceptionV3EmbeddingCache
+
+# Global cache instance for InceptionV3 embeddings
+_INCEPTION_CACHE = None
+
+def get_inception_cache(cache_dir="./.inception_cache"):
+    """Get or create global InceptionV3 cache instance."""
+    global _INCEPTION_CACHE
+    if _INCEPTION_CACHE is None:
+        _INCEPTION_CACHE = InceptionV3EmbeddingCache(cache_dir=cache_dir)
+    return _INCEPTION_CACHE
+
 class ImagePathDataset(torch.utils.data.Dataset):
     def __init__(self, file_dataset, transforms=None):
         self.file_dataset = file_dataset
@@ -25,67 +37,35 @@ class ImagePathDataset(torch.utils.data.Dataset):
             img = self.transforms(img)
         return img, label
 
-def FID_distance(dataset_list, model_name='InceptionV3', device=None, return_all=False, batch_size=50):
+def FID_distance(dataset_list, model_name='InceptionV3', device=None, return_all=False, batch_size=50, use_cache=True, cache_dir="./.inception_cache"):
 
     """
     Calculate the average pairwise Frechet Inception Distance (FID) of N datasets.
-    
+
     Args:
         dataset_list: List of datasets (each dataset is a list of image file paths)
         model_name: Name of the model to use for feature extraction
         device: Device to run model on ('cuda' or 'cpu')
         batch_size: Batch size for feature extraction
-        
+        use_cache: Whether to use embedding cache (default: True)
+        cache_dir: Directory for cache storage (default: "./.inception_cache")
+
     Returns:
         FID score as float
     """
-    
+
     if len(dataset_list) < 2:
         raise ValueError("At least two datasets are required to compute FID.")
 
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Set up model directory
-    torch.hub.set_dir('~/archive/.cache/torch/hub')
-
-    if model_name == 'InceptionV3':
-        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-        model = models.inception_v3(pretrained=True, transform_input=False)
-        os.environ.pop('https_proxy', None)
-    else:
-        raise ValueError("Unsupported model for FID calculation")
-
-    model.fc = torch.nn.Identity()
-    model.to(device)
-    model.eval()
-
-    transform = transforms.Compose([
-        transforms.Resize((299, 299)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
-
-    def get_activations(dataset):
-        activations = []
-        dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        with torch.no_grad():
-            for (image, label) in dataloader:
-                image = image.to(device)
-                preds = model(image)
-                activations.append(preds.cpu().numpy())
-        return np.concatenate(activations, axis=0)
-    
     def compute_statistics(activations):
         mu = np.mean(activations, axis=0)
         sigma = np.cov(activations, rowvar=False)
         return mu, sigma
 
     def compute_fid_from_stats(stats1, stats2):
-
         mu1, sigma1 = stats1
         mu2, sigma2 = stats2
-    
+
         mu1 = np.atleast_1d(mu1)
         mu2 = np.atleast_1d(mu2)
         sigma1 = np.atleast_2d(sigma1)
@@ -107,26 +87,82 @@ def FID_distance(dataset_list, model_name='InceptionV3', device=None, return_all
 
         fid = diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean)
         return fid
-    
+
+    # Use cached embeddings if enabled
+    if use_cache and model_name == 'InceptionV3':
+        cache = get_inception_cache(cache_dir)
+
+        stats_list = []
+        for dataset in dataset_list:
+            # Get image paths
+            image_paths = [item["image"] for item in dataset]
+
+            # Get embeddings from cache
+            embeddings_dict = cache.get_embeddings(image_paths, batch_size)
+
+            # Convert to array in original order
+            activations = np.array([embeddings_dict[p] for p in image_paths])
+
+            # Compute statistics
+            stats = compute_statistics(activations)
+            stats_list.append(stats)
+
+    else:
+        # Original code path (no caching)
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Set up model directory
+        torch.hub.set_dir('~/archive/.cache/torch/hub')
+
+        if model_name == 'InceptionV3':
+            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+            model = models.inception_v3(pretrained=True, transform_input=False)
+            os.environ.pop('https_proxy', None)
+        else:
+            raise ValueError("Unsupported model for FID calculation")
+
+        model.fc = torch.nn.Identity()
+        model.to(device)
+        model.eval()
+
+        transform = transforms.Compose([
+            transforms.Resize((299, 299)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
+
+        def get_activations(dataset):
+            activations = []
+            dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            with torch.no_grad():
+                for (image, label) in dataloader:
+                    image = image.to(device)
+                    preds = model(image)
+                    activations.append(preds.cpu().numpy())
+            return np.concatenate(activations, axis=0)
+
+        n_datasets = len(dataset_list)
+        stats_list = []
+        for i, dataset in enumerate(dataset_list):
+            img_dataset = ImagePathDataset(dataset, transforms=transform)
+            activations = get_activations(img_dataset)
+            stats = compute_statistics(activations)
+            stats_list.append(stats)
+            del activations  # Free memory
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    # Compute pairwise FID scores
     n_datasets = len(dataset_list)
-    stats_list = []
-    for i, dataset in enumerate(dataset_list):
-        img_dataset = ImagePathDataset(dataset, transforms=transform)
-        activations = get_activations(img_dataset)
-        stats = compute_statistics(activations)
-        stats_list.append(stats)
-        del activations  # Free memory
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    
     fid_scores = []
     for i in range(n_datasets):
         for j in range(i + 1, n_datasets):
             fid = compute_fid_from_stats(stats_list[i], stats_list[j])
             fid_scores.append(fid)
-    
+
     # structure of fidscores is [fid_0_1, fid_0_2, ..., fid_1_2, ...]
-    
+
     return np.mean(fid_scores) if not return_all else fid_scores
     
 
@@ -276,7 +312,7 @@ def MMD_label_distributions(dataset1, dataset2, num_classes=None):
     # return np.linalg.norm(p - q)
 
 
-def MMD_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, sigma=None):
+def MMD_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, sigma=None, use_cache=True, cache_dir="./.inception_cache"):
     """
     Calculate MMD between feature distributions of two datasets.
 
@@ -287,54 +323,72 @@ def MMD_features(dataset1, dataset2, model_name='InceptionV3', device=None, batc
         device: Device to run model on
         batch_size: Batch size for feature extraction
         sigma: RBF kernel bandwidth (if None, uses median heuristic)
+        use_cache: Whether to use embedding cache (default: True)
+        cache_dir: Directory for cache storage (default: "./.inception_cache")
 
     Returns:
         MMD^2 statistic between feature distributions
     """
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Set up model directory
-    torch.hub.set_dir('~/archive/.cache/torch/hub')
+    # Use cached embeddings if enabled
+    if use_cache and model_name == 'InceptionV3':
+        cache = get_inception_cache(cache_dir)
 
-    # Load model
-    if model_name == 'InceptionV3':
-        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-        model = models.inception_v3(pretrained=True, transform_input=False)
-        model.fc = torch.nn.Identity()
-        os.environ.pop('https_proxy', None)
+        # Get embeddings for both datasets
+        image_paths1 = [item["image"] for item in dataset1]
+        image_paths2 = [item["image"] for item in dataset2]
+
+        embeddings_dict1 = cache.get_embeddings(image_paths1, batch_size)
+        embeddings_dict2 = cache.get_embeddings(image_paths2, batch_size)
+
+        features1 = np.array([embeddings_dict1[p] for p in image_paths1])
+        features2 = np.array([embeddings_dict2[p] for p in image_paths2])
+
     else:
-        raise ValueError(f"Unsupported model: {model_name}")
+        # Original code path (no caching)
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model.to(device)
-    model.eval()
+        # Set up model directory
+        torch.hub.set_dir('~/archive/.cache/torch/hub')
 
-    transform = transforms.Compose([
-        transforms.Resize((299, 299)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
+        # Load model
+        if model_name == 'InceptionV3':
+            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+            model = models.inception_v3(pretrained=True, transform_input=False)
+            model.fc = torch.nn.Identity()
+            os.environ.pop('https_proxy', None)
+        else:
+            raise ValueError(f"Unsupported model: {model_name}")
 
-    def extract_features(dataset):
-        img_dataset = ImagePathDataset(dataset, transforms=transform)
-        dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
-        features = []
-        with torch.no_grad():
-            for images, _ in dataloader:
-                images = images.to(device)
-                feats = model(images)
-                features.append(feats.cpu().numpy())
-        return np.concatenate(features, axis=0)
+        model.to(device)
+        model.eval()
 
-    features1 = extract_features(dataset1)
-    features2 = extract_features(dataset2)
+        transform = transforms.Compose([
+            transforms.Resize((299, 299)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
+
+        def extract_features(dataset):
+            img_dataset = ImagePathDataset(dataset, transforms=transform)
+            dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
+            features = []
+            with torch.no_grad():
+                for images, _ in dataloader:
+                    images = images.to(device)
+                    feats = model(images)
+                    features.append(feats.cpu().numpy())
+            return np.concatenate(features, axis=0)
+
+        features1 = extract_features(dataset1)
+        features2 = extract_features(dataset2)
+
+        # Cleanup
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     mmd_squared = MMD_rbf_kernel(features1, features2, sigma=sigma)
-
-    # Cleanup
-    del features1, features2
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     return mmd_squared
 
@@ -382,7 +436,7 @@ def mahalanobis_distance_labels(dataset1, dataset2, num_classes=None):
 
     return mahal_dist
 
-def wasserstein_distance_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50):
+def wasserstein_distance_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, use_cache=True, cache_dir="./.inception_cache"):
     """
     Calculate Wasserstein distance (Earth Mover's Distance) between feature distributions.
 
@@ -392,47 +446,70 @@ def wasserstein_distance_features(dataset1, dataset2, model_name='InceptionV3', 
         model_name: Name of the model for feature extraction
         device: Device to run model on
         batch_size: Batch size for feature extraction
+        use_cache: Whether to use embedding cache (default: True)
+        cache_dir: Directory for cache storage (default: "./.inception_cache")
 
     Returns:
         Wasserstein distance (averaged across feature dimensions)
     """
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Use cached embeddings if enabled
+    if use_cache and model_name == 'InceptionV3':
+        cache = get_inception_cache(cache_dir)
 
-    # Set up model directory
-    torch.hub.set_dir('~/archive/.cache/torch/hub')
+        # Get embeddings for both datasets
+        image_paths1 = [item["image"] for item in dataset1]
+        image_paths2 = [item["image"] for item in dataset2]
 
-    # Load model
-    if model_name == 'InceptionV3':
-        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-        model = models.inception_v3(pretrained=True, transform_input=False)
-        os.environ.pop('https_proxy', None)
-        model.fc = torch.nn.Identity()
+        embeddings_dict1 = cache.get_embeddings(image_paths1, batch_size)
+        embeddings_dict2 = cache.get_embeddings(image_paths2, batch_size)
+
+        features1 = np.array([embeddings_dict1[p] for p in image_paths1])
+        features2 = np.array([embeddings_dict2[p] for p in image_paths2])
+
     else:
-        raise ValueError(f"Unsupported model: {model_name}")
+        # Original code path (no caching)
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model.to(device)
-    model.eval()
+        # Set up model directory
+        torch.hub.set_dir('~/archive/.cache/torch/hub')
 
-    transform = transforms.Compose([
-        transforms.Resize((299, 299)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
+        # Load model
+        if model_name == 'InceptionV3':
+            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+            model = models.inception_v3(pretrained=True, transform_input=False)
+            os.environ.pop('https_proxy', None)
+            model.fc = torch.nn.Identity()
+        else:
+            raise ValueError(f"Unsupported model: {model_name}")
 
-    def extract_features(dataset):
-        img_dataset = ImagePathDataset(dataset, transforms=transform)
-        dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
-        features = []
-        with torch.no_grad():
-            for images, _ in dataloader:
-                images = images.to(device)
-                feats = model(images)
-                features.append(feats.cpu().numpy())
-        return np.concatenate(features, axis=0)
+        model.to(device)
+        model.eval()
 
-    features1 = extract_features(dataset1)
-    features2 = extract_features(dataset2)
+        transform = transforms.Compose([
+            transforms.Resize((299, 299)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
+
+        def extract_features(dataset):
+            img_dataset = ImagePathDataset(dataset, transforms=transform)
+            dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
+            features = []
+            with torch.no_grad():
+                for images, _ in dataloader:
+                    images = images.to(device)
+                    feats = model(images)
+                    features.append(feats.cpu().numpy())
+            return np.concatenate(features, axis=0)
+
+        features1 = extract_features(dataset1)
+        features2 = extract_features(dataset2)
+
+        # Cleanup
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Compute Wasserstein distance for each feature dimension and average
     n_features = features1.shape[1]
@@ -444,15 +521,10 @@ def wasserstein_distance_features(dataset1, dataset2, model_name='InceptionV3', 
 
     avg_wasserstein = np.mean(wasserstein_dists)
 
-    # Cleanup
-    del features1, features2
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
     return avg_wasserstein
 
 
-def cramer_von_mises_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50):
+def cramer_von_mises_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, use_cache=True, cache_dir="./.inception_cache"):
     """
     Calculate Cramér-von Mises criterion between feature distributions.
 
@@ -462,47 +534,70 @@ def cramer_von_mises_features(dataset1, dataset2, model_name='InceptionV3', devi
         model_name: Name of the model for feature extraction
         device: Device to run model on
         batch_size: Batch size for feature extraction
+        use_cache: Whether to use embedding cache (default: True)
+        cache_dir: Directory for cache storage (default: "./.inception_cache")
 
     Returns:
         Cramér-von Mises statistic (averaged across feature dimensions)
     """
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Use cached embeddings if enabled
+    if use_cache and model_name == 'InceptionV3':
+        cache = get_inception_cache(cache_dir)
 
-    # Set up model directory
-    torch.hub.set_dir('~/archive/.cache/torch/hub')
+        # Get embeddings for both datasets
+        image_paths1 = [item["image"] for item in dataset1]
+        image_paths2 = [item["image"] for item in dataset2]
 
-    # Load model
-    if model_name == 'InceptionV3':
-        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-        model = models.inception_v3(pretrained=True, transform_input=False)
-        os.environ.pop('https_proxy', None)
-        model.fc = torch.nn.Identity()
+        embeddings_dict1 = cache.get_embeddings(image_paths1, batch_size)
+        embeddings_dict2 = cache.get_embeddings(image_paths2, batch_size)
+
+        features1 = np.array([embeddings_dict1[p] for p in image_paths1])
+        features2 = np.array([embeddings_dict2[p] for p in image_paths2])
+
     else:
-        raise ValueError(f"Unsupported model: {model_name}")
+        # Original code path (no caching)
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model.to(device)
-    model.eval()
+        # Set up model directory
+        torch.hub.set_dir('~/archive/.cache/torch/hub')
 
-    transform = transforms.Compose([
-        transforms.Resize((299, 299)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
+        # Load model
+        if model_name == 'InceptionV3':
+            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+            model = models.inception_v3(pretrained=True, transform_input=False)
+            os.environ.pop('https_proxy', None)
+            model.fc = torch.nn.Identity()
+        else:
+            raise ValueError(f"Unsupported model: {model_name}")
 
-    def extract_features(dataset):
-        img_dataset = ImagePathDataset(dataset, transforms=transform)
-        dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
-        features = []
-        with torch.no_grad():
-            for images, _ in dataloader:
-                images = images.to(device)
-                feats = model(images)
-                features.append(feats.cpu().numpy())
-        return np.concatenate(features, axis=0)
+        model.to(device)
+        model.eval()
 
-    features1 = extract_features(dataset1)
-    features2 = extract_features(dataset2)
+        transform = transforms.Compose([
+            transforms.Resize((299, 299)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
+
+        def extract_features(dataset):
+            img_dataset = ImagePathDataset(dataset, transforms=transform)
+            dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
+            features = []
+            with torch.no_grad():
+                for images, _ in dataloader:
+                    images = images.to(device)
+                    feats = model(images)
+                    features.append(feats.cpu().numpy())
+            return np.concatenate(features, axis=0)
+
+        features1 = extract_features(dataset1)
+        features2 = extract_features(dataset2)
+
+        # Cleanup
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Compute Cramér-von Mises test for each feature dimension and average
     n_features = features1.shape[1]
@@ -514,15 +609,10 @@ def cramer_von_mises_features(dataset1, dataset2, model_name='InceptionV3', devi
 
     avg_cvm = np.mean(cvm_statistics)
 
-    # Cleanup
-    del features1, features2
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
     return avg_cvm
 
 
-def KS_multivariate_test(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, alpha=0.05):
+def KS_multivariate_test(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, alpha=0.05, use_cache=True, cache_dir="./.inception_cache"):
     """
     Perform multivariate KS test by combining multiple univariate KS tests
     with Bonferroni correction.
@@ -534,47 +624,70 @@ def KS_multivariate_test(dataset1, dataset2, model_name='InceptionV3', device=No
         device: Device to run model on
         batch_size: Batch size for feature extraction
         alpha: Significance level
+        use_cache: Whether to use embedding cache (default: True)
+        cache_dir: Directory for cache storage (default: "./.inception_cache")
 
     Returns:
         dict with 'reject_null' (bool), 'min_pvalue', 'corrected_alpha', and 'n_tests'
     """
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Use cached embeddings if enabled
+    if use_cache and model_name == 'InceptionV3':
+        cache = get_inception_cache(cache_dir)
 
-    # Set up model directory
-    torch.hub.set_dir('~/archive/.cache/torch/hub')
+        # Get embeddings for both datasets
+        image_paths1 = [item["image"] for item in dataset1]
+        image_paths2 = [item["image"] for item in dataset2]
 
-    # Load model
-    if model_name == 'InceptionV3':
-        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-        model = models.inception_v3(pretrained=True, transform_input=False)
-        os.environ.pop('https_proxy', None)
-        model.fc = torch.nn.Identity()
+        embeddings_dict1 = cache.get_embeddings(image_paths1, batch_size)
+        embeddings_dict2 = cache.get_embeddings(image_paths2, batch_size)
+
+        features1 = np.array([embeddings_dict1[p] for p in image_paths1])
+        features2 = np.array([embeddings_dict2[p] for p in image_paths2])
+
     else:
-        raise ValueError(f"Unsupported model: {model_name}")
+        # Original code path (no caching)
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model.to(device)
-    model.eval()
+        # Set up model directory
+        torch.hub.set_dir('~/archive/.cache/torch/hub')
 
-    transform = transforms.Compose([
-        transforms.Resize((299, 299)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
+        # Load model
+        if model_name == 'InceptionV3':
+            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+            model = models.inception_v3(pretrained=True, transform_input=False)
+            os.environ.pop('https_proxy', None)
+            model.fc = torch.nn.Identity()
+        else:
+            raise ValueError(f"Unsupported model: {model_name}")
 
-    def extract_features(dataset):
-        img_dataset = ImagePathDataset(dataset, transforms=transform)
-        dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
-        features = []
-        with torch.no_grad():
-            for images, _ in dataloader:
-                images = images.to(device)
-                feats = model(images)
-                features.append(feats.cpu().numpy())
-        return np.concatenate(features, axis=0)
+        model.to(device)
+        model.eval()
 
-    features1 = extract_features(dataset1)
-    features2 = extract_features(dataset2)
+        transform = transforms.Compose([
+            transforms.Resize((299, 299)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
+
+        def extract_features(dataset):
+            img_dataset = ImagePathDataset(dataset, transforms=transform)
+            dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
+            features = []
+            with torch.no_grad():
+                for images, _ in dataloader:
+                    images = images.to(device)
+                    feats = model(images)
+                    features.append(feats.cpu().numpy())
+            return np.concatenate(features, axis=0)
+
+        features1 = extract_features(dataset1)
+        features2 = extract_features(dataset2)
+
+        # Cleanup
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Perform KS test for each feature dimension
     n_features = features1.shape[1]
@@ -590,11 +703,6 @@ def KS_multivariate_test(dataset1, dataset2, model_name='InceptionV3', device=No
     # Bonferroni correction: reject null hypothesis if minimum p-value < alpha/K
     corrected_alpha = alpha / n_features
     reject_null = min_pvalue < corrected_alpha
-
-    # Cleanup
-    del features1, features2
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     return {
         'reject_null': reject_null,
@@ -614,7 +722,8 @@ def vendi_score_from_kernel(kernel_matrix, q=2):
     return float(vs)
 
 def vendi_score_features(dataset_list, model_name='InceptionV3', device=None,
-                        batch_size=50, q=2, normalize=True, return_details=False):
+                        batch_size=50, q=2, normalize=True, return_details=False,
+                        use_cache=True, cache_dir="./.inception_cache"):
     """
     Compute Vendi Score across multiple datasets using deep feature embeddings.
 
@@ -635,6 +744,8 @@ def vendi_score_features(dataset_list, model_name='InceptionV3', device=None,
             - q<2: Emphasizes rare elements more
         normalize: Normalize embeddings before computing score (default: True)
         return_details: Return dict with score and metadata (default: False)
+        use_cache: Whether to use embedding cache (default: True)
+        cache_dir: Directory for cache storage (default: "./.inception_cache")
 
     Returns:
         float: Vendi Score in range [1, N] where N is total samples
@@ -666,52 +777,74 @@ def vendi_score_features(dataset_list, model_name='InceptionV3', device=None,
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Extract features using existing infrastructure
-    # Reuse pattern from FID_distance and MMD_features
-    torch.hub.set_dir('~/archive/.cache/torch/hub')
+    # Use cached embeddings if enabled
+    if use_cache and model_name == 'InceptionV3':
+        cache = get_inception_cache(cache_dir)
 
-    if model_name == 'InceptionV3':
-        # Use proxy for model download
-        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-        model = models.inception_v3(pretrained=True, transform_input=False)
-        model.fc = torch.nn.Identity()  # Extract features before classification
-        os.environ.pop('https_proxy', None)
+        # Extract features from all datasets using cache
+        all_features = []
+        for dataset in dataset_list:
+            # Get image paths
+            image_paths = [item["image"] for item in dataset]
+
+            # Get embeddings from cache
+            embeddings_dict = cache.get_embeddings(image_paths, batch_size)
+
+            # Convert to array in original order
+            dataset_features = np.array([embeddings_dict[p] for p in image_paths])
+            all_features.append(dataset_features)
+
+        # Concatenate all features into single matrix (N_total, 2048)
+        features_matrix = np.concatenate(all_features, axis=0)
+
     else:
-        raise ValueError(f"Unsupported model: {model_name}. Currently only 'InceptionV3' is supported.")
+        # Original code path: extract features without caching
+        # Extract features using existing infrastructure
+        # Reuse pattern from FID_distance and MMD_features
+        torch.hub.set_dir('~/archive/.cache/torch/hub')
 
-    model.to(device)
-    model.eval()
+        if model_name == 'InceptionV3':
+            # Use proxy for model download
+            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+            model = models.inception_v3(pretrained=True, transform_input=False)
+            model.fc = torch.nn.Identity()  # Extract features before classification
+            os.environ.pop('https_proxy', None)
+        else:
+            raise ValueError(f"Unsupported model: {model_name}. Currently only 'InceptionV3' is supported.")
 
-    # Image preprocessing (consistent with existing metrics)
-    transform = transforms.Compose([
-        transforms.Resize((299, 299)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
+        model.to(device)
+        model.eval()
 
-    # Extract features from all datasets
-    all_features = []
+        # Image preprocessing (consistent with existing metrics)
+        transform = transforms.Compose([
+            transforms.Resize((299, 299)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
 
-    for dataset in dataset_list:
-        img_dataset = ImagePathDataset(dataset, transforms=transform)
-        dataloader = torch.utils.data.DataLoader(
-            img_dataset,
-            batch_size=batch_size,
-            shuffle=False
-        )
+        # Extract features from all datasets
+        all_features = []
 
-        features = []
-        with torch.no_grad():
-            for images, _ in dataloader:
-                images = images.to(device)
-                feats = model(images)
-                features.append(feats.cpu().numpy())
+        for dataset in dataset_list:
+            img_dataset = ImagePathDataset(dataset, transforms=transform)
+            dataloader = torch.utils.data.DataLoader(
+                img_dataset,
+                batch_size=batch_size,
+                shuffle=False
+            )
 
-        dataset_features = np.concatenate(features, axis=0)
-        all_features.append(dataset_features)
+            features = []
+            with torch.no_grad():
+                for images, _ in dataloader:
+                    images = images.to(device)
+                    feats = model(images)
+                    features.append(feats.cpu().numpy())
 
-    # Concatenate all features into single matrix (N_total, 2048)
-    features_matrix = np.concatenate(all_features, axis=0)
+            dataset_features = np.concatenate(features, axis=0)
+            all_features.append(dataset_features)
+
+        # Concatenate all features into single matrix (N_total, 2048)
+        features_matrix = np.concatenate(all_features, axis=0)
     n_samples = features_matrix.shape[0]
     n_datasets = len(dataset_list)
 
