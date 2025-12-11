@@ -98,7 +98,16 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                     # JSON array format
                     entries = json.loads(content)
                     for entry in entries:
-                        image_path = entry["image"]
+                        # image_path = entry["image"]
+                        # modify to be user-independent path 
+                        # e.g /path/to/gtai/FDS/tiny-imagenet-200/train/n01443537/images/n01443537_0.JPEG
+                        # and /path/to/gtai/FDS/tiny-imagenet-200/train/n01443537/images/n01443537_0.JPEG
+                        # are the same image
+                        full_image_path = entry["image"]
+                        image_path = os.path.join(
+                            "/".join(full_image_path.split("/")[-5:])
+                        )
+
                         cluster_label = entry["class"]
                         criterion_labels[image_path] = cluster_label
                 else:
@@ -109,7 +118,10 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                         if not line:
                             continue
                         entry = json.loads(line)
-                        image_path = entry["image"]
+                        full_image_path = entry["image"]
+                        image_path = os.path.join(
+                            "/".join(full_image_path.split("/")[-5:])
+                        )
                         cluster_label = entry["class"]
                         criterion_labels[image_path] = cluster_label
 
@@ -163,7 +175,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         print(f"    Std deviation - Mean: {np.mean(all_stds):.4f}, Std: {np.std(all_stds):.4f}")
 
     def _get_cluster_label_for_sample(self, image_path: str, criterion: str) -> Optional[str]:
-        return self.cluster_labels[criterion].get(image_path)
+        return self.cluster_labels[criterion]["/".join(image_path.split("/")[-5:])]
 
     def _compute_affinity_score(self, image_path: str, client_id: int) -> float:
         """
@@ -185,8 +197,11 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
             if cluster_label is None:
                 # If label missing, use uniform preference (1/n_labels)
-                affinity += 1.0 / len(self.unique_labels[criterion])
-                continue
+                    raise ValueError(
+                    f"Cluster label for image {image_path} under criterion {criterion} not found."
+                    )
+                # affinity += 1.0 / len(self.unique_labels[criterion])
+                # continue
 
             # Get the preference weight for this label
             label_idx = self.unique_labels[criterion].index(cluster_label)

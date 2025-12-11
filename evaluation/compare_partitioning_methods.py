@@ -461,18 +461,13 @@ def compute_pairwise_label_metrics(
 
 def compute_feature_metrics(
     client_datasets: List[List[Dict]],
-    subsample: int = 100
+    subsample: Optional[int] = None
 ) -> Dict[str, float]:
-    """
-    Compute feature-based metrics.
-
-    Args:
-        client_datasets: List of client datasets
-        subsample: Max samples per client for efficiency
-    """
-    # Subsample for computational efficiency
-    client_datasets_sub = [dataset[:subsample] for dataset in client_datasets]
-
+    """Compute feature-based metrics across clients."""
+    if subsample:
+        client_datasets_sub = [dataset[:subsample] for dataset in client_datasets]
+    else:
+        client_datasets_sub = client_datasets
     results = {}
 
     # 1. FID (pairwise)
@@ -542,6 +537,7 @@ def run_experiment(
     base_path: str,
     num_classes: int,
     metrics_mode: str,
+    subsample: Optional[int],
     dataset_name: str,
     wnid_mapping: Optional[Dict[str, int]],
 ) -> ExperimentResult:
@@ -607,7 +603,7 @@ def run_experiment(
         print("  Computing feature metrics...")
         start_time = time.time()
 
-        feature_results = compute_feature_metrics(client_datasets, subsample=100)
+        feature_results = compute_feature_metrics(client_datasets, subsample=subsample)
 
         feature_time = time.time() - start_time
 
@@ -776,6 +772,7 @@ def main():
     parser.add_argument("--metrics", type=str, default="both",
                        choices=["label", "feature", "both"],
                        help="Which metrics to compute")
+    parser.add_argument("--subsample", type=int, default=None,)
     parser.add_argument("--output_dir", type=str, default="../results",
                        help="Output directory for results")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -862,6 +859,7 @@ def main():
                     base_path=args.base_path,
                     num_classes=num_classes,
                     metrics_mode=args.metrics,
+                    subsample=args.subsample,
                     dataset_name=args.dataset,
                     wnid_mapping=wnid_mapping,
                 )
