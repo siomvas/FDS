@@ -594,13 +594,10 @@ def run_experiment(
         # Pairwise label metrics
         pairwise_label = compute_pairwise_label_metrics(client_datasets, num_classes)
 
-        # Multi-dataset label metrics
-        multi_label = compute_multi_dataset_label_metrics(client_datasets, num_classes)
-
         label_time = time.time() - start_time
 
         # Update results
-        for key, value in {**pairwise_label, **multi_label}.items():
+        for key, value in pairwise_label.items():
             setattr(metric_results, key, value)
 
         metric_results.label_metrics_time = label_time

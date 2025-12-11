@@ -128,6 +128,11 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         print(f"\nSampling client preferences with α={self.heterogeneity}...")
 
+        # Track statistics across all clients and criteria
+        all_max_prefs = []
+        all_min_prefs = []
+        all_stds = []
+
         for client_id in range(self.n_clients):
             self.client_preferences[client_id] = {}
 
@@ -138,12 +143,24 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
                 self.client_preferences[client_id][criterion] = preferences
 
+                # Collect statistics
+                all_max_prefs.append(np.max(preferences))
+                all_min_prefs.append(np.min(preferences))
+                all_stds.append(np.std(preferences))
+
                 # Debug: show top preferences for first client
                 if client_id == 0:
                     label_to_idx = {label: idx for idx, label in enumerate(self.unique_labels[criterion])}
                     top_idx = np.argmax(preferences)
                     top_label = self.unique_labels[criterion][top_idx]
-                    print(f"  Client 0, {criterion}: top preference = {top_label} ({preferences[top_idx]:.3f})")
+                    print(f"  Client 0, {criterion}: top={top_label} ({preferences[top_idx]:.3f}), "
+                          f"min={preferences.min():.3f}, std={preferences.std():.3f}")
+
+        # Print aggregate statistics
+        print(f"\n  Preference Statistics Across All Clients:")
+        print(f"    Max preference - Mean: {np.mean(all_max_prefs):.4f}, Std: {np.std(all_max_prefs):.4f}")
+        print(f"    Min preference - Mean: {np.mean(all_min_prefs):.4f}, Std: {np.std(all_min_prefs):.4f}")
+        print(f"    Std deviation - Mean: {np.mean(all_stds):.4f}, Std: {np.std(all_stds):.4f}")
 
     def _get_cluster_label_for_sample(self, image_path: str, criterion: str) -> Optional[str]:
         return self.cluster_labels[criterion].get(image_path)
@@ -198,7 +215,12 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         client_assignments = {client_id: [] for client_id in range(self.n_clients)}
 
-        for sample_idx, image_path in zip(sample_indices, sample_paths):
+        # DEBUG: Track statistics for first 10 samples
+        debug_affinities = []
+        debug_probabilities = []
+        debug_max_probs = []
+
+        for idx, (sample_idx, image_path) in enumerate(zip(sample_indices, sample_paths)):
             # Compute affinity scores for all clients
             affinities = np.array([
                 self._compute_affinity_score(image_path, client_id)
@@ -210,9 +232,28 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             exp_affinities = np.exp(affinities_scaled - np.max(affinities_scaled))  # Numerical stability
             probabilities = exp_affinities / exp_affinities.sum()
 
+            # DEBUG: Collect statistics for first 10 samples
+            if idx < 10:
+                debug_affinities.append(affinities)
+                debug_probabilities.append(probabilities)
+                debug_max_probs.append(np.max(probabilities))
+
             # Sample client based on probabilities
             assigned_client = np.random.choice(self.n_clients, p=probabilities)
             client_assignments[assigned_client].append(sample_idx)
+
+        # DEBUG: Print statistics
+        print(f"\n  Assignment Statistics (α={self.heterogeneity}):")
+        if debug_affinities:
+            all_affinities = np.array(debug_affinities)
+            print(f"    Affinity scores (first 10 samples):")
+            print(f"      Mean: {all_affinities.mean():.4f}, Std: {all_affinities.std():.4f}")
+            print(f"      Range: [{all_affinities.min():.4f}, {all_affinities.max():.4f}]")
+
+            all_probs = np.array(debug_probabilities)
+            print(f"    Softmax probabilities (first 10 samples):")
+            print(f"      Max prob mean: {np.mean(debug_max_probs):.4f}, Std: {np.std(debug_max_probs):.4f}")
+            print(f"      Entropy (avg): {-np.mean([np.sum(p * np.log(p + 1e-10)) for p in all_probs]):.4f}")
 
         return client_assignments
 
