@@ -43,8 +43,8 @@ from evaluation import metrics
 
 # Configuration
 DATASET_NAME = "tiny_imagenet"
-BASE_PATH = "/vol/research/tubui/tiny-imagenet-200/"
-CLUSTER_LABELS_DIR = "/path/to/Documents/GitHub/FDS/data_partitioning/legacy_vlm/data/tiny_imagenet"
+BASE_PATH = "/path/to/gtai/FDS/"
+CLUSTER_LABELS_DIR = "../data_partitioning/legacy_vlm/data/tiny_imagenet"
 RESULTS_DIR = Path(__file__).parent / "results"
 SEED = 42
 
@@ -337,7 +337,7 @@ def run_comparison():
                 train_dataset=train_dataset,
                 val_dataset=val_dataset,
                 n_clients=n_clients,
-                heterogeneity=0.0,  # Not used for random
+                heterogeneity=0.0,
                 valset_type="global",
                 seed=SEED,
             )
@@ -345,7 +345,7 @@ def run_comparison():
                 "Random_IID",
                 random_splitter,
                 n_clients,
-                0.0,  # IID
+                0.0,
                 num_classes,
                 include_cluster_metrics=False
             )

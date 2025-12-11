@@ -107,15 +107,27 @@ class GeMLPooling(PoolingStrategy):
         self.eps = eps
 
     def pool(self, embeddings: np.ndarray) -> np.ndarray:
-        """Apply GeM pooling."""
+        """Apply GeM pooling with proper handling of signed values."""
         if embeddings.ndim == 2:
             return embeddings
         elif embeddings.ndim == 3:
             # GeM formula: (mean(x^p))^(1/p)
-            # Add eps for numerical stability
-            powered = np.power(np.abs(embeddings) + self.eps, self.p)
-            mean_powered = np.mean(powered, axis=1)
-            return np.sign(embeddings[:, 0, :]) * np.power(mean_powered, 1.0 / self.p)
+            # For signed values, use: sign(x) * |x|^p to preserve signs
+            # This ensures that when p=1, we get mean(x) exactly
+
+            # Compute signed power: sign(x) * (|x| + eps)^p
+            signs = np.sign(embeddings)
+            abs_embeddings = np.abs(embeddings) + self.eps
+            signed_powered = signs * np.power(abs_embeddings, self.p)
+
+            # Mean over token dimension
+            mean_powered = np.mean(signed_powered, axis=1)
+
+            # Inverse signed power: sign(mean) * |mean|^(1/p)
+            result_signs = np.sign(mean_powered)
+            result = result_signs * np.power(np.abs(mean_powered), 1.0 / self.p)
+
+            return result
         else:
             raise ValueError(f"Expected 2D or 3D embeddings, got shape {embeddings.shape}")
 

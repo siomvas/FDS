@@ -1,14 +1,3 @@
-"""
-Test script for MultivariateDirichletSplitter
-
-Validates correctness of the implementation:
-- Cluster labels loading
-- Preference vector sampling
-- Affinity score calculation
-- Split constraints and coverage
-- Heterogeneity control (low α vs high α)
-"""
-
 import sys
 import os
 import numpy as np
@@ -199,11 +188,9 @@ def run_basic_test():
         min_samples_per_client=100,
     )
 
-    # Get splits (this will load labels, sample preferences, and assign)
     print("\nComputing splits...")
     splits = splitter.get_client_splits()
 
-    # Run tests
     test_preference_vectors(splitter)
     test_affinity_scores(splitter)
     test_split_constraints(splitter, splits)
@@ -226,10 +213,7 @@ def run_basic_test():
 
 
 if __name__ == "__main__":
-    # Run basic test
     run_basic_test()
-
-    # Test heterogeneity effect
     test_heterogeneity_effect()
 
     print("\n🎉 All validation tests completed successfully!")
