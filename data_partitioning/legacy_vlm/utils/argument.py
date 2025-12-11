@@ -38,26 +38,27 @@ if args.dataset == TINY_IMAGENET:
         1: {"prompt": "Size and Scale of the main object", "examplar": "Large", "num_classes": 4},
         2: {"prompt": "Time of day", "examplar": "Morning", "num_classes": 4},
         3: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
-        4: {"prompt": "Location of the main object", "examplar": "Field", "num_classes": 5},
+        4: {"prompt": "Location", "examplar": "Field", "num_classes": 5},
     }
 elif args.dataset == FOOD101:
-    criteria_choices = ["main_object", "size", "color", "texture", "angle", "lighting"]
+    criteria_choices = ["main_object", "size", "color", "angle", "lighting"]
     criteria_config = {
-        0: {"prompt": "Main Dish", "examplar": "Pancake", "num_classes": 7}, # rerun this
+        0: {"prompt": "Main Dish", "examplar": "Pancake", "num_classes": 7},
         1: {"prompt": "Size and Scale of the dish", "examplar": "Big", "num_classes": 8},
         2: {"prompt": "Dominant color of the dish", "examplar": "Golden-brown", "num_classes": 8},
-        3: {"prompt": "Texture of the dish", "examplar": "Soft", "num_classes": 8}, #**
-        4: {"prompt": "Camera Angle", "examplar": "Overhead", "num_classes": 5},
-        5: {"prompt": "Lighting Intensity", "examplar": "Bright", "num_classes": 5},
+        3: {"prompt": "Camera Angle", "examplar": "Overhead", "num_classes": 5},
+        4: {"prompt": "Lighting Intensity", "examplar": "Bright", "num_classes": 5},
     }
 elif args.dataset == ADE20K:
+    criteria_choices = ["main_object", "scene", "light", "color", "size", "human"]
     criteria_choices = ["main_object", "scene", "time", "color", "weather"]
     criteria_config = {
         0: {"prompt": "Main Object", "examplar": "Tree", "num_classes": 8},
         1: {"prompt": "Location", "examplar": "Field", "num_classes": 4},
-        2: {"prompt": "Time of day", "examplar": "Morning", "num_classes": 4},
-        3: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
-        4: {"prompt": "Weather", "examplar": "Sunny", "num_classes": 5},
+        2: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
+        3: {"prompt": "Lighting Intensity", "examplar": "Bright", "num_classes": 4}, #(x)
+        4: {"prompt": "Size of the main object", "examplar": "Large", "num_classes": 5}, #(x)
+        5: {"prompt": "Human Presence", "examplar": "", "num_classes": 0},
     }
 elif args.dataset == PASCALVOC:
     # TODO: CHANGE THIS
