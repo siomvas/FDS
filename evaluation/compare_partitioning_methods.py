@@ -267,6 +267,81 @@ def create_splitter(
 
 
 # ============================================================================
+# Label Mapping (for Tiny ImageNet WNIDs)
+# ============================================================================
+
+def get_or_create_wnid_mapping(dataset_name: str, train_dataset: BaseDataset) -> Optional[Dict[str, int]]:
+    """
+    Get or create WNID to integer mapping for Tiny ImageNet.
+
+    Args:
+        dataset_name: Name of the dataset
+        train_dataset: Training dataset to extract labels from
+
+    Returns:
+        Mapping dictionary if needed, None if labels are already integers
+    """
+    # Check if we need mapping by looking at first label
+    first_label = train_dataset[0][1]
+
+    # If label is already an integer, no mapping needed
+    if isinstance(first_label, int):
+        return None
+
+    # If label is a string (WNID), create/load mapping
+    if isinstance(first_label, str):
+        mapping_file = Path(__file__).parent.parent / f"{dataset_name}_wnid_mapping.json"
+
+        # Try to load existing mapping
+        if mapping_file.exists():
+            with open(mapping_file, 'r') as f:
+                mapping = json.load(f)
+            print(f"  Loaded WNID mapping from {mapping_file}")
+            return mapping
+
+        # Create new mapping
+        print(f"  Creating WNID mapping for {dataset_name}...")
+        all_labels = set()
+        for i in range(len(train_dataset)):
+            all_labels.add(train_dataset[i][1])
+
+        # Sort for consistency
+        sorted_labels = sorted(all_labels)
+        mapping = {label: idx for idx, label in enumerate(sorted_labels)}
+
+        # Save mapping
+        with open(mapping_file, 'w') as f:
+            json.dump(mapping, f, indent=2)
+
+        print(f"  Created mapping for {len(mapping)} classes")
+        print(f"  Saved to {mapping_file}")
+
+        return mapping
+
+    return None
+
+
+def apply_label_mapping(dataset: List[Dict], mapping: Optional[Dict[str, int]]) -> List[Dict]:
+    """
+    Apply label mapping to convert WNIDs to integers.
+
+    Args:
+        dataset: List of {"image": path, "label": label}
+        mapping: WNID to integer mapping (None if not needed)
+
+    Returns:
+        Dataset with integer labels
+    """
+    if mapping is None:
+        return dataset
+
+    return [
+        {"image": item["image"], "label": mapping[item["label"]]}
+        for item in dataset
+    ]
+
+
+# ============================================================================
 # Label Extraction
 # ============================================================================
 
@@ -467,6 +542,8 @@ def run_experiment(
     base_path: str,
     num_classes: int,
     metrics_mode: str,
+    dataset_name: str,
+    wnid_mapping: Optional[Dict[str, int]],
 ) -> ExperimentResult:
     """
     Execute a single experiment.
@@ -478,6 +555,8 @@ def run_experiment(
         base_path: Base path for data
         num_classes: Number of classes
         metrics_mode: "label", "feature", or "both"
+        dataset_name: Name of the dataset
+        wnid_mapping: WNID to integer mapping (if needed)
 
     Returns:
         ExperimentResult with all computed metrics
@@ -496,6 +575,10 @@ def run_experiment(
         client_datasets = extract_client_datasets_with_original_labels(splits, train_dataset)
     else:
         client_datasets = extract_client_datasets(splits)
+
+    # Apply WNID mapping if needed (for Tiny ImageNet)
+    if wnid_mapping is not None:
+        client_datasets = [apply_label_mapping(dataset, wnid_mapping) for dataset in client_datasets]
 
     # Compute balance metrics
     balance_metrics_dict = compute_balance_metrics(client_datasets)
@@ -718,10 +801,13 @@ def main():
     print(f"  Training samples: {len(train_dataset)}")
     print(f"  Validation samples: {len(val_dataset)}")
 
-    # Get number of classes
+    # Get number of classes and handle WNID mapping
     all_labels = set(train_dataset[i][1] for i in range(len(train_dataset)))
     num_classes = len(all_labels)
     print(f"  Number of classes: {num_classes}")
+
+    # Create/load WNID mapping for Tiny ImageNet (or other datasets with string labels)
+    wnid_mapping = get_or_create_wnid_mapping(args.dataset, train_dataset)
 
     # Load checkpoint
     checkpoint = checkpoint_manager.load_checkpoint()
@@ -779,6 +865,8 @@ def main():
                     base_path=args.base_path,
                     num_classes=num_classes,
                     metrics_mode=args.metrics,
+                    dataset_name=args.dataset,
+                    wnid_mapping=wnid_mapping,
                 )
 
                 results.append(exp_result)
