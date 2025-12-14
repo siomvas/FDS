@@ -110,7 +110,7 @@ def test_cache_vs_no_cache():
     # Run with cache
     print("Computing metrics WITH cache:")
     fid_cached = FID_distance(datasets, use_cache=True, cache_dir="./.test_inception_cache", batch_size=10)
-    mmd_cached = MMD_features(datasets, use_cache=True, cache_dir="./.test_inception_cache", batch_size=10)
+    mmd_cached = MMD_features(*datasets, use_cache=True, cache_dir="./.test_inception_cache", batch_size=10)
     vendi_cached = vendi_score_features(datasets, use_cache=True, cache_dir="./.test_inception_cache", batch_size=10)
     print(f"  FID: {fid_cached:.4f}")
     print(f"  MMD: {mmd_cached:.6f}")
@@ -119,7 +119,7 @@ def test_cache_vs_no_cache():
     # Run without cache
     print("Computing metrics WITHOUT cache:")
     fid_no_cache = FID_distance(datasets, use_cache=False, batch_size=10)
-    mmd_no_cache = MMD_features(datasets, use_cache=False, batch_size=10)
+    mmd_no_cache = MMD_features(*datasets, use_cache=False, batch_size=10)
     vendi_no_cache = vendi_score_features(datasets, use_cache=False, batch_size=10)
     print(f"  FID: {fid_no_cache:.4f}")
     print(f"  MMD: {mmd_no_cache:.6f}")
