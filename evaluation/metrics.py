@@ -1,25 +1,23 @@
 import numpy as np
 from torchvision import models, transforms
-# import alibi_detect as ad
 import torch
 import scipy
 from scipy import stats
 from scipy.spatial.distance import cdist
 from PIL import Image
-from collections import Counter
 import os
 
 from evaluation.inception_cache import InceptionV3EmbeddingCache
 
-# Global cache instance for InceptionV3 embeddings
 _INCEPTION_CACHE = None
 
+
 def get_inception_cache(cache_dir="./.inception_cache"):
-    """Get or create global InceptionV3 cache instance."""
     global _INCEPTION_CACHE
     if _INCEPTION_CACHE is None:
         _INCEPTION_CACHE = InceptionV3EmbeddingCache(cache_dir=cache_dir)
     return _INCEPTION_CACHE
+
 
 class ImagePathDataset(torch.utils.data.Dataset):
     def __init__(self, file_dataset, transforms=None):
@@ -32,235 +30,189 @@ class ImagePathDataset(torch.utils.data.Dataset):
     def __getitem__(self, i):
         img_path, label = self.file_dataset[i]['image'], self.file_dataset[i]['label']
         img = Image.open(img_path).convert("RGB")
-        label = torch.tensor(label)
+        # label = torch.tensor(label) label is currently str in tiny imagenet, need to convert with tiny_imagenet_wnid_mapping.json
+        # but for feature extraction we don't need label as tensor
         if self.transforms is not None:
             img = self.transforms(img)
         return img, label
 
-def FID_distance(dataset_list, model_name='InceptionV3', device=None, return_all=False, batch_size=50, use_cache=True, cache_dir="./.inception_cache"):
 
-    """
-    Calculate the average pairwise Frechet Inception Distance (FID) of N datasets.
+def _extract_features(dataset_list, model_name='InceptionV3', device=None,
+                      batch_size=50, use_cache=True, cache_dir="./.inception_cache"):
+    """Extract features from a list of datasets. Returns list of numpy arrays."""
+    if use_cache and model_name == 'InceptionV3':
+        cache = get_inception_cache(cache_dir)
+        features_list = []
+        for dataset in dataset_list:
+            image_paths = [item["image"] for item in dataset]
+            embeddings_dict = cache.get_embeddings(image_paths, batch_size)
+            features = np.array([embeddings_dict[p] for p in image_paths])
+            features_list.append(features)
+        return features_list
 
-    Args:
-        dataset_list: List of datasets (each dataset is a list of image file paths)
-        model_name: Name of the model to use for feature extraction
-        device: Device to run model on ('cuda' or 'cpu')
-        batch_size: Batch size for feature extraction
-        use_cache: Whether to use embedding cache (default: True)
-        cache_dir: Directory for cache storage (default: "./.inception_cache")
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    Returns:
-        FID score as float
-    """
+    torch.hub.set_dir('~/archive/.cache/torch/hub')
 
+    if model_name == 'InceptionV3':
+        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+        model = models.inception_v3(pretrained=True, transform_input=False)
+        os.environ.pop('https_proxy', None)
+        model.fc = torch.nn.Identity()
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+    model.to(device)
+    model.eval()
+
+    transform = transforms.Compose([
+        transforms.Resize((299, 299)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    features_list = []
+    for dataset in dataset_list:
+        img_dataset = ImagePathDataset(dataset, transforms=transform)
+        dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
+        features = []
+        with torch.no_grad():
+            for images, _ in dataloader:
+                images = images.to(device)
+                feats = model(images)
+                features.append(feats.cpu().numpy())
+        features_list.append(np.concatenate(features, axis=0))
+
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return features_list
+
+
+def _compute_pairwise(items, metric_fn, return_all=False):
+    """Compute pairwise metrics. Returns mean or list of all pairs."""
+    n = len(items)
+    if n < 2:
+        raise ValueError("At least two items required for pairwise comparison.")
+
+    scores = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            scores.append(metric_fn(items[i], items[j]))
+
+    return scores if return_all else np.mean(scores)
+
+
+def FID_distance(dataset_list, model_name='InceptionV3', device=None,
+                 return_all=False, batch_size=50, use_cache=True,
+                 cache_dir="./.inception_cache"):
+    """Calculate average pairwise Frechet Inception Distance of N datasets."""
     if len(dataset_list) < 2:
-        raise ValueError("At least two datasets are required to compute FID.")
+        raise ValueError("At least two datasets are required.")
+
+    features_list = _extract_features(
+        dataset_list, model_name, device, batch_size, use_cache, cache_dir
+    )
 
     def compute_statistics(activations):
         mu = np.mean(activations, axis=0)
         sigma = np.cov(activations, rowvar=False)
         return mu, sigma
 
-    def compute_fid_from_stats(stats1, stats2):
+    def compute_fid(stats1, stats2):
         mu1, sigma1 = stats1
         mu2, sigma2 = stats2
 
-        mu1 = np.atleast_1d(mu1)
-        mu2 = np.atleast_1d(mu2)
-        sigma1 = np.atleast_2d(sigma1)
-        sigma2 = np.atleast_2d(sigma2)
-
-        assert (mu1.shape == mu2.shape), "Training and test mean vectors have different lengths"
-        assert (sigma1.shape == sigma2.shape), "Training and test covariances have different dimensions"
+        mu1, mu2 = np.atleast_1d(mu1), np.atleast_1d(mu2)
+        sigma1, sigma2 = np.atleast_2d(sigma1), np.atleast_2d(sigma2)
 
         diff = mu1 - mu2
         covmean, _ = scipy.linalg.sqrtm(sigma1.dot(sigma2), disp=False)
 
         if not np.isfinite(covmean).all():
-            print("fid calculation produces singular product; adding a small offset to the diagonal of covariances")
             offset = np.eye(sigma1.shape[0]) * 1e-6
             covmean = scipy.linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
 
         if np.iscomplexobj(covmean):
             covmean = covmean.real
 
-        fid = diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean)
-        return fid
+        return diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean)
 
-    # Use cached embeddings if enabled
-    if use_cache and model_name == 'InceptionV3':
-        cache = get_inception_cache(cache_dir)
-
-        stats_list = []
-        for dataset in dataset_list:
-            # Get image paths
-            image_paths = [item["image"] for item in dataset]
-
-            # Get embeddings from cache
-            embeddings_dict = cache.get_embeddings(image_paths, batch_size)
-
-            # Convert to array in original order
-            activations = np.array([embeddings_dict[p] for p in image_paths])
-
-            # Compute statistics
-            stats = compute_statistics(activations)
-            stats_list.append(stats)
-
-    else:
-        # Original code path (no caching)
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-        # Set up model directory
-        torch.hub.set_dir('~/archive/.cache/torch/hub')
-
-        if model_name == 'InceptionV3':
-            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-            model = models.inception_v3(pretrained=True, transform_input=False)
-            os.environ.pop('https_proxy', None)
-        else:
-            raise ValueError("Unsupported model for FID calculation")
-
-        model.fc = torch.nn.Identity()
-        model.to(device)
-        model.eval()
-
-        transform = transforms.Compose([
-            transforms.Resize((299, 299)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-
-        def get_activations(dataset):
-            activations = []
-            dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-            with torch.no_grad():
-                for (image, label) in dataloader:
-                    image = image.to(device)
-                    preds = model(image)
-                    activations.append(preds.cpu().numpy())
-            return np.concatenate(activations, axis=0)
-
-        n_datasets = len(dataset_list)
-        stats_list = []
-        for i, dataset in enumerate(dataset_list):
-            img_dataset = ImagePathDataset(dataset, transforms=transform)
-            activations = get_activations(img_dataset)
-            stats = compute_statistics(activations)
-            stats_list.append(stats)
-            del activations  # Free memory
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-    # Compute pairwise FID scores
-    n_datasets = len(dataset_list)
-    fid_scores = []
-    for i in range(n_datasets):
-        for j in range(i + 1, n_datasets):
-            fid = compute_fid_from_stats(stats_list[i], stats_list[j])
-            fid_scores.append(fid)
-
-    # structure of fidscores is [fid_0_1, fid_0_2, ..., fid_1_2, ...]
-
-    return np.mean(fid_scores) if not return_all else fid_scores
-    
+    stats_list = [compute_statistics(f) for f in features_list]
+    return _compute_pairwise(stats_list, compute_fid, return_all)
 
 
-def KL_divergence(dataset1, dataset2, num_classes=None):
-    """
-    Calculate KL Divergence between label distributions of two datasets.
-
-    Args:
-        dataset1: List of dicts with 'label' field
-        dataset2: List of dicts with 'label' field
-        num_classes: Total number of classes (if None, inferred from data)
-
-    Returns:
-        KL divergence D_KL(P||Q) where P is dataset1, Q is dataset2
-    """
-    # raise ValueError if datasets are empty
-    if len(dataset1) == 0 or len(dataset2) == 0:
+def KL_divergence(dataset_list, num_classes=None, return_all=False):
+    """Calculate average pairwise KL Divergence between label distributions."""
+    if any(len(d) == 0 for d in dataset_list):
         raise ValueError("Datasets must not be empty.")
 
-    labels1 = np.array([item['label'] for item in dataset1])
-    labels2 = np.array([item['label'] for item in dataset2])
+    labels_list = [np.array([item['label'] for item in d]) for d in dataset_list]
 
     if num_classes is None:
-        num_classes = max(labels1.max(), labels2.max()) + 1
+        num_classes = max(l.max() for l in labels_list) + 1
 
-    # Compute label distributions with smoothing to avoid log(0)
     epsilon = 1e-10
-    counts1 = np.bincount(labels1, minlength=num_classes) + epsilon
-    counts2 = np.bincount(labels2, minlength=num_classes) + epsilon
+    distributions = []
+    for labels in labels_list:
+        counts = np.bincount(labels, minlength=num_classes) + epsilon
+        distributions.append(counts / counts.sum())
 
-    p = counts1 / counts1.sum()
-    q = counts2 / counts2.sum()
+    def compute_kl(p, q):
+        return np.sum(p * np.log(p / q))
 
-    kl_div = np.sum(p * np.log(p / q))
-    return kl_div
+    return _compute_pairwise(distributions, compute_kl, return_all)
 
 
-def KS_label_test(dataset1, dataset2):
-    """
-    Perform Kolmogorov-Smirnov test on label distributions.
+def KS_label_test(dataset_list, return_all=False):
+    """Perform pairwise Kolmogorov-Smirnov tests on label distributions."""
+    labels_list = [np.array([item['label'] for item in d]) for d in dataset_list]
 
-    Args:
-        dataset1: List of dicts with 'label' field
-        dataset2: List of dicts with 'label' field
+    def compute_ks(l1, l2):
+        statistic, pvalue = stats.ks_2samp(l1, l2)
+        return {'statistic': statistic, 'pvalue': pvalue}
 
-    Returns:
-        dict with 'statistic' and 'pvalue'
-    """
-    labels1 = np.array([item['label'] for item in dataset1])
-    labels2 = np.array([item['label'] for item in dataset2])
+    n = len(labels_list)
+    if n < 2:
+        raise ValueError("At least two datasets required.")
 
-    # KS test for discrete distributions
-    statistic, pvalue = stats.ks_2samp(labels1, labels2)
+    results = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            results.append(compute_ks(labels_list[i], labels_list[j]))
 
-    return {'statistic': statistic, 'pvalue': pvalue}
+    if return_all:
+        return results
+
+    return {
+        'statistic': np.mean([r['statistic'] for r in results]),
+        'pvalue': np.mean([r['pvalue'] for r in results])
+    }
 
 
 def MMD_rbf_kernel(X, Y, sigma=None):
-    """
-    Calculate Maximum Mean Discrepancy (MMD) using RBF kernel.
-
-    Args:
-        X: First sample (n_samples_X, n_features)
-        Y: Second sample (n_samples_Y, n_features)
-        sigma: RBF kernel bandwidth (if None, uses median heuristic)
-
-    Returns:
-        MMD^2 statistic
-    """
-    X = np.atleast_2d(X)
-    Y = np.atleast_2d(Y)
-
+    """Calculate MMD^2 using RBF kernel."""
+    X, Y = np.atleast_2d(X), np.atleast_2d(Y)
     m, n = X.shape[0], Y.shape[0]
 
-    # Compute median heuristic for sigma if not provided
+    if m < 2 or n < 2:
+        raise ValueError("Each sample must have at least 2 points for unbiased MMD.")
+
     if sigma is None:
-        # Use median of pairwise distances
         combined = np.vstack([X, Y])
         dists = cdist(combined, combined, 'euclidean')
         non_zero_dists = dists[dists > 0]
-        if len(non_zero_dists) == 0:
-            sigma = 1.0
-        else:
-            sigma = np.median(non_zero_dists)
+        sigma = np.median(non_zero_dists) if len(non_zero_dists) > 0 else 1.0
 
-    def rbf_kernel(A, B, sigma):
-        """Compute RBF kernel matrix between A and B"""
-        dists = cdist(A, B, 'sqeuclidean')
-        return np.exp(-dists / (2 * sigma**2))
+    def rbf_kernel(A, B):
+        return np.exp(-cdist(A, B, 'sqeuclidean') / (2 * sigma**2))
 
-    # Compute kernel matrices
-    K_XX = rbf_kernel(X, X, sigma)
-    K_YY = rbf_kernel(Y, Y, sigma)
-    K_XY = rbf_kernel(X, Y, sigma)
+    K_XX = rbf_kernel(X, X)
+    K_YY = rbf_kernel(Y, Y)
+    K_XY = rbf_kernel(X, Y)
 
-    # MMD^2 unbiased estimate
-    # Remove diagonal from K_XX and K_YY
     np.fill_diagonal(K_XX, 0)
     np.fill_diagonal(K_YY, 0)
 
@@ -271,601 +223,153 @@ def MMD_rbf_kernel(X, Y, sigma=None):
     return max(mmd_squared, 0.0)
 
 
-def MMD_label_distributions(dataset1, dataset2, num_classes=None):
-    """
-    Calculate MMD between label distributions (treating distributions as vectors).
-
-    Args:
-        dataset1: List of dicts with 'label' field
-        dataset2: List of dicts with 'label' field
-        num_classes: Total number of classes
-
-    Returns:
-        MMD between label distributions
-    """
-    labels1 = np.array([item['label'] for item in dataset1])
-    labels2 = np.array([item['label'] for item in dataset2])
+def MMD_label_distributions(dataset_list, num_classes=None, return_all=False):
+    """Calculate average pairwise MMD between label distributions."""
+    labels_list = [np.array([item['label'] for item in d]) for d in dataset_list]
 
     if num_classes is None:
-        num_classes = max(labels1.max(), labels2.max()) + 1
-    
-    onehot1 = np.eye(num_classes)[labels1]
-    onehot2 = np.eye(num_classes)[labels2]
+        num_classes = max(l.max() for l in labels_list) + 1
 
-    mean1 = onehot1.mean(axis=0).reshape(1, -1)
-    mean2 = onehot2.mean(axis=0).reshape(1, -1)
-    mmd_squared = np.sum((mean1 - mean2) ** 2)
-    return np.sqrt(mmd_squared)
+    means = [np.eye(num_classes)[labels].mean(axis=0) for labels in labels_list]
 
-    # Convert to distribution vectors
-    # counts1 = np.bincount(labels1, minlength=num_classes)
-    # counts2 = np.bincount(labels2, minlength=num_classes)
+    def compute_mmd(m1, m2):
+        return np.sqrt(np.sum((m1 - m2) ** 2))
 
-    # p = counts1 / counts1.sum()
-    # q = counts2 / counts2.sum()
-
-    # # Reshape to 2D for MMD
-    # p = p.reshape(1, -1)
-    # q = q.reshape(1, -1)
-
-    # # For single distributions, MMD simplifies to distance between means
-    # return np.linalg.norm(p - q)
+    return _compute_pairwise(means, compute_mmd, return_all)
 
 
-def MMD_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, sigma=None, use_cache=True, cache_dir="./.inception_cache"):
-    """
-    Calculate MMD between feature distributions of two datasets.
+def MMD_features(dataset_list, model_name='InceptionV3', device=None,
+                 batch_size=50, sigma=None, return_all=False,
+                 use_cache=True, cache_dir="./.inception_cache"):
+    """Calculate average pairwise MMD between feature distributions."""
+    features_list = _extract_features(
+        dataset_list, model_name, device, batch_size, use_cache, cache_dir
+    )
 
-    Args:
-        dataset1: List of dicts with 'image' and 'label' fields
-        dataset2: List of dicts with 'image' and 'label' fields
-        model_name: Name of the model for feature extraction
-        device: Device to run model on
-        batch_size: Batch size for feature extraction
-        sigma: RBF kernel bandwidth (if None, uses median heuristic)
-        use_cache: Whether to use embedding cache (default: True)
-        cache_dir: Directory for cache storage (default: "./.inception_cache")
+    def compute_mmd(f1, f2):
+        return MMD_rbf_kernel(f1, f2, sigma=sigma)
 
-    Returns:
-        MMD^2 statistic between feature distributions
-    """
-    # Use cached embeddings if enabled
-    if use_cache and model_name == 'InceptionV3':
-        cache = get_inception_cache(cache_dir)
-
-        # Get embeddings for both datasets
-        image_paths1 = [item["image"] for item in dataset1]
-        image_paths2 = [item["image"] for item in dataset2]
-
-        embeddings_dict1 = cache.get_embeddings(image_paths1, batch_size)
-        embeddings_dict2 = cache.get_embeddings(image_paths2, batch_size)
-
-        features1 = np.array([embeddings_dict1[p] for p in image_paths1])
-        features2 = np.array([embeddings_dict2[p] for p in image_paths2])
-
-    else:
-        # Original code path (no caching)
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-        # Set up model directory
-        torch.hub.set_dir('~/archive/.cache/torch/hub')
-
-        # Load model
-        if model_name == 'InceptionV3':
-            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-            model = models.inception_v3(pretrained=True, transform_input=False)
-            model.fc = torch.nn.Identity()
-            os.environ.pop('https_proxy', None)
-        else:
-            raise ValueError(f"Unsupported model: {model_name}")
-
-        model.to(device)
-        model.eval()
-
-        transform = transforms.Compose([
-            transforms.Resize((299, 299)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-
-        def extract_features(dataset):
-            img_dataset = ImagePathDataset(dataset, transforms=transform)
-            dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
-            features = []
-            with torch.no_grad():
-                for images, _ in dataloader:
-                    images = images.to(device)
-                    feats = model(images)
-                    features.append(feats.cpu().numpy())
-            return np.concatenate(features, axis=0)
-
-        features1 = extract_features(dataset1)
-        features2 = extract_features(dataset2)
-
-        # Cleanup
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    mmd_squared = MMD_rbf_kernel(features1, features2, sigma=sigma)
-
-    return mmd_squared
+    return _compute_pairwise(features_list, compute_mmd, return_all)
 
 
-def mahalanobis_distance_labels(dataset1, dataset2, num_classes=None):
-    """
-    Calculate Mahalanobis distance between label distributions.
-
-    Args:
-        dataset1: List of dicts with 'label' field
-        dataset2: List of dicts with 'label' field
-        num_classes: Total number of classes
-
-    Returns:
-        Mahalanobis distance
-    """
-    labels1 = np.array([item['label'] for item in dataset1])
-    labels2 = np.array([item['label'] for item in dataset2])
+def mahalanobis_distance_labels(dataset_list, num_classes=None, return_all=False):
+    """Calculate average pairwise Mahalanobis distance between label distributions."""
+    labels_list = [np.array([item['label'] for item in d]) for d in dataset_list]
 
     if num_classes is None:
-        num_classes = max(labels1.max(), labels2.max()) + 1
-
-    # Convert to distribution vectors
-    counts1 = np.bincount(labels1, minlength=num_classes)
-    counts2 = np.bincount(labels2, minlength=num_classes)
-
-    p = counts1 / counts1.sum()
-    q = counts2 / counts2.sum()
-
-    # Estimate covariance from both distributions
-    # combined = np.vstack([p, q])
-    # cov = np.cov(combined.T)
-    avg_dist = (p + q) / 2
-    cov = np.diag(avg_dist) - np.outer(avg_dist, avg_dist)
-    # Add small regularization to avoid singularity
-    cov += np.eye(cov.shape[0]) * 1e-6
-
-    # Compute Mahalanobis distance
-    diff = p - q
-    try:
-        inv_cov = np.linalg.inv(cov)
-        mahal_dist = np.sqrt(diff @ inv_cov @ diff.T)
-    except np.linalg.LinAlgError:
-        mahal_dist = np.linalg.norm(diff)  # Fallback to Euclidean if singular
-
-    return mahal_dist
-
-def wasserstein_distance_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, use_cache=True, cache_dir="./.inception_cache"):
-    """
-    Calculate Wasserstein distance (Earth Mover's Distance) between feature distributions.
-
-    Args:
-        dataset1: List of dicts with 'image' and 'label' fields
-        dataset2: List of dicts with 'image' and 'label' fields
-        model_name: Name of the model for feature extraction
-        device: Device to run model on
-        batch_size: Batch size for feature extraction
-        use_cache: Whether to use embedding cache (default: True)
-        cache_dir: Directory for cache storage (default: "./.inception_cache")
-
-    Returns:
-        Wasserstein distance (averaged across feature dimensions)
-    """
-    # Use cached embeddings if enabled
-    if use_cache and model_name == 'InceptionV3':
-        cache = get_inception_cache(cache_dir)
-
-        # Get embeddings for both datasets
-        image_paths1 = [item["image"] for item in dataset1]
-        image_paths2 = [item["image"] for item in dataset2]
-
-        embeddings_dict1 = cache.get_embeddings(image_paths1, batch_size)
-        embeddings_dict2 = cache.get_embeddings(image_paths2, batch_size)
-
-        features1 = np.array([embeddings_dict1[p] for p in image_paths1])
-        features2 = np.array([embeddings_dict2[p] for p in image_paths2])
-
-    else:
-        # Original code path (no caching)
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-        # Set up model directory
-        torch.hub.set_dir('~/archive/.cache/torch/hub')
-
-        # Load model
-        if model_name == 'InceptionV3':
-            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-            model = models.inception_v3(pretrained=True, transform_input=False)
-            os.environ.pop('https_proxy', None)
-            model.fc = torch.nn.Identity()
-        else:
-            raise ValueError(f"Unsupported model: {model_name}")
-
-        model.to(device)
-        model.eval()
-
-        transform = transforms.Compose([
-            transforms.Resize((299, 299)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-
-        def extract_features(dataset):
-            img_dataset = ImagePathDataset(dataset, transforms=transform)
-            dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
-            features = []
-            with torch.no_grad():
-                for images, _ in dataloader:
-                    images = images.to(device)
-                    feats = model(images)
-                    features.append(feats.cpu().numpy())
-            return np.concatenate(features, axis=0)
-
-        features1 = extract_features(dataset1)
-        features2 = extract_features(dataset2)
-
-        # Cleanup
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    # Compute Wasserstein distance for each feature dimension and average
-    n_features = features1.shape[1]
-    wasserstein_dists = []
-
-    for i in range(n_features):
-        wd = stats.wasserstein_distance(features1[:, i], features2[:, i])
-        wasserstein_dists.append(wd)
-
-    avg_wasserstein = np.mean(wasserstein_dists)
-
-    return avg_wasserstein
-
-
-def cramer_von_mises_features(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, use_cache=True, cache_dir="./.inception_cache"):
-    """
-    Calculate Cramér-von Mises criterion between feature distributions.
-
-    Args:
-        dataset1: List of dicts with 'image' and 'label' fields
-        dataset2: List of dicts with 'image' and 'label' fields
-        model_name: Name of the model for feature extraction
-        device: Device to run model on
-        batch_size: Batch size for feature extraction
-        use_cache: Whether to use embedding cache (default: True)
-        cache_dir: Directory for cache storage (default: "./.inception_cache")
-
-    Returns:
-        Cramér-von Mises statistic (averaged across feature dimensions)
-    """
-    # Use cached embeddings if enabled
-    if use_cache and model_name == 'InceptionV3':
-        cache = get_inception_cache(cache_dir)
-
-        # Get embeddings for both datasets
-        image_paths1 = [item["image"] for item in dataset1]
-        image_paths2 = [item["image"] for item in dataset2]
-
-        embeddings_dict1 = cache.get_embeddings(image_paths1, batch_size)
-        embeddings_dict2 = cache.get_embeddings(image_paths2, batch_size)
-
-        features1 = np.array([embeddings_dict1[p] for p in image_paths1])
-        features2 = np.array([embeddings_dict2[p] for p in image_paths2])
-
-    else:
-        # Original code path (no caching)
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-        # Set up model directory
-        torch.hub.set_dir('~/archive/.cache/torch/hub')
-
-        # Load model
-        if model_name == 'InceptionV3':
-            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-            model = models.inception_v3(pretrained=True, transform_input=False)
-            os.environ.pop('https_proxy', None)
-            model.fc = torch.nn.Identity()
-        else:
-            raise ValueError(f"Unsupported model: {model_name}")
-
-        model.to(device)
-        model.eval()
-
-        transform = transforms.Compose([
-            transforms.Resize((299, 299)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-
-        def extract_features(dataset):
-            img_dataset = ImagePathDataset(dataset, transforms=transform)
-            dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
-            features = []
-            with torch.no_grad():
-                for images, _ in dataloader:
-                    images = images.to(device)
-                    feats = model(images)
-                    features.append(feats.cpu().numpy())
-            return np.concatenate(features, axis=0)
-
-        features1 = extract_features(dataset1)
-        features2 = extract_features(dataset2)
-
-        # Cleanup
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    # Compute Cramér-von Mises test for each feature dimension and average
-    n_features = features1.shape[1]
-    cvm_statistics = []
-
-    for i in range(n_features):
-        result = stats.cramervonmises_2samp(features1[:, i], features2[:, i])
-        cvm_statistics.append(result.statistic)
-
-    avg_cvm = np.mean(cvm_statistics)
-
-    return avg_cvm
-
-
-def KS_multivariate_test(dataset1, dataset2, model_name='InceptionV3', device=None, batch_size=50, alpha=0.05, use_cache=True, cache_dir="./.inception_cache"):
-    """
-    Perform multivariate KS test by combining multiple univariate KS tests
-    with Bonferroni correction.
-
-    Args:
-        dataset1: List of dicts with 'image' and 'label' fields
-        dataset2: List of dicts with 'image' and 'label' fields
-        model_name: Name of the model for feature extraction
-        device: Device to run model on
-        batch_size: Batch size for feature extraction
-        alpha: Significance level
-        use_cache: Whether to use embedding cache (default: True)
-        cache_dir: Directory for cache storage (default: "./.inception_cache")
-
-    Returns:
-        dict with 'reject_null' (bool), 'min_pvalue', 'corrected_alpha', and 'n_tests'
-    """
-    # Use cached embeddings if enabled
-    if use_cache and model_name == 'InceptionV3':
-        cache = get_inception_cache(cache_dir)
-
-        # Get embeddings for both datasets
-        image_paths1 = [item["image"] for item in dataset1]
-        image_paths2 = [item["image"] for item in dataset2]
-
-        embeddings_dict1 = cache.get_embeddings(image_paths1, batch_size)
-        embeddings_dict2 = cache.get_embeddings(image_paths2, batch_size)
-
-        features1 = np.array([embeddings_dict1[p] for p in image_paths1])
-        features2 = np.array([embeddings_dict2[p] for p in image_paths2])
-
-    else:
-        # Original code path (no caching)
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-        # Set up model directory
-        torch.hub.set_dir('~/archive/.cache/torch/hub')
-
-        # Load model
-        if model_name == 'InceptionV3':
-            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-            model = models.inception_v3(pretrained=True, transform_input=False)
-            os.environ.pop('https_proxy', None)
-            model.fc = torch.nn.Identity()
-        else:
-            raise ValueError(f"Unsupported model: {model_name}")
-
-        model.to(device)
-        model.eval()
-
-        transform = transforms.Compose([
-            transforms.Resize((299, 299)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-
-        def extract_features(dataset):
-            img_dataset = ImagePathDataset(dataset, transforms=transform)
-            dataloader = torch.utils.data.DataLoader(img_dataset, batch_size=batch_size, shuffle=False)
-            features = []
-            with torch.no_grad():
-                for images, _ in dataloader:
-                    images = images.to(device)
-                    feats = model(images)
-                    features.append(feats.cpu().numpy())
-            return np.concatenate(features, axis=0)
-
-        features1 = extract_features(dataset1)
-        features2 = extract_features(dataset2)
-
-        # Cleanup
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    # Perform KS test for each feature dimension
-    n_features = features1.shape[1]
-    pvalues = []
-
-    for i in range(n_features):
-        statistic, pvalue = stats.ks_2samp(features1[:, i], features2[:, i])
-        pvalues.append(pvalue)
-
-    pvalues = np.array(pvalues)
-    min_pvalue = pvalues.min()
-
-    # Bonferroni correction: reject null hypothesis if minimum p-value < alpha/K
-    corrected_alpha = alpha / n_features
-    reject_null = min_pvalue < corrected_alpha
-
-    return {
-        'reject_null': reject_null,
-        'min_pvalue': float(min_pvalue),
-        'corrected_alpha': corrected_alpha,
-        'n_tests': n_features,
-        'significant_dims': int(np.sum(pvalues < corrected_alpha))
-    }
-
-def vendi_score_from_kernel(kernel_matrix, q=2):
-
-    import vendi_score as vendi
-
-    # Use official implementation directly
-    vs = vendi.score_K(kernel_matrix, q=q)
-
-    return float(vs)
-
-def vendi_score_features(dataset_list, model_name='InceptionV3', device=None,
-                        batch_size=50, q=2, normalize=True, return_details=False,
-                        use_cache=True, cache_dir="./.inception_cache"):
-    """
-    Compute Vendi Score across multiple datasets using deep feature embeddings.
-
-    The Vendi Score measures the effective number of unique elements using
-    eigenvalue analysis of feature similarity matrices. Higher scores indicate
-    greater diversity.
-
-    Args:
-        dataset_list: List of datasets, each is [{"image": path, "label": int}, ...]
-            - Single dataset: measures internal diversity within that dataset
-            - Multiple datasets: measures diversity across all datasets combined
-        model_name: Feature extraction model (default: 'InceptionV3')
-        device: Computation device (auto-detects CUDA if None)
-        batch_size: Batch size for feature extraction (default: 50)
-        q: Diversity order parameter (default: 2)
-            - q=2: Standard Shannon entropy-based score (recommended)
-            - q>2: Emphasizes common elements more
-            - q<2: Emphasizes rare elements more
-        normalize: Normalize embeddings before computing score (default: True)
-        return_details: Return dict with score and metadata (default: False)
-        use_cache: Whether to use embedding cache (default: True)
-        cache_dir: Directory for cache storage (default: "./.inception_cache")
-
-    Returns:
-        float: Vendi Score in range [1, N] where N is total samples
-        dict: If return_details=True, includes score, n_samples, n_datasets
-
-    Examples:
-        # Single dataset diversity (internal)
-        >>> vs = vendi_score_features([client1_data])
-        >>> print(f"Client 1 has {vs:.2f} effective unique samples")
-
-        # Multi-client diversity (cross-dataset)
-        >>> vs = vendi_score_features([client1_data, client2_data, client3_data])
-        >>> print(f"Across 3 clients: {vs:.2f} effective distributions")
-
-    Notes:
-        - Uses official vendi_score package implementation
-        - Extracts 2048-dim Inception v3 features (consistent with FID metric)
-        - Computational complexity: O(N²D + N³) for N samples, D dimensions
-        - For large N (>1000), consider subsampling for performance
-
-    Reference:
-        Friedman, D., & Dieng, A. B. (2023). The Vendi Score: A Diversity
-        Evaluation Metric for Machine Learning. Transactions on Machine Learning
-        Research. https://github.com/vertaix/Vendi-Score
-    """
-    import vendi_score as vendi
-
-    # Setup device
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    # Use cached embeddings if enabled
-    if use_cache and model_name == 'InceptionV3':
-        cache = get_inception_cache(cache_dir)
-
-        # Extract features from all datasets using cache
-        all_features = []
-        for dataset in dataset_list:
-            # Get image paths
-            image_paths = [item["image"] for item in dataset]
-
-            # Get embeddings from cache
-            embeddings_dict = cache.get_embeddings(image_paths, batch_size)
-
-            # Convert to array in original order
-            dataset_features = np.array([embeddings_dict[p] for p in image_paths])
-            all_features.append(dataset_features)
-
-        # Concatenate all features into single matrix (N_total, 2048)
-        features_matrix = np.concatenate(all_features, axis=0)
-
-    else:
-        # Original code path: extract features without caching
-        # Extract features using existing infrastructure
-        # Reuse pattern from FID_distance and MMD_features
-        torch.hub.set_dir('~/archive/.cache/torch/hub')
-
-        if model_name == 'InceptionV3':
-            # Use proxy for model download
-            os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-            model = models.inception_v3(pretrained=True, transform_input=False)
-            model.fc = torch.nn.Identity()  # Extract features before classification
-            os.environ.pop('https_proxy', None)
-        else:
-            raise ValueError(f"Unsupported model: {model_name}. Currently only 'InceptionV3' is supported.")
-
-        model.to(device)
-        model.eval()
-
-        # Image preprocessing (consistent with existing metrics)
-        transform = transforms.Compose([
-            transforms.Resize((299, 299)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-
-        # Extract features from all datasets
-        all_features = []
-
-        for dataset in dataset_list:
-            img_dataset = ImagePathDataset(dataset, transforms=transform)
-            dataloader = torch.utils.data.DataLoader(
-                img_dataset,
-                batch_size=batch_size,
-                shuffle=False
-            )
-
-            features = []
-            with torch.no_grad():
-                for images, _ in dataloader:
-                    images = images.to(device)
-                    feats = model(images)
-                    features.append(feats.cpu().numpy())
-
-            dataset_features = np.concatenate(features, axis=0)
-            all_features.append(dataset_features)
-
-        # Concatenate all features into single matrix (N_total, 2048)
-        features_matrix = np.concatenate(all_features, axis=0)
-    n_samples = features_matrix.shape[0]
-    n_datasets = len(dataset_list)
-
-    # Compute Vendi Score using official implementation
-    # Use score_dual() for efficiency since d=2048 << N in most cases
-    vs = vendi.score_dual(features_matrix, q=q, normalize=normalize)
-
-    # Cleanup
-    del features_matrix, all_features
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    # Return results
-    if return_details:
+        num_classes = max(l.max() for l in labels_list) + 1
+
+    distributions = []
+    for labels in labels_list:
+        counts = np.bincount(labels, minlength=num_classes)
+        distributions.append(counts / counts.sum())
+
+    def compute_mahalanobis(p, q):
+        avg_dist = (p + q) / 2
+        cov = np.diag(avg_dist) - np.outer(avg_dist, avg_dist)
+        cov += np.eye(cov.shape[0]) * 1e-6
+
+        diff = p - q
+        try:
+            inv_cov = np.linalg.inv(cov)
+            return np.sqrt(diff @ inv_cov @ diff.T)
+        except np.linalg.LinAlgError:
+            return np.linalg.norm(diff)
+
+    return _compute_pairwise(distributions, compute_mahalanobis, return_all)
+
+
+def wasserstein_distance_features(dataset_list, model_name='InceptionV3', device=None,
+                                  batch_size=50, return_all=False,
+                                  use_cache=True, cache_dir="./.inception_cache"):
+    """Calculate average pairwise Wasserstein distance between feature distributions."""
+    features_list = _extract_features(
+        dataset_list, model_name, device, batch_size, use_cache, cache_dir
+    )
+
+    def compute_wasserstein(f1, f2):
+        n_features = f1.shape[1]
+        dists = [stats.wasserstein_distance(f1[:, i], f2[:, i]) for i in range(n_features)]
+        return np.mean(dists)
+
+    return _compute_pairwise(features_list, compute_wasserstein, return_all)
+
+
+def cramer_von_mises_features(dataset_list, model_name='InceptionV3', device=None,
+                              batch_size=50, return_all=False,
+                              use_cache=True, cache_dir="./.inception_cache"):
+    """Calculate average pairwise Cramér-von Mises statistic between feature distributions."""
+    features_list = _extract_features(
+        dataset_list, model_name, device, batch_size, use_cache, cache_dir
+    )
+
+    def compute_cvm(f1, f2):
+        n_features = f1.shape[1]
+        cvm_stats = [stats.cramervonmises_2samp(f1[:, i], f2[:, i]).statistic
+                     for i in range(n_features)]
+        return np.mean(cvm_stats)
+
+    return _compute_pairwise(features_list, compute_cvm, return_all)
+
+
+def KS_multivariate_test(dataset_list, model_name='InceptionV3', device=None,
+                         batch_size=50, alpha=0.05, return_all=False,
+                         use_cache=True, cache_dir="./.inception_cache"):
+    """Perform pairwise multivariate KS tests with Bonferroni correction."""
+    features_list = _extract_features(
+        dataset_list, model_name, device, batch_size, use_cache, cache_dir
+    )
+
+    def compute_ks(f1, f2):
+        n_features = f1.shape[1]
+        pvalues = np.array([stats.ks_2samp(f1[:, i], f2[:, i])[1] for i in range(n_features)])
+        min_pvalue = pvalues.min()
+        corrected_alpha = alpha / n_features
+
         return {
-            'vendi_score': float(vs),
-            'n_samples': n_samples,
-            'n_datasets': n_datasets,
-            'model': model_name,
-            'q': q,
-            'normalized': normalize
+            'reject_null': min_pvalue < corrected_alpha,
+            'min_pvalue': float(min_pvalue),
+            'corrected_alpha': corrected_alpha,
+            'n_tests': n_features,
+            'significant_dims': int(np.sum(pvalues < corrected_alpha))
         }
 
-    return float(vs)
+    n = len(features_list)
+    if n < 2:
+        raise ValueError("At least two datasets required.")
+
+    results = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            results.append(compute_ks(features_list[i], features_list[j]))
+
+    if return_all:
+        return results
+
+    return {
+        'reject_null': any(r['reject_null'] for r in results),
+        'min_pvalue': min(r['min_pvalue'] for r in results),
+        'corrected_alpha': results[0]['corrected_alpha'],
+        'n_tests': results[0]['n_tests'],
+        'significant_dims': np.mean([r['significant_dims'] for r in results])
+    }
+
+
+def vendi_score_from_kernel(kernel_matrix, q=1):
+    from vendi_score import vendi
+    return float(vendi.score_K(kernel_matrix, q=q))
+
+
+def vendi_score_features(dataset_list, model_name='InceptionV3', device=None,
+                         batch_size=200, q=1, normalize=True, return_all=False,
+                         use_cache=True, cache_dir="./.inception_cache"):
+    """Calculate Vendi score for each dataset and return average (or all scores)."""
+    from vendi_score import vendi
+
+    features_list = _extract_features(
+        dataset_list, model_name, device, batch_size, use_cache, cache_dir
+    )
+
+    scores = [float(vendi.score_dual(f, q=q, normalize=normalize)) for f in features_list]
+
+    return scores if return_all else float(np.mean(scores))
