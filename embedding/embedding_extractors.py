@@ -66,7 +66,7 @@ class EmbeddingExtractor(ABC):
         num_workers: int = 4,
         proxy: Optional[str] = None,
         model_dir: Optional[str] = None,
-        cache_manager: Optional[CacheManager] = None, # Changed from cache_dir to cache_manager
+        cache_manager: Optional[CacheManager] = None,
     ):
         self.model_name = model_name
         self.batch_size = batch_size
@@ -87,13 +87,10 @@ class EmbeddingExtractor(ABC):
         self.transform: Any = None
 
     def _setup_proxy_for_download(self) -> None:
-        """Set up proxy environment variable for model downloads."""
         if self.proxy:
             os.environ['https_proxy'] = self.proxy
-            print(f"Set https_proxy to {self.proxy} for model download")
 
     def _cleanup_proxy_after_download(self) -> None:
-        """Remove proxy environment variable after download."""
         os.environ.pop('https_proxy', None)
 
     def _download_model_with_proxy(self, download_func, *args, **kwargs) -> Any:
@@ -114,7 +111,6 @@ class EmbeddingExtractor(ABC):
             self._cleanup_proxy_after_download()
 
     def _save_model_locally(self, model, processor) -> None:
-        """Save downloaded model to model_dir for future use."""
         if self.model_dir:
             model_path = self.model_dir / self.model_name.replace("/", "--")
             model_path.mkdir(parents=True, exist_ok=True)
@@ -125,12 +121,10 @@ class EmbeddingExtractor(ABC):
 
     @abstractmethod
     def load_model(self) -> None:
-        """Load the specific model and processor."""
         pass
 
     @abstractmethod
     def get_embedding_dim(self) -> int:
-        """Return the output dimension size."""
         pass
 
     def _get_dataloader(self, images: List[str]) -> DataLoader:
@@ -153,23 +147,26 @@ class EmbeddingExtractor(ABC):
         return_which_tokens: str = "cls",
         k_last: int = 4,
         use_cache: bool = True,
+        dataset_name: Optional[str] = None,
+        base_path: Optional[str] = None,
         **kwargs: Any,
     ) -> np.ndarray:
-        """
-        Default extraction for transformer-based models.
-        """
+        
+        # Define cache parameters
+        cache_params = {
+            "return_which_tokens": return_which_tokens,
+            "k_last": k_last,
+            "extractor_class": self.__class__.__name__,
+            **kwargs
+        }
+
         # 1. Check Unified Cache
         if use_cache and self.cache_manager:
-            # We pass extraction parameters to the cache key calculation
-            cache_params = {
-                "return_which_tokens": return_which_tokens,
-                "k_last": k_last,
-                "extractor_class": self.__class__.__name__,
-                **kwargs
-            }
             cached_data = self.cache_manager.get(
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 **cache_params
             )
             if cached_data is not None:
@@ -224,6 +221,8 @@ class EmbeddingExtractor(ABC):
                 embeddings=result,
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 **cache_params
             )
             
@@ -244,7 +243,6 @@ class InceptionExtractor(EmbeddingExtractor):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
-        # Use helper to handle proxy
         def _load_inception(*args, **kwargs):
             return models.inception_v3(weights='IMAGENET1K_V1', transform_input=False)
 
@@ -261,15 +259,20 @@ class InceptionExtractor(EmbeddingExtractor):
         self, 
         images: List[str], 
         use_cache: bool = True,
+        dataset_name: Optional[str] = None,
+        base_path: Optional[str] = None,
         **kwargs: Any,
     ) -> np.ndarray:
         
-        # 1. Check Cache
+        cache_params = {"extractor_class": self.__class__.__name__, **kwargs}
+
         if use_cache and self.cache_manager:
             cached_data = self.cache_manager.get(
                 model_name=self.model_name,
                 image_paths=images,
-                extractor_class=self.__class__.__name__
+                dataset_name=dataset_name,
+                base_path=base_path,
+                **cache_params
             )
             if cached_data is not None:
                 return cached_data
@@ -292,13 +295,14 @@ class InceptionExtractor(EmbeddingExtractor):
         else:
             result = np.concatenate(all_embeddings, axis=0)
 
-        # 2. Save Cache
         if use_cache and self.cache_manager:
             self.cache_manager.put(
                 embeddings=result,
                 model_name=self.model_name,
                 image_paths=images,
-                extractor_class=self.__class__.__name__
+                dataset_name=dataset_name,
+                base_path=base_path,
+                **cache_params
             )
             
         return result
@@ -320,70 +324,29 @@ class MAEExtractor(EmbeddingExtractor):
 
     def load_model(self) -> None:
         print(f"Loading MAE {self.variant}...")
-        
-        # Download or load processor
-        self.processor = self._download_model_with_proxy(
-            AutoImageProcessor.from_pretrained,
-            self.model_name
-        )
-        
-        # Download or load model
-        self.model = self._download_model_with_proxy(
-            ViTMAEModel.from_pretrained,
-            self.model_name
-        )
-        
-        # Save model locally if we downloaded it
-        if self.model_dir:
-            self._save_model_locally(self.model, self.processor)
-        
+        self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.model_name)
+        self.model = self._download_model_with_proxy(ViTMAEModel.from_pretrained, self.model_name)
+        if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()
-
     def get_embedding_dim(self) -> int:
         return {"base": 768, "large": 1024, "huge": 1280}[self.variant]
 
-
 @ModelRegistry.register("dino")
 class DINOv2Extractor(EmbeddingExtractor):
-    VARIANTS = {
-        "small": "facebook/dinov2-small",
-        "base": "facebook/dinov2-base",
-        "large": "facebook/dinov2-large",
-        "giant": "facebook/dinov2-giant",
-    }
-
+    VARIANTS = {"small": "facebook/dinov2-small", "base": "facebook/dinov2-base", "large": "facebook/dinov2-large", "giant": "facebook/dinov2-giant"}
     def __init__(self, variant: str = "base", **kwargs):
-        if variant not in self.VARIANTS:
-            raise ValueError(f"Unknown DINOv2 variant '{variant}'")
-        super().__init__(self.VARIANTS[variant], **kwargs)
+        super().__init__(self.VARIANTS.get(variant, "facebook/dinov2-base"), **kwargs)
         self.variant = variant
-
     def load_model(self) -> None:
         print(f"Loading DINOv2 {self.variant}...")
-        
-        # Download or load processor
-        self.processor = self._download_model_with_proxy(
-            AutoImageProcessor.from_pretrained,
-            self.model_name
-        )
-        
-        # Download or load model
-        self.model = self._download_model_with_proxy(
-            AutoModel.from_pretrained,
-            self.model_name
-        )
-        
-        # Save model locally if we downloaded it
-        if self.model_dir:
-            self._save_model_locally(self.model, self.processor)
-        
+        self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.model_name)
+        self.model = self._download_model_with_proxy(AutoModel.from_pretrained, self.model_name)
+        if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()
-
     def get_embedding_dim(self) -> int:
-        return {"small": 384, "base": 768, "large": 1024, "giant": 1536}[self.variant]
-
+        return {"small": 384, "base": 768, "large": 1024, "giant": 1536}.get(self.variant, 768)
 
 @ModelRegistry.register("clip")
 class CLIPExtractor(EmbeddingExtractor):
@@ -394,33 +357,15 @@ class CLIPExtractor(EmbeddingExtractor):
     }
 
     def __init__(self, variant: str = "base-patch16", **kwargs):
-        if variant not in self.VARIANTS:
-            raise ValueError(f"Unknown CLIP variant '{variant}'")
-        super().__init__(self.VARIANTS[variant], **kwargs)
+        super().__init__(self.VARIANTS.get(variant, "openai/clip-vit-base-patch16"), **kwargs)
         self.variant = variant
-
     def load_model(self) -> None:
-        print(f"Loading CLIP {self.variant} (Vision)...")
-        
-        # Download or load processor
-        self.processor = self._download_model_with_proxy(
-            CLIPImageProcessor.from_pretrained,
-            self.model_name
-        )
-        
-        # Download or load model
-        self.model = self._download_model_with_proxy(
-            CLIPVisionModel.from_pretrained,
-            self.model_name
-        )
-        
-        # Save model locally if we downloaded it
-        if self.model_dir:
-            self._save_model_locally(self.model, self.processor)
-        
+        print(f"Loading CLIP {self.variant}...")
+        self.processor = self._download_model_with_proxy(CLIPImageProcessor.from_pretrained, self.model_name)
+        self.model = self._download_model_with_proxy(CLIPVisionModel.from_pretrained, self.model_name)
+        if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()
-
     def get_embedding_dim(self) -> int:
         return {"base-patch32": 768, "base-patch16": 768, "large-patch14": 1024}[self.variant]
 
@@ -434,33 +379,15 @@ class SigLIPExtractor(EmbeddingExtractor):
     }
 
     def __init__(self, variant: str = "base-patch16-224", **kwargs):
-        if variant not in self.VARIANTS:
-            raise ValueError(f"Unknown SigLIP variant '{variant}'")
-        super().__init__(self.VARIANTS[variant], **kwargs)
+        super().__init__(self.VARIANTS.get(variant, "google/siglip-base-patch16-224"), **kwargs)
         self.variant = variant
-
     def load_model(self) -> None:
-        print(f"Loading SigLIP {self.variant} (Vision)...")
-        
-        # Download or load processor
-        self.processor = self._download_model_with_proxy(
-            SiglipImageProcessor.from_pretrained,
-            self.model_name
-        )
-        
-        # Download or load model
-        self.model = self._download_model_with_proxy(
-            SiglipVisionModel.from_pretrained,
-            self.model_name
-        )
-        
-        # Save model locally if we downloaded it
-        if self.model_dir:
-            self._save_model_locally(self.model, self.processor)
-        
+        print(f"Loading SigLIP {self.variant}...")
+        self.processor = self._download_model_with_proxy(SiglipImageProcessor.from_pretrained, self.model_name)
+        self.model = self._download_model_with_proxy(SiglipVisionModel.from_pretrained, self.model_name)
+        if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()
-
     def get_embedding_dim(self) -> int:
         return 1024 if "large" in self.variant else 768
 
