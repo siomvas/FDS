@@ -1,10 +1,3 @@
-"""
-Cache manager for embedding storage and retrieval.
-
-Provides efficient caching of computed embeddings to avoid redundant
-extraction from foundation models.
-"""
-
 import hashlib
 import json
 import pickle
