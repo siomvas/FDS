@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Type, Union, Any
 import os
-
+import json
+import hashlib
+import pickle
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,6 +12,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 from data_loading.dataset import ImageDataset
+from cache_manager import CacheManager
 
 from transformers import (
     AutoImageProcessor,
@@ -19,6 +23,7 @@ from transformers import (
     SiglipImageProcessor,
     ViTMAEModel,
 )
+
 
 class ModelRegistry:
     _REGISTRY: Dict[str, Type["EmbeddingExtractor"]] = {}
@@ -67,7 +72,8 @@ class EmbeddingExtractor(ABC):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.proxy = proxy
-        self.model_dir = model_dir
+        self.model_dir = Path(model_dir) if model_dir else None
+        self.cache_dir = Path(cache_dir) if cache_dir else None
         
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -77,6 +83,85 @@ class EmbeddingExtractor(ABC):
         self.model: Optional[nn.Module] = None
         self.processor: Any = None
         self.transform: Any = None
+        
+        # Setup cache directory if provided
+        if self.cache_dir:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _setup_proxy_for_download(self) -> None:
+        """Set up proxy environment variable for model downloads."""
+        if self.proxy:
+            os.environ['https_proxy'] = self.proxy
+            print(f"Set https_proxy to {self.proxy} for model download")
+
+    def _cleanup_proxy_after_download(self) -> None:
+        """Remove proxy environment variable after download."""
+        os.environ.pop('https_proxy', None)
+
+    def _download_model_with_proxy(self, download_func, *args, **kwargs) -> Any:
+        """Wrapper for model downloads with proxy support."""
+        try:
+            self._setup_proxy_for_download()
+            # Add local_files_only if model_dir is provided
+            if self.model_dir:
+                kwargs['local_files_only'] = True
+                # Check if model exists locally
+                model_path = self.model_dir / self.model_name.replace("/", "--")
+                if model_path.exists():
+                    print(f"Loading model from local directory: {model_path}")
+                    return download_func(str(model_path), *args[1:], **kwargs)
+                else:
+                    print(f"Model not found in {model_path}. Will try to download.")
+            
+            return download_func(*args, **kwargs)
+        finally:
+            self._cleanup_proxy_after_download()
+
+    def _save_model_locally(self, model, processor) -> None:
+        """Save downloaded model to model_dir for future use."""
+        if self.model_dir:
+            model_path = self.model_dir / self.model_name.replace("/", "--")
+            model_path.mkdir(parents=True, exist_ok=True)
+            
+            # Save model
+            model.save_pretrained(str(model_path))
+            
+            # Save processor if available
+            if processor:
+                processor.save_pretrained(str(model_path))
+                
+            print(f"Model saved locally to: {model_path}")
+
+    def _get_cache_key(self, images: List[str], params: Dict[str, Any]) -> str:
+        """Generate a cache key for embeddings."""
+        # Create a hash of model configuration and image list
+        config_str = f"{self.model_name}_{self.__class__.__name__}_{params}"
+        images_str = ",".join(sorted(images))
+        hash_input = f"{config_str}|{images_str}"
+        
+        return hashlib.md5(hash_input.encode()).hexdigest()
+
+    def _load_from_cache(self, cache_key: str) -> Optional[np.ndarray]:
+        """Load embeddings from cache if available."""
+        if not self.cache_dir:
+            return None
+            
+        cache_file = self.cache_dir / f"{cache_key}.pkl"
+        if cache_file.exists():
+            print(f"Loading embeddings from cache: {cache_file}")
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
+        return None
+
+    def _save_to_cache(self, cache_key: str, embeddings: np.ndarray) -> None:
+        """Save embeddings to cache."""
+        if not self.cache_dir:
+            return
+            
+        cache_file = self.cache_dir / f"{cache_key}.pkl"
+        with open(cache_file, 'wb') as f:
+            pickle.dump(embeddings, f)
+        print(f"Saved embeddings to cache: {cache_file}")
 
     @abstractmethod
     def load_model(self) -> None:
@@ -107,12 +192,26 @@ class EmbeddingExtractor(ABC):
         images: List[str], 
         return_which_tokens: str = "cls",
         k_last: int = 4,
+        use_cache: bool = True,
+        **kwargs: Any,
     ) -> np.ndarray:
         """
         Default extraction for transformer-based models.
         Override in subclasses if needed.
         return_which_tokens: 'cls' or 'all_last' or 'k_last_cls' or 'k_last_all'
         """
+        # Check cache first
+        cache_key = self._get_cache_key(images, {
+            "return_which_tokens": return_which_tokens,
+            "k_last": k_last,
+            **kwargs
+        })
+        
+        if use_cache:
+            cached = self._load_from_cache(cache_key)
+            if cached is not None:
+                return cached
+
         if not self.model:
             self.load_model()
 
@@ -123,7 +222,8 @@ class EmbeddingExtractor(ABC):
 
         with torch.no_grad():
             for batch in dataloader:
-                if batch is None: continue
+                if batch is None: 
+                    continue
                 batch = batch.to(self.device)
                 
                 if output_hidden:
@@ -152,9 +252,15 @@ class EmbeddingExtractor(ABC):
                 all_embeddings.append(emb.cpu().numpy())
 
         if not all_embeddings:
-            return np.array([])
+            result = np.array([])
+        else:
+            result = np.concatenate(all_embeddings, axis=0)
             
-        return np.concatenate(all_embeddings, axis=0)
+        # Save to cache
+        if use_cache:
+            self._save_to_cache(cache_key, result)
+            
+        return result
 
 
 @ModelRegistry.register("mae")
@@ -170,12 +276,26 @@ class MAEExtractor(EmbeddingExtractor):
             raise ValueError(f"Unknown MAE variant '{variant}'. Options: {list(self.VARIANTS.keys())}")
         super().__init__(self.VARIANTS[variant], **kwargs)
         self.variant = variant
-        self.proxy = kwargs.get("proxy", None)
 
     def load_model(self) -> None:
         print(f"Loading MAE {self.variant}...")
-        self.processor = AutoImageProcessor.from_pretrained(self.model_name)
-        self.model = ViTMAEModel.from_pretrained(self.model_name)
+        
+        # Download or load processor
+        self.processor = self._download_model_with_proxy(
+            AutoImageProcessor.from_pretrained,
+            self.model_name
+        )
+        
+        # Download or load model
+        self.model = self._download_model_with_proxy(
+            ViTMAEModel.from_pretrained,
+            self.model_name
+        )
+        
+        # Save model locally if we downloaded it
+        if self.model_dir:
+            self._save_model_locally(self.model, self.processor)
+        
         self.model.to(self.device)
         self.model.eval()
 
@@ -200,8 +320,23 @@ class DINOv2Extractor(EmbeddingExtractor):
 
     def load_model(self) -> None:
         print(f"Loading DINOv2 {self.variant}...")
-        self.processor = AutoImageProcessor.from_pretrained(self.model_name)
-        self.model = AutoModel.from_pretrained(self.model_name)
+        
+        # Download or load processor
+        self.processor = self._download_model_with_proxy(
+            AutoImageProcessor.from_pretrained,
+            self.model_name
+        )
+        
+        # Download or load model
+        self.model = self._download_model_with_proxy(
+            AutoModel.from_pretrained,
+            self.model_name
+        )
+        
+        # Save model locally if we downloaded it
+        if self.model_dir:
+            self._save_model_locally(self.model, self.processor)
+        
         self.model.to(self.device)
         self.model.eval()
 
@@ -225,8 +360,23 @@ class CLIPExtractor(EmbeddingExtractor):
 
     def load_model(self) -> None:
         print(f"Loading CLIP {self.variant} (Vision)...")
-        self.processor = CLIPImageProcessor.from_pretrained(self.model_name)
-        self.model = CLIPVisionModel.from_pretrained(self.model_name)
+        
+        # Download or load processor
+        self.processor = self._download_model_with_proxy(
+            CLIPImageProcessor.from_pretrained,
+            self.model_name
+        )
+        
+        # Download or load model
+        self.model = self._download_model_with_proxy(
+            CLIPVisionModel.from_pretrained,
+            self.model_name
+        )
+        
+        # Save model locally if we downloaded it
+        if self.model_dir:
+            self._save_model_locally(self.model, self.processor)
+        
         self.model.to(self.device)
         self.model.eval()
 
@@ -250,13 +400,29 @@ class SigLIPExtractor(EmbeddingExtractor):
 
     def load_model(self) -> None:
         print(f"Loading SigLIP {self.variant} (Vision)...")
-        self.processor = SiglipImageProcessor.from_pretrained(self.model_name)
-        self.model = SiglipVisionModel.from_pretrained(self.model_name)
+        
+        # Download or load processor
+        self.processor = self._download_model_with_proxy(
+            SiglipImageProcessor.from_pretrained,
+            self.model_name
+        )
+        
+        # Download or load model
+        self.model = self._download_model_with_proxy(
+            SiglipVisionModel.from_pretrained,
+            self.model_name
+        )
+        
+        # Save model locally if we downloaded it
+        if self.model_dir:
+            self._save_model_locally(self.model, self.processor)
+        
         self.model.to(self.device)
         self.model.eval()
 
     def get_embedding_dim(self) -> int:
         return 1024 if "large" in self.variant else 768
+
 
 @ModelRegistry.register("raw_pixel_resizer")
 class RawPixelResizerExtractor(EmbeddingExtractor):
@@ -283,19 +449,44 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
         images: List[str], 
         return_which_tokens: str = "cls",
         k_last: int = 5,
+        use_cache: bool = True,
+        **kwargs: Any,
     ) -> np.ndarray:
+        # Check cache first
+        cache_key = self._get_cache_key(images, {
+            "return_which_tokens": return_which_tokens,
+            "k_last": k_last,
+            **kwargs
+        })
+        
+        if use_cache:
+            cached = self._load_from_cache(cache_key)
+            if cached is not None:
+                return cached
+
         all_embeddings = []
 
         dataloader = self._get_dataloader(images)
         for batch in dataloader:
-            if batch is None: continue
+            if batch is None: 
+                continue
+            batch = batch.to(self.device)  # Ensure batch is on correct device
             batch_size = batch.size(0)
             emb = batch.view(batch_size, -1)
             all_embeddings.append(emb.cpu().numpy())
+            
         if not all_embeddings:
-            return np.array([])
-        return np.concatenate(all_embeddings, axis=0)
-    
+            result = np.array([])
+        else:
+            result = np.concatenate(all_embeddings, axis=0)
+            
+        # Save to cache
+        if use_cache:
+            self._save_to_cache(cache_key, result)
+            
+        return result
+
+
 @ModelRegistry.register("sparse_random_projection_resizer")
 class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
     def __init__(self, variant: str = "64-1000", **kwargs):
@@ -330,27 +521,56 @@ class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
     def extract_embeddings(
         self, 
         images: List[str], 
+        use_cache: bool = True,
         **kwargs: Any,
     ) -> np.ndarray:
+        # Check cache first
+        cache_key = self._get_cache_key(images, kwargs)
+        
+        if use_cache:
+            cached = self._load_from_cache(cache_key)
+            if cached is not None:
+                return cached
+
         if self.transformer is None:
             self.load_model()
+            
         all_embeddings = []
         dataloader = self._get_dataloader(images)
+        
+        # Fit transformer on first batch if not already fitted
+        fitted = False
+        
         for batch in dataloader:
-            if batch is None: continue
+            if batch is None: 
+                continue
+            batch = batch.to(self.device)  # Ensure batch is on correct device
             batch_size = batch.size(0)
             flat_batch = batch.view(batch_size, -1).cpu().numpy()
+            
+            if not fitted:
+                try:
+                    self.transformer.fit(flat_batch)
+                    fitted = True
+                except (AttributeError, ValueError) as e:
+                    raise RuntimeError(f"Failed to fit random projection transformer: {e}")
+            
             try:
                 projected = self.transformer.transform(flat_batch)
-            except:
-                self.transformer.fit(flat_batch)
-                projected = self.transformer.transform(flat_batch)
-            all_embeddings.append(projected)
+                all_embeddings.append(projected)
+            except Exception as e:
+                raise RuntimeError(f"Failed to transform batch with random projection: {e}")
 
         if not all_embeddings:
-            return np.array([])
-
-        return np.concatenate(all_embeddings, axis=0)
+            result = np.array([])
+        else:
+            result = np.concatenate(all_embeddings, axis=0)
+            
+        # Save to cache
+        if use_cache:
+            self._save_to_cache(cache_key, result)
+            
+        return result
 
 
 @ModelRegistry.register("UAE")
@@ -381,7 +601,9 @@ class UntrainedAutoEncoderExtractor(EmbeddingExtractor):
             nn.ReLU(),
             nn.MaxPool2d(2, stride=2, padding=0),
         ).to(self.device)
-
+        
+        # Also set self.model for compatibility with base class
+        self.model = self.autoencoder
 
     def get_embedding_dim(self) -> int:
         return 16 * (self.input_size // 8) * (self.input_size // 8)
@@ -391,25 +613,47 @@ class UntrainedAutoEncoderExtractor(EmbeddingExtractor):
         images: List[str], 
         return_which_tokens: str = "cls",
         k_last: int = 5,
+        use_cache: bool = True,
+        **kwargs: Any,
     ) -> np.ndarray:
-        if self.autoencoder is None:
-            self.load_model()
-        all_embeddings = []
+        # Check cache first
+        cache_key = self._get_cache_key(images, {
+            "return_which_tokens": return_which_tokens,
+            "k_last": k_last,
+            **kwargs
+        })
+        
+        if use_cache:
+            cached = self._load_from_cache(cache_key)
+            if cached is not None:
+                return cached
 
         if self.autoencoder is None:
             self.load_model()
+            
+        all_embeddings = []
 
         dataloader = self._get_dataloader(images)
         with torch.no_grad():
             for batch in dataloader:
-                if batch is None: continue
+                if batch is None: 
+                    continue
                 batch = batch.to(self.device)
                 encoded = self.autoencoder(batch)
                 emb = encoded.view(encoded.size(0), -1)
                 all_embeddings.append(emb.cpu().numpy())
+                
         if not all_embeddings:
-            return np.array([])
-        return np.concatenate(all_embeddings, axis=0)
+            result = np.array([])
+        else:
+            result = np.concatenate(all_embeddings, axis=0)
+            
+        # Save to cache
+        if use_cache:
+            self._save_to_cache(cache_key, result)
+            
+        return result
+
 
 @ModelRegistry.register("wavelet_scattering")
 class WaveletScatteringExtractor(EmbeddingExtractor):
@@ -439,7 +683,14 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        self.scattering = Scattering2D(J=self.J, shape=(self.input_size, self.input_size)).to(self.device)
+        
+        # Handle potential downloads for kymatio filters with proxy
+        try:
+            self._setup_proxy_for_download()
+            self.scattering = Scattering2D(J=self.J, shape=(self.input_size, self.input_size)).to(self.device)
+        finally:
+            self._cleanup_proxy_after_download()
+            
         self.model = None
 
     def get_embedding_dim(self) -> int:
@@ -455,19 +706,43 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
         images: List[str], 
         return_which_tokens: str = "cls",
         k_last: int = 5,
+        use_cache: bool = True,
+        **kwargs: Any,
     ) -> np.ndarray:
+        # Check cache first
+        cache_key = self._get_cache_key(images, {
+            "return_which_tokens": return_which_tokens,
+            "k_last": k_last,
+            **kwargs
+        })
+        
+        if use_cache:
+            cached = self._load_from_cache(cache_key)
+            if cached is not None:
+                return cached
+
         if self.scattering is None:
             self.load_model()
+            
         all_embeddings = []
 
         dataloader = self._get_dataloader(images)
         with torch.no_grad():
             for batch in dataloader:
-                if batch is None: continue
+                if batch is None: 
+                    continue
                 batch = batch.to(self.device)
                 scatter_coeffs = self.scattering(batch)
                 emb = scatter_coeffs.view(scatter_coeffs.size(0), -1)
                 all_embeddings.append(emb.cpu().numpy())
+                
         if not all_embeddings:
-            return np.array([])
-        return np.concatenate(all_embeddings, axis=0)
+            result = np.array([])
+        else:
+            result = np.concatenate(all_embeddings, axis=0)
+            
+        # Save to cache
+        if use_cache:
+            self._save_to_cache(cache_key, result)
+            
+        return result
