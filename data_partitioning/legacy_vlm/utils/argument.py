@@ -51,6 +51,8 @@ elif args.dataset == FOOD101:
     }
 elif args.dataset == ADE20K:
     criteria_choices = ["main_object", "scene", "light", "color", "size", "human"]
+    criteria_choices = ["main_object", "scene", "time", "color", "weather"]
+    criteria_choices = ["main_object", "scene", "light", "color", "size", "human"]
     criteria_config = {
         0: {"prompt": "Main Object", "examplar": "Tree", "num_classes": 8},
         1: {"prompt": "Location", "examplar": "Field", "num_classes": 4},

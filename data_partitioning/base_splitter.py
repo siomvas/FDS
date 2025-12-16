@@ -1,4 +1,4 @@
-from dataset import BaseDataset
+from data_partitioning.dataset import BaseDataset
 from typing import Dict, List, Optional, TypedDict, Any
 import numpy as np
 import torch
@@ -53,8 +53,6 @@ class BaseDatasetSplitter(ABC):
         if valset_type == "none" and val_dataset is not None:
             print("Warning: val_dataset provided but valset_type is 'none'. The val_dataset will be ignored.")
 
-        if not (0.0 <= heterogeneity <= 1.0):
-            raise ValueError(f"Heterogeneity must be between 0.0 and 1.0, got {heterogeneity}")
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.n_clients = n_clients

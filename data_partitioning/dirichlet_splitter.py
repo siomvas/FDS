@@ -5,18 +5,27 @@ from matplotlib.cm import get_cmap
 import matplotlib.patches as mpatches
 from scipy.stats import entropy
 
-from base_splitter import DatasetSplits, ClientSplit
-from dataset import BaseDataset
-from random_splitter import RandomSplitter
+from .base_splitter import DatasetSplits, ClientSplit
+from .dataset import BaseDataset
+from .random_splitter import RandomSplitter
 
 
 class DirichletSplitter(RandomSplitter):
     """
     Splits dataset across clients using a Dirichlet distribution to control heterogeneity.
 
-    For 'local' validation: Each client gets a Dirichlet-sampled train set from the original train set and a Dirichlet-sampled val set from the original val set
-    For 'global' validation: The global validation set is taken from the original val set
-    For 'none': No validation sets are created
+    The Dirichlet distribution (parameterized by alpha/heterogeneity) controls class imbalance:
+    - Lower alpha (e.g., 0.1-0.5): More heterogeneous, clients have very different class distributions
+    - Higher alpha (e.g., 1.0-10.0): More homogeneous, clients have similar class distributions
+
+    Two modes for client size distribution:
+    - proportions_constrained=True: Enforces roughly equal client sizes (capacity constraints)
+    - proportions_constrained=False: Allows natural size variation from Dirichlet sampling
+
+    Validation set modes:
+    - 'local': Each client gets a Dirichlet-sampled train and val set
+    - 'global': All clients share the same global validation set
+    - 'none': No validation sets are created
     """
 
     def __init__(
@@ -29,9 +38,24 @@ class DirichletSplitter(RandomSplitter):
         seed: int | None = None,
         min_samples_per_client: int = 10,
         max_retries: int = 1000,
+        proportions_constrained: bool = True,
     ):
+        """
+        Args:
+            train_dataset: Training dataset
+            val_dataset: Validation dataset
+            n_clients: Number of clients
+            heterogeneity: Dirichlet alpha parameter (lower = more heterogeneous)
+            valset_type: "global", "local", or "none"
+            seed: Random seed
+            min_samples_per_client: Minimum samples each client must have
+            max_retries: Maximum attempts to create valid partition
+            proportions_constrained: If True, enforce equal client sizes via capacity constraints.
+                                    If False, let sizes vary naturally based on Dirichlet sampling.
+        """
         self.min_samples_per_client = min_samples_per_client
         self.max_retries = max_retries
+        self.proportions_constrained = proportions_constrained
         super().__init__(train_dataset, val_dataset, n_clients, heterogeneity, valset_type, seed)
 
     def _compute_client_splits(self) -> DatasetSplits:
@@ -80,13 +104,20 @@ class DirichletSplitter(RandomSplitter):
                 np.random.shuffle(class_indices)
                 proportions = np.random.dirichlet([self.heterogeneity] * self.n_clients)
 
-                # Apply capacity constraint
-                proportions = np.array(
-                    [p * (len(client_idx) < total_samples / self.n_clients) for p, client_idx in zip(proportions, client_indices)]
-                )
-                if proportions.sum() == 0:
-                    continue
-                proportions = proportions / proportions.sum()
+                # Apply capacity constraint if proportions_constrained=True
+                if self.proportions_constrained:
+                    # Zero out proportions for clients that have reached capacity
+                    capacity = total_samples / self.n_clients
+                    for i, client_idx in enumerate(client_indices):
+                        if len(client_idx) >= capacity:
+                            proportions[i] = 0
+
+                    # If all clients are at capacity, skip this class
+                    if proportions.sum() == 0:
+                        continue
+
+                    # Renormalize proportions
+                    proportions = proportions / proportions.sum()
 
                 # Convert proportions to split points and split
                 split_points = (np.cumsum(proportions) * len(class_indices)).astype(int)[:-1]
@@ -220,7 +251,12 @@ class DirichletSplitter(RandomSplitter):
 
         ax.set_xlabel("Class Distribution (%)", fontsize=12)
         ax.set_ylabel("Clients", fontsize=12)
-        ax.set_title(f"Class Distribution per Client (Dirichlet Split, α={self.heterogeneity})", fontsize=14, fontweight="bold")
+        constraint_mode = "Constrained" if self.proportions_constrained else "Unconstrained"
+        ax.set_title(
+            f"Class Distribution per Client (Dirichlet Split, α={self.heterogeneity}, {constraint_mode})",
+            fontsize=14,
+            fontweight="bold",
+        )
         ax.set_yticks(client_positions)
         ax.set_yticklabels(clients)
         ax.set_xlim(0, 100)
