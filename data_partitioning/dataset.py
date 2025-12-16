@@ -1,10 +1,39 @@
 import os
 import json
 from torch.utils.data import Dataset
-from typing import List, Tuple, Dict, Any
+from typing import Callable, List, Tuple, Dict, Any
+from torch.utils.data import Dataset
 from pathlib import Path
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
+
+class ImageDataset(Dataset):
+    def __init__(self, file_dataset, transform: Callable = None, processor: Any = None):
+        self.file_dataset = file_dataset
+        if transform and processor:
+            raise ValueError("Provide either transform or processor, not both.")
+        self.transform = transform if transform else None
+        self.processor = processor if processor else None
+
+    def __len__(self) -> int:
+        return len(self.file_dataset)
+
+    def __getitem__(self, idx: int):
+        path = self.file_dataset[idx]["image"]
+        try:
+            with Image.open(path) as img:
+                image = img.convert("RGB")
+            if self.transform:
+                return self.transform(image)
+            elif self.processor:
+                inputs = self.processor(images=image, return_tensors="pt")
+                return inputs.pixel_values.squeeze(0)
+            else:
+                return image
+
+        except (UnidentifiedImageError, OSError, Exception) as e:
+            print(f"[Warning] Skipping corrupt image {path}: {e}")
+            return None
 
 class ClassificationDataset(Dataset):
     def __init__(self, split_data: List[Dict[str, Any]], transform=None):

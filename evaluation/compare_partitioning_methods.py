@@ -1,39 +1,17 @@
 """
 Comprehensive Comparison of Data Partitioning Methods for Federated Learning.
 
-Compares four partitioning approaches across multiple configurations:
+Compares four partitioning approaches:
 1. Random - IID baseline
-2. Dirichlet - Label-based heterogeneity (original labels)
-3. VLM - Multivariate Dirichlet with VLM clustering criteria
-4. Embedding - Semantic clustering (with multiple encoder/pooling/clustering variants)
-
-Metrics computed:
-- Label-based: KL divergence, MMD, Mahalanobis, KS test, Vendi Score
-- Feature-based: FID, MMD, Wasserstein, Cramér-von Mises, KS multivariate, Vendi Score
-- Balance metrics: Distribution of samples across clients
-
-Features:
-- Checkpoint/resume functionality for long-running experiments
-- Separate execution of label vs feature metrics
-- Supports multiple embedding presets (default, fast, high_quality, spectral)
-- Exports results to CSV, JSON, and markdown summary
+2. Dirichlet - Label-based heterogeneity
+3. VLM - Multivariate Dirichlet with VLM clustering
+4. Embedding - Semantic clustering
 
 Usage:
-    # Compare Random, Dirichlet, and VLM
-    python compare_partitioning_methods.py \\
-      --base_path /path/to/dataset \\
-      --methods random dirichlet vlm \\
-      --cluster_labels_dir /path/to/cluster_labels \\
-      --metrics label
-
-    # Compare all methods including embedding variants
-    python compare_partitioning_methods.py \\
-      --base_path /path/to/dataset \\
-      --methods random dirichlet vlm embedding \\
-      --cluster_labels_dir /path/to/cluster_labels \\
-      --embedding_presets default fast \\
-      --n_clients 3 6 10 \\
-      --heterogeneity 0.1 0.5 10.0 \\
+    python compare_partitioning_methods.py \
+      --base_path /path/to/dataset \
+      --methods random dirichlet vlm \
+      --cluster_labels_dir /path/to/cluster_labels \
       --metrics both
 """
 
@@ -46,13 +24,13 @@ from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from itertools import combinations
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from tqdm import tqdm
 
-# Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_partitioning.random_splitter import RandomSplitter
@@ -71,44 +49,49 @@ from evaluation import metrics
 
 @dataclass
 class ExperimentConfig:
-    """Configuration for a single experiment."""
-    method: str  # "random", "dirichlet", "vlm", "embedding"
+    method: str
     n_clients: int
     heterogeneity: float
     seed: int
-    embedding_preset: Optional[str] = None  # For embedding method only
-    cluster_labels_dir: Optional[str] = None  # For VLM method only
+    embedding_preset: Optional[str] = None
+    cluster_labels_dir: Optional[str] = None
 
     def get_experiment_id(self) -> str:
-        """Generate unique experiment ID."""
         if self.method == "embedding" and self.embedding_preset:
             return f"embedding-{self.embedding_preset}_n{self.n_clients}_a{self.heterogeneity}_s{self.seed}"
         return f"{self.method}_n{self.n_clients}_a{self.heterogeneity}_s{self.seed}"
 
+    def get_display_name(self) -> str:
+        if self.method == "embedding" and self.embedding_preset:
+            return f"Embedding ({self.embedding_preset})"
+        return self.method.capitalize()
+
 
 @dataclass
 class MetricResults:
-    """Results from a single experiment."""
-    # Label-based metrics (pairwise averaged)
-    kl_divergence_mean: float = 0.0
-    kl_divergence_std: float = 0.0
+    # Label metrics
+    JS_divergence_mean: float = 0.0
+    JS_divergence_std: float = 0.0
     mmd_labels_mean: float = 0.0
     mmd_labels_std: float = 0.0
     mahalanobis_mean: float = 0.0
     mahalanobis_std: float = 0.0
-    ks_test_mean_statistic: float = 0.0
-    ks_test_mean_pvalue: float = 0.0
+    ks_label_statistic_mean: float = 0.0
+    ks_label_pvalue_mean: float = 0.0
 
-    # Feature-based metrics (pairwise averaged)
+    # Feature metrics
     fid_mean: Optional[float] = None
     fid_std: Optional[float] = None
     mmd_features_mean: Optional[float] = None
+    mmd_features_std: Optional[float] = None
     wasserstein_mean: Optional[float] = None
+    wasserstein_std: Optional[float] = None
     cramer_von_mises_mean: Optional[float] = None
+    cramer_von_mises_std: Optional[float] = None
     ks_multivariate_reject_rate: Optional[float] = None
-
-    # Multi-dataset feature metric
-    vendi_score_features: Optional[float] = None
+    ks_multivariate_min_pvalue: Optional[float] = None
+    vendi_score_mean: Optional[float] = None
+    vendi_score_std: Optional[float] = None
 
     # Balance metrics
     samples_per_client_mean: float = 0.0
@@ -125,51 +108,16 @@ class MetricResults:
 
 @dataclass
 class ExperimentResult:
-    """Complete result from an experiment."""
     config: ExperimentConfig
     metrics: MetricResults
     timestamp: str
-    completed: bool
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
         return {
             "config": asdict(self.config),
             "metrics": asdict(self.metrics),
             "timestamp": self.timestamp,
-            "completed": self.completed
         }
-
-
-# ============================================================================
-# Checkpoint Manager
-# ============================================================================
-
-class CheckpointManager:
-    """Manages checkpointing and resume functionality."""
-
-    def __init__(self, checkpoint_dir: str):
-        self.checkpoint_dir = Path(checkpoint_dir)
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_file = self.checkpoint_dir / "checkpoint.json"
-
-    def load_checkpoint(self) -> Dict[str, Any]:
-        """Load checkpoint if exists."""
-        if self.checkpoint_file.exists():
-            with open(self.checkpoint_file, 'r') as f:
-                return json.load(f)
-        return {"completed_experiments": []}
-
-    def save_checkpoint(self, results: List[ExperimentResult]):
-        """Save checkpoint."""
-        checkpoint_data = {
-            "checkpoint_version": "1.0",
-            "timestamp": datetime.now().isoformat(),
-            "completed_experiments": [r.to_dict() for r in results]
-        }
-
-        with open(self.checkpoint_file, 'w') as f:
-            json.dump(checkpoint_data, f, indent=2)
 
 
 # ============================================================================
@@ -182,18 +130,6 @@ def create_splitter(
     val_dataset: Optional[BaseDataset],
     base_path: str
 ) -> BaseDatasetSplitter:
-    """
-    Create appropriate splitter based on experiment configuration.
-
-    Args:
-        exp_config: Experiment configuration
-        train_dataset: Training dataset
-        val_dataset: Validation dataset
-        base_path: Base path for data
-
-    Returns:
-        Configured splitter instance
-    """
     if exp_config.method == "random":
         return RandomSplitter(
             train_dataset=train_dataset,
@@ -217,7 +153,7 @@ def create_splitter(
 
     elif exp_config.method == "vlm":
         if not exp_config.cluster_labels_dir:
-            raise ValueError("VLM method requires cluster_labels_dir to be specified")
+            raise ValueError("VLM method requires cluster_labels_dir")
 
         return MultivariateDirichletSplitter(
             train_dataset=train_dataset,
@@ -231,24 +167,17 @@ def create_splitter(
         )
 
     elif exp_config.method == "embedding":
-        # Get preset configuration
         preset = exp_config.embedding_preset or "default"
         config = get_preset_config(preset, n_clients=exp_config.n_clients)
 
-        # Set proxy if needed
         if hasattr(config.model, 'proxy') and config.model.proxy is None:
-            # Try to get proxy from environment or set default
             config.model.proxy = os.environ.get('HTTP_PROXY', 'http://proxy.example.org:3128')
 
-        # Adjust clustering parameters based on heterogeneity
-        # Lower heterogeneity → larger clusters
-        # Higher heterogeneity → smaller clusters
         if config.clustering.method == "hdbscan":
             base_size = len(train_dataset) // (exp_config.n_clients * 3)
             min_size = max(5, int(base_size * (1.0 - exp_config.heterogeneity)))
             config.clustering.params["min_cluster_size"] = min_size
         elif config.clustering.method == "kmeans":
-            # For k-means, adjust number of clusters
             n_clusters = max(exp_config.n_clients, int(exp_config.n_clients * (1.0 + 2.0 * exp_config.heterogeneity)))
             config.clustering.params["n_clusters"] = n_clusters
 
@@ -267,54 +196,28 @@ def create_splitter(
 
 
 # ============================================================================
-# Label Mapping (for Tiny ImageNet WNIDs)
+# Dataset Extraction
 # ============================================================================
 
 def get_or_create_wnid_mapping(dataset_name: str, train_dataset: BaseDataset) -> Optional[Dict[str, int]]:
-    """
-    Get or create WNID to integer mapping for Tiny ImageNet.
-
-    Args:
-        dataset_name: Name of the dataset
-        train_dataset: Training dataset to extract labels from
-
-    Returns:
-        Mapping dictionary if needed, None if labels are already integers
-    """
-    # Check if we need mapping by looking at first label
     first_label = train_dataset[0][1]
 
-    # If label is already an integer, no mapping needed
     if isinstance(first_label, int):
         return None
 
-    # If label is a string (WNID), create/load mapping
     if isinstance(first_label, str):
         mapping_file = Path(__file__).parent.parent / f"{dataset_name}_wnid_mapping.json"
 
-        # Try to load existing mapping
         if mapping_file.exists():
             with open(mapping_file, 'r') as f:
-                mapping = json.load(f)
-            print(f"  Loaded WNID mapping from {mapping_file}")
-            return mapping
+                return json.load(f)
 
-        # Create new mapping
         print(f"  Creating WNID mapping for {dataset_name}...")
-        all_labels = set()
-        for i in range(len(train_dataset)):
-            all_labels.add(train_dataset[i][1])
+        all_labels = sorted(set(train_dataset[i][1] for i in range(len(train_dataset))))
+        mapping = {label: idx for idx, label in enumerate(all_labels)}
 
-        # Sort for consistency
-        sorted_labels = sorted(all_labels)
-        mapping = {label: idx for idx, label in enumerate(sorted_labels)}
-
-        # Save mapping
         with open(mapping_file, 'w') as f:
             json.dump(mapping, f, indent=2)
-
-        print(f"  Created mapping for {len(mapping)} classes")
-        print(f"  Saved to {mapping_file}")
 
         return mapping
 
@@ -322,77 +225,54 @@ def get_or_create_wnid_mapping(dataset_name: str, train_dataset: BaseDataset) ->
 
 
 def apply_label_mapping(dataset: List[Dict], mapping: Optional[Dict[str, int]]) -> List[Dict]:
-    """
-    Apply label mapping to convert WNIDs to integers.
-
-    Args:
-        dataset: List of {"image": path, "label": label}
-        mapping: WNID to integer mapping (None if not needed)
-
-    Returns:
-        Dataset with integer labels
-    """
     if mapping is None:
         return dataset
-
-    return [
-        {"image": item["image"], "label": mapping[item["label"]]}
-        for item in dataset
-    ]
+    return [{"image": item["image"], "label": mapping[item["label"]]} for item in dataset]
 
 
-# ============================================================================
-# Label Extraction
-# ============================================================================
-
-def extract_client_datasets(splits: DatasetSplits) -> List[List[Dict]]:
-    """Extract client datasets from splits."""
-    client_datasets = []
-
-    for client_name in sorted(splits["clients"].keys()):
-        client_split = splits["clients"][client_name]
-        client_datasets.append(client_split["train"])
-
-    return client_datasets
-
-
-def extract_client_datasets_with_original_labels(
+def extract_client_datasets(
     splits: DatasetSplits,
-    train_dataset: BaseDataset
+    train_dataset: Optional[BaseDataset] = None,
+    use_original_labels: bool = False
 ) -> List[List[Dict]]:
-    """
-    Extract client datasets with original labels (not cluster labels).
-
-    For embedding-based methods, splits may contain cluster labels,
-    but metrics should be computed on original class labels.
-    """
-    # Build mapping once for efficiency
-    original_label_map = {
-        train_dataset[i][0]: train_dataset[i][1]
-        for i in range(len(train_dataset))
-    }
+    """Extract client datasets, optionally remapping to original labels."""
+    if use_original_labels and train_dataset is not None:
+        original_label_map = {train_dataset[i][0]: train_dataset[i][1] for i in range(len(train_dataset))}
 
     client_datasets = []
-
     for client_name in sorted(splits["clients"].keys()):
         client_split = splits["clients"][client_name]
-        client_data = []
 
-        for item in client_split["train"]:
-            image_path = item["image"]
-            original_label = original_label_map.get(image_path)
-
-            if original_label is None:
-                raise ValueError(f"Original label not found for {image_path}")
-
-            client_data.append({
-                "image": image_path,
-                "label": original_label
-            })
+        if use_original_labels and train_dataset is not None:
+            client_data = [
+                {"image": item["image"], "label": original_label_map[item["image"]]}
+                for item in client_split["train"]
+            ]
+        else:
+            client_data = client_split["train"]
 
         client_datasets.append(client_data)
 
     return client_datasets
+
+
+def subsample_datasets(
+    client_datasets: List[List[Dict]],
+    max_samples: int,
+    seed: int
+) -> List[List[Dict]]:
+    """Randomly subsample each client dataset."""
+    rng = np.random.default_rng(seed)
+    subsampled = []
+
+    for dataset in client_datasets:
+        if len(dataset) <= max_samples:
+            subsampled.append(dataset)
+        else:
+            indices = rng.choice(len(dataset), size=max_samples, replace=False)
+            subsampled.append([dataset[i] for i in indices])
+
+    return subsampled
 
 
 # ============================================================================
@@ -400,9 +280,7 @@ def extract_client_datasets_with_original_labels(
 # ============================================================================
 
 def compute_balance_metrics(client_datasets: List[List[Dict]]) -> Dict[str, float]:
-    """Compute data balance metrics across clients."""
-    samples_per_client = [len(dataset) for dataset in client_datasets]
-
+    samples_per_client = [len(d) for d in client_datasets]
     mean_samples = np.mean(samples_per_client)
     std_samples = np.std(samples_per_client)
 
@@ -415,113 +293,92 @@ def compute_balance_metrics(client_datasets: List[List[Dict]]) -> Dict[str, floa
     }
 
 
-def compute_pairwise_label_metrics(
+def compute_label_metrics(
     client_datasets: List[List[Dict]],
     num_classes: int
 ) -> Dict[str, float]:
-    """Compute all pairwise label metrics and aggregate statistics."""
-    metrics_dict = {
-        'kl_divergence': [],
-        'mmd_labels': [],
-        'mahalanobis': [],
-        'ks_statistic': [],
-        'ks_pvalue': []
-    }
-
-    # Compute pairwise
-    for i, j in combinations(range(len(client_datasets)), 2):
-        dataset_i = client_datasets[i]
-        dataset_j = client_datasets[j]
-
-        # KL divergence (symmetrized)
-        kl_ij = metrics.KL_divergence(dataset_i, dataset_j, num_classes)
-        kl_ji = metrics.KL_divergence(dataset_j, dataset_i, num_classes)
-        metrics_dict['kl_divergence'].append((kl_ij + kl_ji) / 2)
-
-        # MMD
-        mmd = metrics.MMD_label_distributions(dataset_i, dataset_j, num_classes)
-        metrics_dict['mmd_labels'].append(mmd)
-
-        # Mahalanobis
-        mahal = metrics.mahalanobis_distance_labels(dataset_i, dataset_j, num_classes)
-        metrics_dict['mahalanobis'].append(mahal)
-
-        # KS test
-        ks_result = metrics.KS_label_test(dataset_i, dataset_j)
-        metrics_dict['ks_statistic'].append(ks_result['statistic'])
-        metrics_dict['ks_pvalue'].append(ks_result['pvalue'])
-
-    # Aggregate
+    """Compute all label-based metrics using the refactored API."""
     results = {}
-    for metric_name, values in metrics_dict.items():
-        results[f"{metric_name}_mean"] = np.mean(values)
-        results[f"{metric_name}_std"] = np.std(values)
+
+    # JS divergence
+    JS_all = metrics.JS_divergence(client_datasets, num_classes, return_all=True)
+    results['JS_divergence_mean'] = float(np.mean(JS_all))
+    results['JS_divergence_std'] = float(np.std(JS_all))
+
+    # MMD labels
+    mmd_all = metrics.MMD_label_distributions(client_datasets, num_classes, return_all=True)
+    results['mmd_labels_mean'] = float(np.mean(mmd_all))
+    results['mmd_labels_std'] = float(np.std(mmd_all))
+
+    # Mahalanobis
+    mahal_all = metrics.mahalanobis_distance_labels(client_datasets, num_classes, return_all=True)
+    results['mahalanobis_mean'] = float(np.mean(mahal_all))
+    results['mahalanobis_std'] = float(np.std(mahal_all))
+
+    # KS label test
+    ks_all = metrics.KS_label_test(client_datasets, return_all=True)
+    results['ks_label_statistic_mean'] = float(np.mean([r['statistic'] for r in ks_all]))
+    results['ks_label_pvalue_mean'] = float(np.mean([r['pvalue'] for r in ks_all]))
 
     return results
 
+
 def compute_feature_metrics(
     client_datasets: List[List[Dict]],
-    subsample: Optional[int] = None
+    batch_size: int = 50,
+    use_cache: bool = True,
+    cache_dir: str = "./.inception_cache"
 ) -> Dict[str, float]:
-    """Compute feature-based metrics across clients."""
-    if subsample:
-        client_datasets_sub = [dataset[:subsample] for dataset in client_datasets]
-    else:
-        client_datasets_sub = client_datasets
+    """Compute all feature-based metrics using the refactored API."""
     results = {}
 
-    # 1. FID (pairwise)
     print("    Computing FID...")
-    fid_scores = metrics.FID_distance(
-        client_datasets_sub,
-        return_all=True,
-        batch_size=50
+    fid_all = metrics.FID_distance(
+        client_datasets, batch_size=batch_size, return_all=True,
+        use_cache=use_cache, cache_dir=cache_dir
     )
-    results['fid_mean'] = np.mean(fid_scores)
-    results['fid_std'] = np.std(fid_scores)
+    results['fid_mean'] = float(np.mean(fid_all))
+    results['fid_std'] = float(np.std(fid_all))
 
-    # 2. Pairwise feature metrics
-    print("    Computing pairwise feature metrics...")
-    mmd_values = []
-    wasserstein_values = []
-    cvm_values = []
-    ks_reject_count = 0
-    total_pairs = 0
-
-    for i, j in combinations(range(len(client_datasets_sub)), 2):
-        dataset_i = client_datasets_sub[i]
-        dataset_j = client_datasets_sub[j]
-
-        # MMD
-        mmd = metrics.MMD_features(dataset_i, dataset_j, batch_size=50)
-        mmd_values.append(mmd)
-
-        # Wasserstein
-        wass = metrics.wasserstein_distance_features(dataset_i, dataset_j, batch_size=50)
-        wasserstein_values.append(wass)
-
-        # Cramér-von Mises
-        cvm = metrics.cramer_von_mises_features(dataset_i, dataset_j, batch_size=50)
-        cvm_values.append(cvm)
-
-        # KS multivariate
-        ks_result = metrics.KS_multivariate_test(dataset_i, dataset_j, batch_size=50)
-        if ks_result['reject_null']:
-            ks_reject_count += 1
-        total_pairs += 1
-
-    results['mmd_features_mean'] = np.mean(mmd_values)
-    results['wasserstein_mean'] = np.mean(wasserstein_values)
-    results['cramer_von_mises_mean'] = np.mean(cvm_values)
-    results['ks_multivariate_reject_rate'] = ks_reject_count / total_pairs
-
-    # 3. Vendi Score (multi-dataset)
-    print("    Computing Vendi Score (features)...")
-    vendi_features = metrics.vendi_score_features(
-        client_datasets_sub,
-        batch_size=50
+    print("    Computing MMD features...")
+    mmd_all = metrics.MMD_features(
+        client_datasets, batch_size=batch_size, return_all=True,
+        use_cache=use_cache, cache_dir=cache_dir
     )
-    results['vendi_score_features'] = vendi_features
+    results['mmd_features_mean'] = float(np.mean(mmd_all))
+    results['mmd_features_std'] = float(np.std(mmd_all))
+
+    print("    Computing Wasserstein distance...")
+    wass_all = metrics.wasserstein_distance_features(
+        client_datasets, batch_size=batch_size, return_all=True,
+        use_cache=use_cache, cache_dir=cache_dir
+    )
+    results['wasserstein_mean'] = float(np.mean(wass_all))
+    results['wasserstein_std'] = float(np.std(wass_all))
+
+    print("    Computing Cramér-von Mises...")
+    cvm_all = metrics.cramer_von_mises_features(
+        client_datasets, batch_size=batch_size, return_all=True,
+        use_cache=use_cache, cache_dir=cache_dir
+    )
+    results['cramer_von_mises_mean'] = float(np.mean(cvm_all))
+    results['cramer_von_mises_std'] = float(np.std(cvm_all))
+
+    print("    Computing KS multivariate test...")
+    ks_all = metrics.KS_multivariate_test(
+        client_datasets, batch_size=batch_size, return_all=True,
+        use_cache=use_cache, cache_dir=cache_dir
+    )
+    results['ks_multivariate_reject_rate'] = float(np.mean([r['reject_null'] for r in ks_all]))
+    results['ks_multivariate_min_pvalue'] = float(np.min([r['min_pvalue'] for r in ks_all]))
+
+    print("    Computing Vendi score...")
+    vendi_all = metrics.vendi_score_features(
+        client_datasets, batch_size=batch_size, return_all=True,
+        use_cache=use_cache, cache_dir=cache_dir
+    )
+    results['vendi_score_mean'] = float(np.mean(vendi_all))
+    results['vendi_score_std'] = float(np.std(vendi_all))
 
     return results
 
@@ -538,93 +395,70 @@ def run_experiment(
     num_classes: int,
     metrics_mode: str,
     subsample: Optional[int],
-    dataset_name: str,
     wnid_mapping: Optional[Dict[str, int]],
+    use_cache: bool,
+    cache_dir: str,
 ) -> ExperimentResult:
-    """
-    Execute a single experiment.
-
-    Args:
-        exp_config: Experiment configuration
-        train_dataset: Training dataset
-        val_dataset: Validation dataset
-        base_path: Base path for data
-        num_classes: Number of classes
-        metrics_mode: "label", "feature", or "both"
-        dataset_name: Name of the dataset
-        wnid_mapping: WNID to integer mapping (if needed)
-
-    Returns:
-        ExperimentResult with all computed metrics
-    """
-    # Create splitter
+    """Execute a single experiment."""
+    # Create and run splitter
     splitter = create_splitter(exp_config, train_dataset, val_dataset, base_path)
 
-    # Generate splits
     start_time = time.time()
     splits = splitter.get_client_splits()
     split_time = time.time() - start_time
 
-    # Prepare client datasets with original labels
-    # VLM and embedding methods use cluster labels internally, but we need original labels for metrics
-    if exp_config.method in ["vlm", "embedding"]:
-        client_datasets = extract_client_datasets_with_original_labels(splits, train_dataset)
-    else:
-        client_datasets = extract_client_datasets(splits)
+    # Extract client datasets
+    use_original = exp_config.method in ["vlm", "embedding"]
+    client_datasets = extract_client_datasets(
+        splits,
+        train_dataset if use_original else None,
+        use_original_labels=use_original
+    )
 
-    # Apply WNID mapping if needed (for Tiny ImageNet)
+    # Apply WNID mapping if needed
     if wnid_mapping is not None:
-        client_datasets = [apply_label_mapping(dataset, wnid_mapping) for dataset in client_datasets]
+        client_datasets = [apply_label_mapping(d, wnid_mapping) for d in client_datasets]
+
+    # Subsample for feature metrics if requested
+    if subsample:
+        client_datasets_sub = subsample_datasets(client_datasets, subsample, exp_config.seed)
+    else:
+        client_datasets_sub = client_datasets
 
     # Compute balance metrics
-    balance_metrics_dict = compute_balance_metrics(client_datasets)
-
-    # Initialize results
-    metric_results = MetricResults(split_time=split_time, **balance_metrics_dict)
+    balance = compute_balance_metrics(client_datasets)
+    metric_results = MetricResults(split_time=split_time, **balance)
 
     # Compute label metrics
     if metrics_mode in ["label", "both"]:
         print("  Computing label metrics...")
         start_time = time.time()
+        label_results = compute_label_metrics(client_datasets, num_classes)
+        metric_results.label_metrics_time = time.time() - start_time
 
-        # Pairwise label metrics
-        pairwise_label = compute_pairwise_label_metrics(client_datasets, num_classes)
-
-        label_time = time.time() - start_time
-
-        # Update results
-        for key, value in pairwise_label.items():
+        for key, value in label_results.items():
             setattr(metric_results, key, value)
-
-        metric_results.label_metrics_time = label_time
 
     # Compute feature metrics
     if metrics_mode in ["feature", "both"]:
         print("  Computing feature metrics...")
         start_time = time.time()
+        feature_results = compute_feature_metrics(
+            client_datasets_sub,
+            use_cache=use_cache,
+            cache_dir=cache_dir
+        )
+        metric_results.feature_metrics_time = time.time() - start_time
 
-        feature_results = compute_feature_metrics(client_datasets, subsample=subsample)
-
-        feature_time = time.time() - start_time
-
-        # Update results
         for key, value in feature_results.items():
             setattr(metric_results, key, value)
 
-        metric_results.feature_metrics_time = feature_time
-
-    # Mark as completed
     return ExperimentResult(
         config=exp_config,
         metrics=metric_results,
         timestamp=datetime.now().isoformat(),
-        completed=True
     )
 
-
-# ============================================================================
-# Experiment Generation
-# ============================================================================
 
 def generate_experiment_configs(
     methods: List[str],
@@ -639,7 +473,6 @@ def generate_experiment_configs(
 
     for n_clients in n_clients_list:
         for heterogeneity in heterogeneity_list:
-            # Random and Dirichlet
             for method in ["random", "dirichlet"]:
                 if method in methods:
                     experiments.append(ExperimentConfig(
@@ -649,10 +482,9 @@ def generate_experiment_configs(
                         seed=seed
                     ))
 
-            # VLM
             if "vlm" in methods:
                 if not cluster_labels_dir:
-                    raise ValueError("VLM method requires --cluster_labels_dir to be specified")
+                    raise ValueError("VLM method requires --cluster_labels_dir")
                 experiments.append(ExperimentConfig(
                     method="vlm",
                     n_clients=n_clients,
@@ -661,7 +493,6 @@ def generate_experiment_configs(
                     cluster_labels_dir=cluster_labels_dir
                 ))
 
-            # Embedding with presets
             if "embedding" in methods:
                 for preset in embedding_presets:
                     experiments.append(ExperimentConfig(
@@ -676,117 +507,297 @@ def generate_experiment_configs(
 
 
 # ============================================================================
-# Results Export
+# Results Export & Visualization
 # ============================================================================
+
+def results_to_dataframe(results: List[ExperimentResult]) -> pd.DataFrame:
+    """Convert results to a pandas DataFrame."""
+    rows = []
+    for r in results:
+        row = {
+            "method": r.config.get_display_name(),
+            "n_clients": r.config.n_clients,
+            "heterogeneity": r.config.heterogeneity,
+            **asdict(r.metrics)
+        }
+        rows.append(row)
+    return pd.DataFrame(rows)
+
 
 def export_results(results: List[ExperimentResult], output_dir: Path):
     """Export results to CSV and JSON."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Export to JSON
-    json_path = output_dir / "comparison_results.json"
+    # JSON
+    json_path = output_dir / "results.json"
     with open(json_path, 'w') as f:
         json.dump({
             "timestamp": datetime.now().isoformat(),
             "results": [r.to_dict() for r in results]
         }, f, indent=2)
-    print(f"\n✓ Results saved to {json_path}")
+    print(f"✓ Results saved to {json_path}")
 
-    # Export to CSV
-    csv_data = []
-    for result in results:
-        row = {
-            "method": result.config.method,
-            "n_clients": result.config.n_clients,
-            "heterogeneity": result.config.heterogeneity,
-            "embedding_preset": result.config.embedding_preset or "",
-            **asdict(result.metrics)
-        }
-        csv_data.append(row)
-
-    df = pd.DataFrame(csv_data)
-    csv_path = output_dir / "comparison_results.csv"
+    # CSV
+    df = results_to_dataframe(results)
+    csv_path = output_dir / "results.csv"
     df.to_csv(csv_path, index=False)
     print(f"✓ Results saved to {csv_path}")
 
+    return df
 
-def generate_summary_report(results: List[ExperimentResult], output_dir: Path):
-    """Generate markdown summary report."""
+
+def create_metric_comparison_plot(
+    df: pd.DataFrame,
+    metric_col: str,
+    title: str,
+    ylabel: str,
+    output_path: Path,
+    std_col: Optional[str] = None
+):
+    """Create a grouped bar chart comparing methods across configurations."""
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    methods = df['method'].unique()
+    x_labels = df.groupby(['n_clients', 'heterogeneity']).ngroups
+    configs = df[['n_clients', 'heterogeneity']].drop_duplicates().values
+
+    x = np.arange(len(configs))
+    width = 0.8 / len(methods)
+
+    for i, method in enumerate(methods):
+        method_df = df[df['method'] == method]
+        values = []
+        errors = []
+
+        for n_clients, het in configs:
+            row = method_df[(method_df['n_clients'] == n_clients) & (method_df['heterogeneity'] == het)]
+            if len(row) > 0:
+                values.append(row[metric_col].values[0])
+                if std_col and std_col in row.columns:
+                    errors.append(row[std_col].values[0])
+                else:
+                    errors.append(0)
+            else:
+                values.append(0)
+                errors.append(0)
+
+        offset = (i - len(methods)/2 + 0.5) * width
+        bars = ax.bar(x + offset, values, width, label=method, yerr=errors if std_col else None, capsize=3)
+
+    ax.set_xlabel('Configuration (n_clients, α)')
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'({n}, {h})' for n, h in configs], rotation=45, ha='right')
+    ax.legend(loc='upper right')
+    ax.grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def create_heatmap(
+    df: pd.DataFrame,
+    metric_col: str,
+    title: str,
+    output_path: Path
+):
+    """Create heatmaps for each method showing metric across n_clients and heterogeneity."""
+    methods = df['method'].unique()
+    n_methods = len(methods)
+
+    fig, axes = plt.subplots(1, n_methods, figsize=(5 * n_methods, 4), squeeze=False)
+
+    for i, method in enumerate(methods):
+        method_df = df[df['method'] == method]
+        pivot = method_df.pivot(index='heterogeneity', columns='n_clients', values=metric_col)
+
+        ax = axes[0, i]
+        sns.heatmap(pivot, annot=True, fmt='.3f', cmap='viridis', ax=ax, cbar=True)
+        ax.set_title(f'{method}')
+        ax.set_xlabel('n_clients')
+        ax.set_ylabel('α (heterogeneity)')
+
+    fig.suptitle(title, fontsize=14, y=1.02)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def create_visualizations(df: pd.DataFrame, output_dir: Path):
+    """Generate all visualization plots."""
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(exist_ok=True)
+
+    # Label metrics
+    label_metrics = [
+        ('JS_divergence_mean', 'JS_divergence_std', 'JS Divergence', 'JS Divergence'),
+        ('mmd_labels_mean', 'mmd_labels_std', 'MMD (Labels)', 'MMD'),
+        ('mahalanobis_mean', 'mahalanobis_std', 'Mahalanobis Distance', 'Distance'),
+        ('ks_label_statistic_mean', None, 'KS Statistic (Labels)', 'Statistic'),
+    ]
+
+    for metric, std, title, ylabel in label_metrics:
+        if metric in df.columns and df[metric].notna().any():
+            create_metric_comparison_plot(
+                df, metric, title, ylabel,
+                plots_dir / f"{metric}_comparison.png", std
+            )
+            create_heatmap(df, metric, title, plots_dir / f"{metric}_heatmap.png")
+
+    # Feature metrics
+    feature_metrics = [
+        ('fid_mean', 'fid_std', 'FID Score', 'FID'),
+        ('mmd_features_mean', 'mmd_features_std', 'MMD (Features)', 'MMD'),
+        ('wasserstein_mean', 'wasserstein_std', 'Wasserstein Distance', 'Distance'),
+        ('cramer_von_mises_mean', 'cramer_von_mises_std', 'Cramér-von Mises', 'Statistic'),
+        ('vendi_score_mean', 'vendi_score_std', 'Vendi Score', 'Score'),
+        ('ks_multivariate_reject_rate', None, 'KS Multivariate Reject Rate', 'Rate'),
+    ]
+
+    for metric, std, title, ylabel in feature_metrics:
+        if metric in df.columns and df[metric].notna().any():
+            create_metric_comparison_plot(
+                df, metric, title, ylabel,
+                plots_dir / f"{metric}_comparison.png", std
+            )
+            create_heatmap(df, metric, title, plots_dir / f"{metric}_heatmap.png")
+
+    # Balance metrics
+    create_metric_comparison_plot(
+        df, 'coefficient_of_variation', 'Sample Distribution Balance (CV)',
+        'Coefficient of Variation',
+        plots_dir / "balance_cv_comparison.png"
+    )
+
+    print(f"✓ Visualizations saved to {plots_dir}")
+
+
+def generate_summary_report(df: pd.DataFrame, output_dir: Path, metrics_mode: str):
+    """Generate formatted markdown summary report."""
     report = []
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
     report.append("# Partitioning Methods Comparison Report\n")
-    report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    report.append(f"Total experiments: {len(results)}\n")
+    report.append(f"**Generated:** {timestamp}\n")
+    report.append(f"**Total experiments:** {len(df)}\n")
+    report.append(f"**Methods:** {', '.join(df['method'].unique())}\n")
+    report.append(f"**Client counts:** {sorted(df['n_clients'].unique())}\n")
+    report.append(f"**Heterogeneity values:** {sorted(df['heterogeneity'].unique())}\n")
 
-    # Create summary DataFrame
-    df_data = []
-    for result in results:
-        row = {
-            "Method": result.config.method,
-            "Preset": result.config.embedding_preset or "-",
-            "n_clients": result.config.n_clients,
-            "α": result.config.heterogeneity,
-            "KL Div": f"{result.metrics.kl_divergence_mean:.4f}",
-            "MMD": f"{result.metrics.mmd_labels_mean:.4f}",
-            "CV": f"{result.metrics.coefficient_of_variation:.4f}",
-        }
-        df_data.append(row)
+    # Summary statistics
+    report.append("\n---\n")
+    report.append("## Summary Statistics\n")
 
-    df = pd.DataFrame(df_data)
+    # Label metrics table
+    if metrics_mode in ["label", "both"]:
+        report.append("### Label Distribution Metrics\n")
+        report.append("| Method | n | α | JS Div | MMD | Mahalanobis | KS Stat |\n")
+        report.append("|--------|---|---|--------|-----|-------------|--------|\n")
 
-    report.append("\n## Summary Table\n")
-    report.append("```")
-    report.append(df.to_string(index=False))
-    report.append("```\n")
+        for _, row in df.iterrows():
+            report.append(
+                f"| {row['method']} | {row['n_clients']} | {row['heterogeneity']} | "
+                f"{row['JS_divergence_mean']:.4f} | {row['mmd_labels_mean']:.4f} | "
+                f"{row['mahalanobis_mean']:.4f} | {row['ks_label_statistic_mean']:.4f} |\n"
+            )
+
+    # Feature metrics table
+    if metrics_mode in ["feature", "both"] and 'fid_mean' in df.columns and df['fid_mean'].notna().any():
+        report.append("\n### Feature Distribution Metrics\n")
+        report.append("| Method | n | α | FID | MMD | Wasserstein | CvM | Vendi |\n")
+        report.append("|--------|---|---|-----|-----|-------------|-----|-------|\n")
+
+        for _, row in df.iterrows():
+            fid = f"{row['fid_mean']:.2f}" if pd.notna(row.get('fid_mean')) else "N/A"
+            mmd = f"{row['mmd_features_mean']:.4f}" if pd.notna(row.get('mmd_features_mean')) else "N/A"
+            wass = f"{row['wasserstein_mean']:.4f}" if pd.notna(row.get('wasserstein_mean')) else "N/A"
+            cvm = f"{row['cramer_von_mises_mean']:.4f}" if pd.notna(row.get('cramer_von_mises_mean')) else "N/A"
+            vendi = f"{row['vendi_score_mean']:.2f}" if pd.notna(row.get('vendi_score_mean')) else "N/A"
+
+            report.append(
+                f"| {row['method']} | {row['n_clients']} | {row['heterogeneity']} | "
+                f"{fid} | {mmd} | {wass} | {cvm} | {vendi} |\n"
+            )
+
+    # Balance metrics table
+    report.append("\n### Data Balance Metrics\n")
+    report.append("| Method | n | α | Mean Samples | Std | Min | Max | CV |\n")
+    report.append("|--------|---|---|--------------|-----|-----|-----|----|\n")
+
+    for _, row in df.iterrows():
+        report.append(
+            f"| {row['method']} | {row['n_clients']} | {row['heterogeneity']} | "
+            f"{row['samples_per_client_mean']:.1f} | {row['samples_per_client_std']:.1f} | "
+            f"{row['samples_per_client_min']} | {row['samples_per_client_max']} | "
+            f"{row['coefficient_of_variation']:.4f} |\n"
+        )
+
+    # Method rankings
+    report.append("\n---\n")
+    report.append("## Method Rankings\n")
+    report.append("*Lower is better for distance/divergence metrics, higher is better for Vendi score*\n")
+
+    ranking_metrics = [
+        ('JS_divergence_mean', 'JS Divergence', True),
+        ('mmd_labels_mean', 'MMD (Labels)', True),
+        ('fid_mean', 'FID', True),
+        ('vendi_score_mean', 'Vendi Score', False),
+        ('coefficient_of_variation', 'Balance (CV)', True),
+    ]
+
+    for metric, name, lower_better in ranking_metrics:
+        if metric in df.columns and df[metric].notna().any():
+            ranked = df.groupby('method')[metric].mean().sort_values(ascending=lower_better)
+            report.append(f"\n**{name}:** ")
+            rankings = [f"{i+1}. {m} ({v:.4f})" for i, (m, v) in enumerate(ranked.items())]
+            report.append(" → ".join(rankings) + "\n")
+
+    # Visualizations reference
+    report.append("\n---\n")
+    report.append("## Visualizations\n")
+    report.append("See the `plots/` directory for:\n")
+    report.append("- Bar charts comparing methods across configurations\n")
+    report.append("- Heatmaps showing metric values across n_clients × heterogeneity\n")
 
     # Save report
-    report_path = output_dir / "summary_report.md"
+    report_path = output_dir / "report.md"
     with open(report_path, 'w') as f:
-        f.write("\n".join(report))
+        f.write("".join(report))
 
     print(f"✓ Summary report saved to {report_path}")
 
 
 # ============================================================================
-# Main Execution
+# Main
 # ============================================================================
 
 def main():
-    """Main execution function."""
-    parser = argparse.ArgumentParser(
-        description="Compare data partitioning methods for federated learning"
-    )
-    parser.add_argument("--dataset", type=str, default="tiny_imagenet", help="Dataset name")
-    parser.add_argument("--base_path", type=str, default="/path/to/gtai/FDS/", help="Base path to dataset")
-    parser.add_argument("--n_clients", type=int, nargs="+", default=[3, 6],
-                       help="List of client counts to test")
-    parser.add_argument("--heterogeneity", type=float, nargs="+", default=[0.1, 10.0],
-                       help="List of heterogeneity (alpha) values to test")
-    parser.add_argument("--methods", type=str, nargs="+",
-                       default=["random", "dirichlet", "embedding"],
-                       help="Methods to compare (random, dirichlet, vlm, embedding)")
-    parser.add_argument("--embedding_presets", type=str, nargs="+",
-                       default=["default", "fast"],
-                       help="Embedding presets to test (default, fast, high_quality, spectral)")
-    parser.add_argument("--cluster_labels_dir", type=str, default="../data_partitioning/legacy_vlm/data/tiny_imagenet",
-                       help="Path to VLM cluster labels directory (required for VLM method)")
-    parser.add_argument("--metrics", type=str, default="both",
-                       choices=["label", "feature", "both"],
-                       help="Which metrics to compute")
-    parser.add_argument("--subsample", type=int, default=None,)
-    parser.add_argument("--output_dir", type=str, default="../results",
-                       help="Output directory for results")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser = argparse.ArgumentParser(description="Compare data partitioning methods")
+    parser.add_argument("--dataset", type=str, default="tiny_imagenet")
+    parser.add_argument("--base_path", type=str, default="/path/to/gtai/FDS/")
+    parser.add_argument("--n_clients", type=int, nargs="+", default=[3, 6])
+    parser.add_argument("--heterogeneity", type=float, nargs="+", default=[0.1, 10.0])
+    parser.add_argument("--methods", type=str, nargs="+", default=["random", "dirichlet", "vlm"])
+    parser.add_argument("--embedding_presets", type=str, nargs="+", default=["default", "fast"])
+    parser.add_argument("--cluster_labels_dir", type=str, default="../data_partitioning/legacy_vlm/data/tiny_imagenet")
+    parser.add_argument("--metrics", type=str, default="both", choices=["label", "feature", "both"])
+    parser.add_argument("--subsample", type=int, default=1000)
+    parser.add_argument("--output_dir", type=str, default="../results")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use_cache", action="store_true", default=True)
+    parser.add_argument("--no_cache", action="store_true")
+    parser.add_argument("--cache_dir", type=str, default="./.inception_cache")
 
     args = parser.parse_args()
+    use_cache = args.use_cache and not args.no_cache
 
     print("=" * 80)
     print("PARTITIONING METHODS COMPARISON")
     print("=" * 80)
 
-    # Setup
     output_dir = Path(args.output_dir)
-    checkpoint_dir = output_dir / "checkpoints"
-    checkpoint_manager = CheckpointManager(str(checkpoint_dir))
 
     # Load datasets
     print("\nLoading datasets...")
@@ -795,24 +806,16 @@ def main():
     print(f"  Training samples: {len(train_dataset)}")
     print(f"  Validation samples: {len(val_dataset)}")
 
-    # Get number of classes and handle WNID mapping
+    # Get number of classes
     all_labels = set(train_dataset[i][1] for i in range(len(train_dataset)))
     num_classes = len(all_labels)
     print(f"  Number of classes: {num_classes}")
 
-    # Create/load WNID mapping for Tiny ImageNet (or other datasets with string labels)
+    # WNID mapping
     wnid_mapping = get_or_create_wnid_mapping(args.dataset, train_dataset)
 
-    # Load checkpoint
-    checkpoint = checkpoint_manager.load_checkpoint()
-    completed_experiments = checkpoint.get("completed_experiments", [])
-    completed_ids = {
-        ExperimentConfig(**exp["config"]).get_experiment_id()
-        for exp in completed_experiments
-    }
-
-    # Generate all experiment configurations
-    all_experiments = generate_experiment_configs(
+    # Generate experiments
+    experiments = generate_experiment_configs(
         methods=args.methods,
         n_clients_list=args.n_clients,
         heterogeneity_list=args.heterogeneity,
@@ -821,69 +824,43 @@ def main():
         seed=args.seed
     )
 
-    # Filter out completed
-    pending_experiments = [
-        exp for exp in all_experiments
-        if exp.get_experiment_id() not in completed_ids
-    ]
+    print(f"\nTotal experiments: {len(experiments)}")
 
-    print(f"\nExperiment Status:")
-    print(f"  Total: {len(all_experiments)}")
-    print(f"  Completed: {len(completed_experiments)}")
-    print(f"  Pending: {len(pending_experiments)}")
+    # Run experiments
+    results = []
+    for exp_config in tqdm(experiments, desc="Running experiments"):
+        exp_id = exp_config.get_experiment_id()
+        print(f"\n[{exp_id}]")
 
-    # Convert completed experiments back to ExperimentResult objects
-    results = [
-        ExperimentResult(
-            config=ExperimentConfig(**exp["config"]),
-            metrics=MetricResults(**exp["metrics"]),
-            timestamp=exp["timestamp"],
-            completed=exp["completed"]
-        )
-        for exp in completed_experiments
-    ]
+        try:
+            result = run_experiment(
+                exp_config=exp_config,
+                train_dataset=train_dataset,
+                val_dataset=val_dataset,
+                base_path=args.base_path,
+                num_classes=num_classes,
+                metrics_mode=args.metrics,
+                subsample=args.subsample,
+                wnid_mapping=wnid_mapping,
+                use_cache=use_cache,
+                cache_dir=args.cache_dir,
+            )
+            results.append(result)
 
-    # Run pending experiments
-    if pending_experiments:
-        print(f"\nRunning experiments...")
-
-        for exp_config in tqdm(pending_experiments, desc="Progress"):
-            exp_id = exp_config.get_experiment_id()
-            print(f"\n[{exp_id}]")
-
-            try:
-                exp_result = run_experiment(
-                    exp_config=exp_config,
-                    train_dataset=train_dataset,
-                    val_dataset=val_dataset,
-                    base_path=args.base_path,
-                    num_classes=num_classes,
-                    metrics_mode=args.metrics,
-                    subsample=args.subsample,
-                    dataset_name=args.dataset,
-                    wnid_mapping=wnid_mapping,
-                )
-
-                results.append(exp_result)
-
-                # Save checkpoint after each experiment
-                checkpoint_manager.save_checkpoint(results)
-
-            except Exception as e:
-                print(f"  ✗ Error: {e}")
-                import traceback
-                traceback.print_exc()
-                # Save what we have so far
-                checkpoint_manager.save_checkpoint(results)
-                raise
+        except Exception as e:
+            print(f"  ✗ Error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     # Export results
     print("\n" + "=" * 80)
     print("EXPORTING RESULTS")
     print("=" * 80)
 
-    export_results(results, output_dir)
-    generate_summary_report(results, output_dir)
+    df = export_results(results, output_dir)
+    create_visualizations(df, output_dir)
+    generate_summary_report(df, output_dir, args.metrics)
 
     print("\n" + "=" * 80)
     print("✓ ALL EXPERIMENTS COMPLETED!")

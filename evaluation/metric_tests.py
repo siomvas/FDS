@@ -89,55 +89,55 @@ def temp_image_datasets():
 # Label Distribution Metrics
 # ============================================================================
 
-class TestKLDivergence:
+class TestJSDivergence:
 
     def test_self_divergence_is_zero(self, identical_distributions):
         dataset1, _, num_classes = identical_distributions
-        kl = metrics.KL_divergence([dataset1, dataset1], num_classes)
-        assert kl < 1e-6
+        JS = metrics.JS_divergence([dataset1, dataset1], num_classes)
+        assert JS < 1e-6
 
     def test_non_negative(self, skewed_distributions):
         dataset1, dataset2, num_classes = skewed_distributions
-        kl = metrics.KL_divergence([dataset1, dataset2], num_classes)
-        assert kl >= 0
+        JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
+        assert JS >= 0
 
     def test_identical_distributions_near_zero(self, identical_distributions):
         dataset1, dataset2, num_classes = identical_distributions
-        kl = metrics.KL_divergence([dataset1, dataset2], num_classes)
-        assert kl < 0.1
+        JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
+        assert JS < 0.1
 
     def test_complementary_distributions_high(self, complementary_distributions):
         dataset1, dataset2, num_classes = complementary_distributions
-        kl = metrics.KL_divergence([dataset1, dataset2], num_classes)
-        assert kl > 1.0
+        JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
+        assert JS > 0.5
 
     def test_not_symmetric(self, skewed_distributions):
         dataset1, dataset2, num_classes = skewed_distributions
-        kl_all = metrics.KL_divergence([dataset1, dataset2], num_classes, return_all=True)
+        JS_all = metrics.JS_divergence([dataset1, dataset2], num_classes, return_all=True)
         # Single pair, so just verify it's valid
-        assert len(kl_all) == 1
-        assert kl_all[0] >= 0
+        assert len(JS_all) == 1
+        assert JS_all[0] >= 0
 
     def test_uniform_distributions_zero(self):
         dataset1 = [{"label": i % 10} for i in range(100)]
         dataset2 = [{"label": i % 10} for i in range(100)]
-        kl = metrics.KL_divergence([dataset1, dataset2], 10)
-        assert kl < 1e-6
+        JS = metrics.JS_divergence([dataset1, dataset2], 10)
+        assert JS < 1e-6
 
     def test_known_value(self):
         # P = [0.5, 0.5], Q = [0.8, 0.2]
-        # KL(P||Q) ≈ 0.223
+        # JS(P||Q) = 0.0505
         dataset1 = [{"label": 0}] * 50 + [{"label": 1}] * 50
         dataset2 = [{"label": 0}] * 80 + [{"label": 1}] * 20
-        kl = metrics.KL_divergence([dataset1, dataset2], 2)
-        assert abs(kl - 0.223) < 0.05
+        JS = metrics.JS_divergence([dataset1, dataset2], 2)
+        assert abs(JS - 0.0505) < 0.01
 
     def test_return_all_multiple_datasets(self):
         d1 = [{"label": i % 5} for i in range(50)]
         d2 = [{"label": i % 5} for i in range(50)]
         d3 = [{"label": i % 5} for i in range(50)]
-        kl_all = metrics.KL_divergence([d1, d2, d3], 5, return_all=True)
-        assert len(kl_all) == 3  # 3 pairs: (0,1), (0,2), (1,2)
+        JS_all = metrics.JS_divergence([d1, d2, d3], 5, return_all=True)
+        assert len(JS_all) == 3  # 3 pairs: (0,1), (0,2), (1,2)
 
 
 class TestKSLabelTest:
@@ -414,8 +414,6 @@ class TestKSMultivariateTest:
         assert isinstance(result, dict)
         assert 'reject_null' in result
         assert 'min_pvalue' in result
-        assert 'corrected_alpha' in result
-        assert 'n_tests' in result
         assert 'significant_dims' in result
 
     @pytest.mark.slow
@@ -429,14 +427,6 @@ class TestKSMultivariateTest:
         (dataset1, dataset2), _, _ = temp_image_datasets
         result = metrics.KS_multivariate_test([dataset1[:10], dataset2[:10]], batch_size=5)
         assert 0 <= result['min_pvalue'] <= 1
-
-    @pytest.mark.slow
-    def test_bonferroni_correction(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        alpha = 0.05
-        result = metrics.KS_multivariate_test([dataset1[:10], dataset2[:10]], batch_size=5, alpha=alpha)
-        expected_alpha = alpha / result['n_tests']
-        assert abs(result['corrected_alpha'] - expected_alpha) < 1e-10
 
     @pytest.mark.slow
     def test_self_comparison_fails_to_reject(self, temp_image_datasets):
@@ -516,31 +506,6 @@ class TestVendiScoreFeatures:
         assert vs < 2.0
 
 
-class TestVendiScoreFromKernel:
-
-    def test_identity_kernel(self):
-        """Identity kernel (all distinct) should give score = n."""
-        n = 10
-        K = np.eye(n)
-        vs = metrics.vendi_score_from_kernel(K)
-        assert abs(vs - n) < 0.1
-
-    def test_uniform_kernel(self):
-        """All-ones kernel (all identical) should give score = 1."""
-        n = 10
-        K = np.ones((n, n))
-        vs = metrics.vendi_score_from_kernel(K)
-        assert abs(vs - 1.0) < 0.1
-
-    def test_positive_score(self):
-        """Vendi score should always be positive."""
-        K = np.random.rand(10, 10)
-        K = (K + K.T) / 2  # Make symmetric
-        K = K + np.eye(10) * 10  # Ensure positive definite
-        vs = metrics.vendi_score_from_kernel(K)
-        assert vs > 0
-
-
 # ============================================================================
 # Edge Cases
 # ============================================================================
@@ -551,40 +516,40 @@ class TestEdgeCases:
         dataset_empty = []
         dataset_normal = [{"label": i % 5} for i in range(20)]
         with pytest.raises((ValueError, IndexError, ZeroDivisionError)):
-            metrics.KL_divergence([dataset_empty, dataset_normal], 5)
+            metrics.MMD_label_distributions([dataset_empty, dataset_normal], num_classes=5)
 
     def test_single_sample_datasets(self):
         dataset1 = [{"label": 0}]
         dataset2 = [{"label": 1}]
         try:
-            kl = metrics.KL_divergence([dataset1, dataset2], 5)
-            assert kl >= 0
+            JS = metrics.JS_divergence([dataset1, dataset2], 5)
+            assert JS >= 0
         except (ValueError, ZeroDivisionError):
             pass
 
     def test_single_class_datasets(self, single_class_distributions):
         dataset1, dataset2, num_classes = single_class_distributions
-        kl = metrics.KL_divergence([dataset1, dataset2], num_classes)
-        assert kl >= 0
+        JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
+        assert JS >= 0
         mmd = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
         assert mmd >= 0
 
     def test_mismatched_num_classes(self):
         dataset1 = [{"label": 0}, {"label": 1}, {"label": 5}]
         dataset2 = [{"label": 2}, {"label": 3}]
-        kl = metrics.KL_divergence([dataset1, dataset2], num_classes=10)
-        assert kl >= 0
+        JS = metrics.JS_divergence([dataset1, dataset2], num_classes=10)
+        assert JS >= 0
 
     def test_large_num_classes(self):
         dataset1 = [{"label": i} for i in range(1000)]
         dataset2 = [{"label": i} for i in range(500, 1500)]
-        kl = metrics.KL_divergence([dataset1, dataset2], num_classes=1500)
-        assert kl >= 0
+        JS = metrics.JS_divergence([dataset1, dataset2], num_classes=1500)
+        assert JS >= 0
 
     def test_minimum_two_datasets_required(self):
         dataset1 = [{"label": i % 5} for i in range(50)]
         with pytest.raises(ValueError):
-            metrics.KL_divergence([dataset1], 5)
+            metrics.JS_divergence([dataset1], 5)
 
 
 # ============================================================================
@@ -596,12 +561,12 @@ class TestMetricConsistency:
     def test_all_metrics_agree_on_identical(self, identical_distributions):
         dataset1, dataset2, num_classes = identical_distributions
 
-        kl = metrics.KL_divergence([dataset1, dataset2], num_classes)
+        JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
         ks = metrics.KS_label_test([dataset1, dataset2])
         mmd = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
         mahal = metrics.mahalanobis_distance_labels([dataset1, dataset2], num_classes)
 
-        assert kl < 0.1
+        assert JS < 0.1
         assert ks['pvalue'] > 0.05
         assert mmd < 0.1
         assert mahal < 0.5
@@ -609,12 +574,12 @@ class TestMetricConsistency:
     def test_all_metrics_agree_on_complementary(self, complementary_distributions):
         dataset1, dataset2, num_classes = complementary_distributions
 
-        kl = metrics.KL_divergence([dataset1, dataset2], num_classes)
+        JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
         ks = metrics.KS_label_test([dataset1, dataset2])
         mmd = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
         mahal = metrics.mahalanobis_distance_labels([dataset1, dataset2], num_classes)
 
-        assert kl > 0.5
+        assert JS > 0.5
         assert ks['pvalue'] < 0.05
         assert mmd > 0.3
         assert mahal > 0.5
@@ -629,21 +594,21 @@ class TestMetricConsistency:
         very_diff1 = [{"label": i % 5} for i in range(100)]
         very_diff2 = [{"label": i % 5 + 5} for i in range(100)]
 
-        kl_identical = metrics.KL_divergence([identical1, identical2], 10)
-        kl_slight = metrics.KL_divergence([slight_diff1, slight_diff2], 10)
-        kl_very = metrics.KL_divergence([very_diff1, very_diff2], 10)
+        JS_identical = metrics.JS_divergence([identical1, identical2], 10)
+        JS_slight = metrics.JS_divergence([slight_diff1, slight_diff2], 10)
+        JS_very = metrics.JS_divergence([very_diff1, very_diff2], 10)
 
-        assert kl_identical < kl_slight < kl_very
+        assert JS_identical < JS_slight < JS_very
 
     def test_multiple_datasets_pairwise(self):
         """Test that N datasets produce N*(N-1)/2 pairwise comparisons."""
         datasets = [[{"label": i % 10} for i in range(50)] for _ in range(4)]
 
-        kl_all = metrics.KL_divergence(datasets, 10, return_all=True)
+        JS_all = metrics.JS_divergence(datasets, 10, return_all=True)
         mmd_all = metrics.MMD_label_distributions(datasets, 10, return_all=True)
 
         expected_pairs = 4 * 3 // 2  # 6 pairs
-        assert len(kl_all) == expected_pairs
+        assert len(JS_all) == expected_pairs
         assert len(mmd_all) == expected_pairs
 
 
@@ -656,21 +621,21 @@ class TestNumericalStability:
     def test_handles_zero_counts(self):
         dataset1 = [{"label": 0}] * 50
         dataset2 = [{"label": 1}] * 50
-        kl = metrics.KL_divergence([dataset1, dataset2], 2)
-        assert np.isfinite(kl)
+        JS = metrics.JS_divergence([dataset1, dataset2], 2)
+        assert np.isfinite(JS)
 
     def test_large_sample_sizes(self):
         dataset1 = [{"label": i % 100} for i in range(10000)]
         dataset2 = [{"label": i % 100} for i in range(10000)]
-        kl = metrics.KL_divergence([dataset1, dataset2], 100)
-        assert np.isfinite(kl)
+        JS = metrics.JS_divergence([dataset1, dataset2], 100)
+        assert np.isfinite(JS)
 
     def test_extreme_skew(self):
         dataset1 = [{"label": 0}] * 999 + [{"label": 1}]
         dataset2 = [{"label": i % 10} for i in range(1000)]
-        kl = metrics.KL_divergence([dataset1, dataset2], 10)
-        assert np.isfinite(kl)
-        assert kl > 0
+        JS = metrics.JS_divergence([dataset1, dataset2], 10)
+        assert np.isfinite(JS)
+        assert JS > 0
 
 
 if __name__ == "__main__":
