@@ -38,3 +38,4 @@ venv.bak/
 
 # Miscellaneous
 *.npz
+*pytest_cache/
