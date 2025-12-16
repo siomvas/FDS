@@ -8,7 +8,7 @@ import torch
 from torchvision import models, transforms
 from PIL import Image
 from tqdm import tqdm
-from data_partitioning.dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 
 
 class DatasetEmbeddingCache:

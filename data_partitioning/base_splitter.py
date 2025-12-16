@@ -1,4 +1,4 @@
-from data_partitioning.dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 from typing import Dict, List, Optional, TypedDict, Any
 import numpy as np
 import torch

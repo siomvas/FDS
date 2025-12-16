@@ -5,7 +5,7 @@ import sys
 import torch
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 import math
 import torchvision.transforms as T
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor

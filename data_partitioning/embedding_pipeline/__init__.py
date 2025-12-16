@@ -6,7 +6,7 @@ from frontier foundation models (DINO, CLIP, SigLIP) combined with clustering
 algorithms (HDBSCAN, K-means, etc.).
 """
 
-from .embedding_extractors import (
+from ...embedding.embedding_extractors import (
     EmbeddingExtractor,
     DINOv2Extractor,
     CLIPExtractor,
@@ -29,8 +29,8 @@ from .clustering_methods import (
     SpectralMethod,
     get_clustering_method,
 )
-from .embedding_splitter import EmbeddingSplitter
-from .cache_manager import CacheManager
+from ..embedding_splitter import EmbeddingSplitter
+from ...embedding.cache_manager import CacheManager
 from .config import (
     EmbeddingConfig,
     ModelConfig,

@@ -14,7 +14,7 @@ from collections import Counter
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_partitioning.multivariate_dirichlet_splitter import MultivariateDirichletSplitter
-from data_partitioning.dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 
 
 def analyze_client_distribution(splits, client_id: int, cluster_labels: dict):

@@ -8,7 +8,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-from data_partitioning.dataset import ImageDataset
+from data_loading.dataset import ImageDataset
 
 from transformers import (
     AutoImageProcessor,

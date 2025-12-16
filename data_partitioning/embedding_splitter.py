@@ -12,27 +12,27 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
-from dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 from typing import Dict, List, Optional, Any
 import numpy as np
 import json
 
-from .embedding_extractors import (
+from ..embedding.embedding_extractors import (
     EmbeddingExtractor,
     DINOv2Extractor,
     CLIPExtractor,
     SigLIPExtractor,
 )
-from .pooling_strategies import (
+from .embedding_pipeline.pooling_strategies import (
     PoolingStrategy,
     get_pooling_strategy,
 )
-from .clustering_methods import (
+from .embedding_pipeline.clustering_methods import (
     ClusteringMethod,
     get_clustering_method,
 )
-from .cache_manager import CacheManager
-from .config import EmbeddingConfig
+from ..embedding.cache_manager import CacheManager
+from .embedding_pipeline.config import EmbeddingConfig
 
 
 class EmbeddingSplitter(BaseDatasetSplitter):

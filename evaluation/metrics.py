@@ -9,8 +9,8 @@ import os
 from typing import List, Dict, Optional, Any
 from vendi_score import vendi
 
-from evaluation.embedding_cache import DatasetEmbeddingCache
-from data_partitioning.dataset import ImageDataset
+from embedding.embedding_cache import DatasetEmbeddingCache
+from data_loading.dataset import ImageDataset
 
 _GLOBAL_CACHE: Optional[DatasetEmbeddingCache] = None
 

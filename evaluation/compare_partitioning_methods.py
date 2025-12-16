@@ -36,9 +36,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from data_partitioning.random_splitter import RandomSplitter
 from data_partitioning.dirichlet_splitter import DirichletSplitter
 from data_partitioning.multivariate_dirichlet_splitter import MultivariateDirichletSplitter
-from data_partitioning.embedding_pipeline.embedding_splitter import EmbeddingSplitter
+from data_partitioning.embedding_splitter import EmbeddingSplitter
 from data_partitioning.embedding_pipeline.config import get_preset_config
-from data_partitioning.dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 from data_partitioning.base_splitter import BaseDatasetSplitter, DatasetSplits
 from evaluation import metrics
 

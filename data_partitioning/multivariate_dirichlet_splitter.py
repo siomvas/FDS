@@ -6,7 +6,7 @@ import numpy as np
 from collections import defaultdict
 
 from data_partitioning.base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
-from data_partitioning.dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 
 
 class MultivariateDirichletSplitter(BaseDatasetSplitter):

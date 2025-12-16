@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # import os
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
-from dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 
 import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode

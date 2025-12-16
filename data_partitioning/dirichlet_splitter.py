@@ -6,7 +6,7 @@ import matplotlib.patches as mpatches
 from scipy.stats import entropy
 
 from .base_splitter import DatasetSplits, ClientSplit
-from .dataset import BaseDataset
+from ..data_loading.dataset import BaseDataset
 from .random_splitter import RandomSplitter
 
 
