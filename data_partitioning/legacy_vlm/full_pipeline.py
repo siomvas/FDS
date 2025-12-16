@@ -15,11 +15,11 @@ def main():
 
     print("----Loading dataset...")
     # Load data: get dataset_name from argument when run `python script.py --dataset <name>`, default is: imagenet
-    data = util_loader.load_data(args.dataset)
+    data = util_loader.load_data(args.dataset, "train")
 
     # Run pipeline
     print("1) === Step 1...")
-    step1.main(vlm_model, vlm_tokenizer, data=data, max_samples=None, batch_size=4)
+    step1.main(vlm_model, vlm_tokenizer, data=data, max_samples=None, batch_size=88)
 
     # Unload vlm here:
     del vlm_model
@@ -30,14 +30,14 @@ def main():
     print("--- VLM unloaded, loading LLM...")
     llm_model, llm_tokenizer = util_loader.load_llm(args.llama_ver)
 
-    print("2a) === Step 2a...")
-    step2a.main(llm_model, llm_tokenizer, inference_batch_size=88)
+    # print("2a) === Step 2a...")
+    # step2a.main(llm_model, llm_tokenizer, inference_batch_size=88)
 
-    print("2b) === Step 2b...")
-    step2b.main(llm_model, llm_tokenizer)
+    # print("2b) === Step 2b...")
+    # step2b.main(llm_model, llm_tokenizer)
 
-    #print("3) === Step 3...")
-    #step3.main(llm_model, llm_tokenizer, inference_batch_size=80)
+    print("3) === Step 3...")
+    step3.main(llm_model, llm_tokenizer, inference_batch_size=88)
     
     print("Full pipeline finished successfully!")
 
