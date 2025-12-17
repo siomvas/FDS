@@ -1,3 +1,119 @@
+"""Embedding extraction infrastructure using foundation models.
+
+This module provides a unified framework for extracting image embeddings using
+various pre-trained and untrained models. It implements a factory pattern (ModelRegistry)
+for creating extractors and supports caching for efficient re-use of computed embeddings.
+
+Architecture
+------------
+
+**ModelRegistry** (Factory Pattern)
+    Central registry for creating embedding extractors. Automatically discovers
+    and registers extractor classes decorated with @ModelRegistry.register().
+
+**EmbeddingExtractor** (Abstract Base Class)
+    Base class defining the interface for all embedding extractors. Handles
+    common functionality like model loading, batched inference, proxy configuration,
+    and cache integration.
+
+**Specific Extractors** (Concrete Implementations)
+    - **InceptionExtractor**: InceptionV3 (PyTorch, 2048-dim)
+    - **DINOv2Extractor**: Self-supervised ViT (384-1024-dim depending on variant)
+    - **CLIPExtractor**: Contrastive vision-language model (512-768-dim)
+    - **SigLIPExtractor**: Enhanced CLIP variant (768-1152-dim)
+    - **MAEExtractor**: Masked autoencoder (768-1024-dim)
+    - **RawPixelResizerExtractor**: Flattened raw pixels (no training)
+    - **SparseRandomProjectionExtractor**: Random projections (no training)
+    - **UntrainedAutoEncoderExtractor**: Random untrained encoder
+    - **WaveletScatteringExtractor**: Wavelet transform (no training)
+
+Key Features
+------------
+
+1. **Unified Interface**: All extractors expose `extract_embeddings()` method
+2. **Automatic Caching**: Integrates with CacheManager for persistent storage
+3. **Batched Processing**: Efficient GPU utilization with DataLoader
+4. **Proxy Support**: Downloads models through configurable HTTP proxies
+5. **Local Model Storage**: Save/load models from local directories
+6. **Token Selection**: Choose specific tokens (CLS, all, k-last layers)
+7. **Flexible Configuration**: Device selection, batch size, workers
+
+Usage Examples
+--------------
+
+Basic usage with automatic caching:
+
+    >>> from embedding import ModelRegistry, CacheManager
+    >>>
+    >>> cache = CacheManager(cache_dir=".cache")
+    >>> extractor = ModelRegistry.create(
+    ...     "dinov2-base",
+    ...     device="cuda",
+    ...     batch_size=32,
+    ...     cache_manager=cache
+    ... )
+    >>>
+    >>> image_paths = ["img1.jpg", "img2.jpg", "img3.jpg"]
+    >>> embeddings = extractor.extract_embeddings(
+    ...     images=image_paths,
+    ...     use_cache=True
+    ... )
+    >>> print(embeddings.shape)  # (3, 768)
+
+Using different models:
+
+    >>> # CLIP for vision-language tasks
+    >>> clip = ModelRegistry.create("clip-vit-b-32", cache_manager=cache)
+    >>> clip_emb = clip.extract_embeddings(image_paths)
+    >>>
+    >>> # InceptionV3 for FID calculations
+    >>> inception = ModelRegistry.create("inception_v3", cache_manager=cache)
+    >>> inception_emb = inception.extract_embeddings(image_paths)
+    >>>
+    >>> # Untrained random features for baselines
+    >>> random = ModelRegistry.create("sparse_random_projection",
+    ...                               cache_manager=cache,
+    ...                               output_dim=512)
+    >>> random_emb = random.extract_embeddings(image_paths)
+
+Advanced: Custom token selection (for ViT models):
+
+    >>> # Extract CLS token from last 4 layers
+    >>> dinov2 = ModelRegistry.create("dinov2-large", cache_manager=cache)
+    >>> emb = dinov2.extract_embeddings(
+    ...     images=image_paths,
+    ...     return_which_tokens="k_last_cls",
+    ...     k_last=4
+    ... )
+
+Using proxy for model downloads:
+
+    >>> extractor = ModelRegistry.create(
+    ...     "dinov2-base",
+    ...     proxy="http://proxy.example.com:3128",
+    ...     model_dir="/local/models/"  # Save downloaded models
+    ... )
+
+Model Naming Convention
+-----------------------
+
+Models follow the pattern: `<family>-<variant>`
+
+Examples:
+    - `inception_v3` (no variant)
+    - `dinov2-small`, `dinov2-base`, `dinov2-large`, `dinov2-giant`
+    - `clip-vit-b-32`, `clip-vit-l-14`
+    - `siglip-so400m`
+    - `mae-base`, `mae-large`
+
+See Also
+--------
+
+- CacheManager: Persistent caching system for embeddings
+- ImageDataset: Dataset wrapper for loading images
+- ModelRegistry: Factory pattern documentation
+"""
+
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Type, Union, Any
 import os
@@ -9,10 +125,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torchvision import transforms
+from torchvision import transforms, models
 
 from data_loading.dataset import ImageDataset
-from cache_manager import CacheManager
+from .cache_manager import CacheManager
 
 from transformers import (
     AutoImageProcessor,
@@ -26,10 +142,61 @@ from transformers import (
 
 
 class ModelRegistry:
+    """Factory pattern registry for creating embedding extractors.
+
+    Provides a centralized registry for discovering and instantiating embedding
+    extractor classes. Extractors self-register using the `@ModelRegistry.register()`
+    decorator, enabling automatic discovery and flexible creation.
+
+    The registry supports a hierarchical naming scheme with model families and
+    variants (e.g., "dinov2-base", "clip-vit-l-14").
+
+    Attributes:
+        _REGISTRY: Class-level dict mapping model family names to extractor classes.
+
+    Examples:
+        Register a custom extractor:
+
+        >>> @ModelRegistry.register("my_model")
+        ... class MyExtractor(EmbeddingExtractor):
+        ...     def __init__(self, variant="default", **kwargs):
+        ...         super().__init__(model_name=f"my_model-{variant}", **kwargs)
+        ...     # ... implement abstract methods
+
+        Create extractors:
+
+        >>> # Built-in models
+        >>> dinov2 = ModelRegistry.create("dinov2-base", device="cuda")
+        >>> clip = ModelRegistry.create("clip-vit-b-32", batch_size=64)
+        >>>
+        >>> # Custom model
+        >>> my_model = ModelRegistry.create("my_model-v2", custom_param=True)
+
+        List available models:
+
+        >>> available = list(ModelRegistry._REGISTRY.keys())
+        >>> print(available)
+        ['inception_v3', 'dinov2', 'clip', 'siglip', ...]
+    """
+
     _REGISTRY: Dict[str, Type["EmbeddingExtractor"]] = {}
 
     @classmethod
     def register(cls, name: str):
+        """Decorator to register an extractor class with the registry.
+
+        Args:
+            name: Family name for the model (e.g., "dinov2", "clip").
+                Will be used as the prefix in model identifiers.
+
+        Returns:
+            Decorator function that registers the class and returns it unchanged.
+
+        Examples:
+            >>> @ModelRegistry.register("my_encoder")
+            ... class MyEncoder(EmbeddingExtractor):
+            ...     pass
+        """
         def decorator(model_cls):
             cls._REGISTRY[name] = model_cls
             return model_cls
@@ -37,20 +204,70 @@ class ModelRegistry:
 
     @classmethod
     def create(cls, model_identifier: str, **kwargs: Any) -> "EmbeddingExtractor":
+        """Create an embedding extractor from a model identifier.
+
+        Parses the model identifier into family and variant, looks up the
+        appropriate extractor class, and instantiates it with provided kwargs.
+
+        Args:
+            model_identifier: Model specification in format "<family>-<variant>"
+                or just "<family>" for default variant.
+                Examples: "dinov2-base", "clip-vit-l-14", "inception_v3"
+            **kwargs: Additional arguments passed to the extractor constructor.
+                Common options:
+                - device: str | torch.device
+                - batch_size: int
+                - num_workers: int
+                - proxy: str
+                - model_dir: str
+                - cache_manager: CacheManager
+
+        Returns:
+            Instance of the appropriate EmbeddingExtractor subclass.
+
+        Raises:
+            ValueError: If the model family is not registered.
+
+        Examples:
+            >>> # Create with defaults
+            >>> extractor = ModelRegistry.create("dinov2-base")
+            >>>
+            >>> # Create with custom configuration
+            >>> extractor = ModelRegistry.create(
+            ...     "clip-vit-b-32",
+            ...     device="cuda:1",
+            ...     batch_size=128,
+            ...     cache_manager=my_cache
+            ... )
+        """
         # Handle cases without variants (e.g. "wavelet_scattering")
         if "-" in model_identifier:
             family, variant = model_identifier.split("-", 1)
         else:
             family, variant = model_identifier, "default"
-        
+
         if family not in cls._REGISTRY:
              raise ValueError(f"Unknown model family '{family}'. Available: {list(cls._REGISTRY.keys())}")
-             
+
         return cls._REGISTRY[family](variant=variant, **kwargs)
 
 
 def collate_fn(batch: List[Optional[torch.Tensor]]) -> Optional[torch.Tensor]:
-    """Filters out None values (corrupt images) from the batch."""
+    """Custom collate function for DataLoader that handles corrupt images.
+
+    Filters out None values (from images that failed to load) before stacking.
+    This prevents batch processing from crashing due to individual corrupt files.
+
+    Args:
+        batch: List of tensors or None values from the DataLoader.
+
+    Returns:
+        Stacked tensor of valid images, or None if all images were corrupt.
+
+    Examples:
+        >>> # Used automatically by DataLoader
+        >>> loader = DataLoader(dataset, collate_fn=collate_fn)
+    """
     batch = [item for item in batch if item is not None]
     if not batch:
         return None
@@ -58,6 +275,58 @@ def collate_fn(batch: List[Optional[torch.Tensor]]) -> Optional[torch.Tensor]:
 
 
 class EmbeddingExtractor(ABC):
+    """Abstract base class for embedding extractors.
+
+    Defines the interface and common functionality for all embedding extractors.
+    Subclasses must implement `load_model()` and `get_embedding_dim()` to define
+    specific model architectures and dimensions.
+
+    This class handles:
+    - Model loading with proxy support
+    - Batched inference using DataLoader
+    - Integration with CacheManager
+    - Device management (CPU/GPU)
+    - Local model storage/retrieval
+
+    Attributes:
+        model_name: Full model identifier (e.g., "dinov2-base").
+        batch_size: Number of images to process per batch.
+        num_workers: Number of worker processes for data loading.
+        proxy: HTTP proxy URL for model downloads (optional).
+        model_dir: Local directory for storing/loading models (optional).
+        cache_manager: CacheManager instance for embedding persistence (optional).
+        device: Torch device for computation (cuda or cpu).
+        model: The loaded neural network model (None until load_model() called).
+        processor: HuggingFace processor for image preprocessing (model-specific).
+        transform: Torchvision transform for image preprocessing (model-specific).
+
+    Examples:
+        Subclass implementation:
+
+        >>> class MyExtractor(EmbeddingExtractor):
+        ...     def __init__(self, variant="default", **kwargs):
+        ...         super().__init__(model_name=f"mymodel-{variant}", **kwargs)
+        ...
+        ...     def load_model(self):
+        ...         self.model = MyModel.from_pretrained(self.model_name)
+        ...         self.model.to(self.device)
+        ...         self.model.eval()
+        ...         self.transform = transforms.Compose([...])
+        ...
+        ...     def get_embedding_dim(self) -> int:
+        ...         return 768
+
+        Usage:
+
+        >>> extractor = MyExtractor(
+        ...     variant="large",
+        ...     device="cuda",
+        ...     batch_size=32,
+        ...     cache_manager=cache
+        ... )
+        >>> embeddings = extractor.extract_embeddings(image_paths)
+    """
+
     def __init__(
         self,
         model_name: str,
@@ -68,15 +337,28 @@ class EmbeddingExtractor(ABC):
         model_dir: Optional[str] = None,
         cache_manager: Optional[CacheManager] = None,
     ):
+        """Initialize the embedding extractor.
+
+        Args:
+            model_name: Full model identifier (e.g., "dinov2-base", "clip-vit-b-32").
+            device: Computation device. If None, auto-selects cuda if available.
+            batch_size: Number of images per batch during inference.
+            num_workers: Number of DataLoader worker processes.
+            proxy: HTTP proxy URL for downloading models (e.g., "http://proxy:3128").
+            model_dir: Directory to save/load models locally. If provided, models
+                are cached to this directory after first download.
+            cache_manager: CacheManager instance for persistent embedding storage.
+                If None, embeddings won't be cached across runs.
+        """
         self.model_name = model_name
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.proxy = proxy
         self.model_dir = Path(model_dir) if model_dir else None
-        
+
         # Use provided CacheManager or create a local one if None is passed but we want caching
         self.cache_manager = cache_manager
-        
+
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
@@ -121,10 +403,45 @@ class EmbeddingExtractor(ABC):
 
     @abstractmethod
     def load_model(self) -> None:
+        """Load the model and initialize preprocessors.
+
+        Must be implemented by subclasses to load the specific model architecture,
+        move it to the appropriate device, set it to evaluation mode, and initialize
+        either self.transform (for torchvision models) or self.processor (for
+        HuggingFace models).
+
+        Side Effects:
+            - Sets self.model to the loaded nn.Module
+            - Sets self.transform or self.processor for image preprocessing
+            - Model is moved to self.device and set to eval() mode
+
+        Examples:
+            >>> def load_model(self):
+            ...     self.model = models.inception_v3(pretrained=True)
+            ...     self.model.to(self.device)
+            ...     self.model.eval()
+            ...     self.transform = transforms.Compose([
+            ...         transforms.Resize(299),
+            ...         transforms.ToTensor(),
+            ...     ])
+        """
         pass
 
     @abstractmethod
     def get_embedding_dim(self) -> int:
+        """Get the dimensionality of embeddings produced by this extractor.
+
+        Must be implemented by subclasses to return the embedding dimension.
+        This value depends on the model architecture and any token selection
+        parameters.
+
+        Returns:
+            Integer dimension of the embedding vectors.
+
+        Examples:
+            >>> def get_embedding_dim(self) -> int:
+            ...     return 2048  # InceptionV3 feature dimension
+        """
         pass
 
     def _get_dataloader(self, images: List[str]) -> DataLoader:
@@ -413,11 +730,13 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
         return self.target_size * self.target_size * 3
     
     def extract_embeddings(
-        self, 
-        images: List[str], 
+        self,
+        images: List[str],
         return_which_tokens: str = "cls",
         k_last: int = 5,
         use_cache: bool = True,
+        dataset_name: Optional[str] = None,
+        base_path: Optional[str] = None,
         **kwargs: Any,
     ) -> np.ndarray:
 
@@ -426,6 +745,8 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
             cached_data = self.cache_manager.get(
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 extractor_class=self.__class__.__name__,
                 target_size=self.target_size
             )
@@ -456,10 +777,12 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
                 embeddings=result,
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 extractor_class=self.__class__.__name__,
                 target_size=self.target_size
             )
-            
+
         return result
 
 
@@ -495,17 +818,21 @@ class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
         return self.target_dim
     
     def extract_embeddings(
-        self, 
-        images: List[str], 
+        self,
+        images: List[str],
         use_cache: bool = True,
+        dataset_name: Optional[str] = None,
+        base_path: Optional[str] = None,
         **kwargs: Any,
     ) -> np.ndarray:
-        
+
         # 1. Check Cache
         if use_cache and self.cache_manager:
             cached_data = self.cache_manager.get(
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 extractor_class=self.__class__.__name__,
                 target_size=self.target_size,
                 target_dim=self.target_dim
@@ -545,18 +872,20 @@ class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
             result = np.array([])
         else:
             result = np.concatenate(all_embeddings, axis=0)
-            
+
         # 2. Save Cache
         if use_cache and self.cache_manager:
             self.cache_manager.put(
                 embeddings=result,
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 extractor_class=self.__class__.__name__,
                 target_size=self.target_size,
                 target_dim=self.target_dim
             )
-            
+
         return result
 
 
@@ -596,19 +925,23 @@ class UntrainedAutoEncoderExtractor(EmbeddingExtractor):
         return 16 * (self.input_size // 8) * (self.input_size // 8)
     
     def extract_embeddings(
-        self, 
-        images: List[str], 
+        self,
+        images: List[str],
         return_which_tokens: str = "cls",
         k_last: int = 5,
         use_cache: bool = True,
+        dataset_name: Optional[str] = None,
+        base_path: Optional[str] = None,
         **kwargs: Any,
     ) -> np.ndarray:
-        
+
         # 1. Check Cache
         if use_cache and self.cache_manager:
             cached_data = self.cache_manager.get(
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 extractor_class=self.__class__.__name__,
                 input_size=self.input_size
             )
@@ -634,17 +967,19 @@ class UntrainedAutoEncoderExtractor(EmbeddingExtractor):
             result = np.array([])
         else:
             result = np.concatenate(all_embeddings, axis=0)
-            
+
         # 2. Save Cache
         if use_cache and self.cache_manager:
             self.cache_manager.put(
                 embeddings=result,
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 extractor_class=self.__class__.__name__,
                 input_size=self.input_size
             )
-            
+
         return result
 
 
@@ -695,19 +1030,23 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
         return output.numel()
     
     def extract_embeddings(
-        self, 
-        images: List[str], 
+        self,
+        images: List[str],
         return_which_tokens: str = "cls",
         k_last: int = 5,
         use_cache: bool = True,
+        dataset_name: Optional[str] = None,
+        base_path: Optional[str] = None,
         **kwargs: Any,
     ) -> np.ndarray:
-        
+
         # 1. Check Cache
         if use_cache and self.cache_manager:
             cached_data = self.cache_manager.get(
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 extractor_class=self.__class__.__name__,
                 input_size=self.input_size,
                 J=self.J
@@ -734,16 +1073,18 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
             result = np.array([])
         else:
             result = np.concatenate(all_embeddings, axis=0)
-            
+
         # 2. Save Cache
         if use_cache and self.cache_manager:
             self.cache_manager.put(
                 embeddings=result,
                 model_name=self.model_name,
                 image_paths=images,
+                dataset_name=dataset_name,
+                base_path=base_path,
                 extractor_class=self.__class__.__name__,
                 input_size=self.input_size,
                 J=self.J
             )
-            
+
         return result

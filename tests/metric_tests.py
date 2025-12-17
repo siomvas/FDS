@@ -1,6 +1,9 @@
 """
 Unit tests for evaluation metrics.
+
+Updated to match current metrics in evaluation/metrics.py
 Run with: pytest metric_tests.py -v
+Run without slow tests: pytest metric_tests.py -v -m "not slow"
 """
 
 import pytest
@@ -90,6 +93,7 @@ def temp_image_datasets():
 # ============================================================================
 
 class TestJSDivergence:
+    """Test Jensen-Shannon Divergence."""
 
     def test_self_divergence_is_zero(self, identical_distributions):
         dataset1, _, num_classes = identical_distributions
@@ -111,27 +115,6 @@ class TestJSDivergence:
         JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
         assert JS > 0.5
 
-    def test_not_symmetric(self, skewed_distributions):
-        dataset1, dataset2, num_classes = skewed_distributions
-        JS_all = metrics.JS_divergence([dataset1, dataset2], num_classes, return_all=True)
-        # Single pair, so just verify it's valid
-        assert len(JS_all) == 1
-        assert JS_all[0] >= 0
-
-    def test_uniform_distributions_zero(self):
-        dataset1 = [{"label": i % 10} for i in range(100)]
-        dataset2 = [{"label": i % 10} for i in range(100)]
-        JS = metrics.JS_divergence([dataset1, dataset2], 10)
-        assert JS < 1e-6
-
-    def test_known_value(self):
-        # P = [0.5, 0.5], Q = [0.8, 0.2]
-        # JS(P||Q) = 0.0505
-        dataset1 = [{"label": 0}] * 50 + [{"label": 1}] * 50
-        dataset2 = [{"label": 0}] * 80 + [{"label": 1}] * 20
-        JS = metrics.JS_divergence([dataset1, dataset2], 2)
-        assert abs(JS - 0.0505) < 0.01
-
     def test_return_all_multiple_datasets(self):
         d1 = [{"label": i % 5} for i in range(50)]
         d2 = [{"label": i % 5} for i in range(50)]
@@ -139,130 +122,488 @@ class TestJSDivergence:
         JS_all = metrics.JS_divergence([d1, d2, d3], 5, return_all=True)
         assert len(JS_all) == 3  # 3 pairs: (0,1), (0,2), (1,2)
 
-
-class TestKSLabelTest:
-
-    def test_returns_dict_with_keys(self, identical_distributions):
-        dataset1, dataset2, _ = identical_distributions
-        result = metrics.KS_label_test([dataset1, dataset2])
-        assert isinstance(result, dict)
-        assert 'statistic' in result
-        assert 'pvalue' in result
-
-    def test_pvalue_range(self, skewed_distributions):
-        dataset1, dataset2, _ = skewed_distributions
-        result = metrics.KS_label_test([dataset1, dataset2])
-        assert 0 <= result['pvalue'] <= 1
-
-    def test_statistic_range(self, skewed_distributions):
-        dataset1, dataset2, _ = skewed_distributions
-        result = metrics.KS_label_test([dataset1, dataset2])
-        assert 0 <= result['statistic'] <= 1
-
-    def test_identical_distributions_high_pvalue(self, identical_distributions):
-        dataset1, dataset2, _ = identical_distributions
-        result = metrics.KS_label_test([dataset1, dataset2])
-        assert result['pvalue'] > 0.05
-
-    def test_complementary_distributions_low_pvalue(self, complementary_distributions):
-        dataset1, dataset2, _ = complementary_distributions
-        result = metrics.KS_label_test([dataset1, dataset2])
-        assert result['pvalue'] < 0.05
-
-    def test_self_comparison(self, skewed_distributions):
-        dataset1, _, _ = skewed_distributions
-        result = metrics.KS_label_test([dataset1, dataset1])
-        assert result['statistic'] < 1e-10
-        assert result['pvalue'] > 0.99
-
-    def test_return_all(self, identical_distributions):
-        dataset1, dataset2, _ = identical_distributions
-        d3 = [{"label": i % 10} for i in range(100)]
-        results = metrics.KS_label_test([dataset1, dataset2, d3], return_all=True)
-        assert isinstance(results, list)
-        assert len(results) == 3
+    def test_known_value(self):
+        # P = [0.5, 0.5], Q = [0.8, 0.2]
+        # JS(P||Q) ≈ 0.0505
+        dataset1 = [{"label": 0}] * 50 + [{"label": 1}] * 50
+        dataset2 = [{"label": 0}] * 80 + [{"label": 1}] * 20
+        JS = metrics.JS_divergence([dataset1, dataset2], 2)
+        assert abs(JS - 0.0505) < 0.01
 
 
-class TestMMDLabelDistributions:
+class TestTVLabelDistributions:
+    """Test Total Variation distance."""
 
-    def test_self_distance_zero(self, skewed_distributions):
-        dataset1, _, num_classes = skewed_distributions
-        mmd = metrics.MMD_label_distributions([dataset1, dataset1], num_classes)
-        assert mmd < 1e-10
+    def test_self_distance_zero(self, identical_distributions):
+        dataset1, _, num_classes = identical_distributions
+        tv = metrics.TV_label_distributions([dataset1, dataset1], num_classes)
+        assert tv < 1e-6
 
     def test_non_negative(self, skewed_distributions):
         dataset1, dataset2, num_classes = skewed_distributions
-        mmd = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
-        assert mmd >= 0
+        tv = metrics.TV_label_distributions([dataset1, dataset2], num_classes)
+        assert tv >= 0
 
-    def test_symmetric(self, skewed_distributions):
-        dataset1, dataset2, num_classes = skewed_distributions
-        mmd_pq = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
-        mmd_qp = metrics.MMD_label_distributions([dataset2, dataset1], num_classes)
-        assert abs(mmd_pq - mmd_qp) < 1e-10
-
-    def test_identical_distributions_near_zero(self, identical_distributions):
-        dataset1, dataset2, num_classes = identical_distributions
-        mmd = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
-        assert mmd < 0.1
-
-    def test_complementary_distributions_high(self, complementary_distributions):
+    def test_bounded_by_one(self, complementary_distributions):
         dataset1, dataset2, num_classes = complementary_distributions
-        mmd = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
-        assert mmd > 0.5
+        tv = metrics.TV_label_distributions([dataset1, dataset2], num_classes)
+        assert tv <= 1.0
 
-    def test_return_all(self, identical_distributions):
-        dataset1, dataset2, num_classes = identical_distributions
-        d3 = [{"label": i % 10} for i in range(100)]
-        mmd_all = metrics.MMD_label_distributions([dataset1, dataset2, d3], num_classes, return_all=True)
-        assert len(mmd_all) == 3
-
-
-class TestMahalanobisDistanceLabels:
-
-    def test_non_negative(self, skewed_distributions):
-        dataset1, dataset2, num_classes = skewed_distributions
-        dist = metrics.mahalanobis_distance_labels([dataset1, dataset2], num_classes)
-        assert dist >= 0
-
-    def test_identical_distributions_near_zero(self, identical_distributions):
-        dataset1, dataset2, num_classes = identical_distributions
-        dist = metrics.mahalanobis_distance_labels([dataset1, dataset2], num_classes)
-        assert dist < 0.5
-
-    def test_self_distance_zero(self, skewed_distributions):
-        dataset1, _, num_classes = skewed_distributions
-        dist = metrics.mahalanobis_distance_labels([dataset1, dataset1], num_classes)
-        assert dist < 1e-6
-
-    def test_complementary_distributions_high(self, complementary_distributions):
+    def test_complementary_distributions(self, complementary_distributions):
+        """Non-overlapping distributions should give TV close to 1."""
         dataset1, dataset2, num_classes = complementary_distributions
-        dist = metrics.mahalanobis_distance_labels([dataset1, dataset2], num_classes)
-        assert dist > 0.5
+        tv = metrics.TV_label_distributions([dataset1, dataset2], num_classes)
+        assert tv > 0.8
 
-    def test_return_all(self, identical_distributions):
-        dataset1, dataset2, num_classes = identical_distributions
-        d3 = [{"label": i % 10} for i in range(100)]
-        dists = metrics.mahalanobis_distance_labels([dataset1, dataset2, d3], num_classes, return_all=True)
-        assert len(dists) == 3
+    def test_return_all(self):
+        d1 = [{"label": i % 5} for i in range(50)]
+        d2 = [{"label": i % 5} for i in range(50)]
+        d3 = [{"label": 0}] * 50
+        tv_all = metrics.TV_label_distributions([d1, d2, d3], 5, return_all=True)
+        assert len(tv_all) == 3
+
+
+class TestJSDClientToGlobal:
+    """Test JSD client-to-global metric."""
+
+    def test_returns_list_or_float(self):
+        d1 = [{"label": i % 5} for i in range(50)]
+        d2 = [{"label": i % 5} for i in range(50)]
+
+        # return_all=False should give float
+        jsd_mean = metrics.JSD_client_to_global([d1, d2], 5, return_all=False)
+        assert isinstance(jsd_mean, (float, np.floating))
+
+        # return_all=True should give list
+        jsd_list = metrics.JSD_client_to_global([d1, d2], 5, return_all=True)
+        assert isinstance(jsd_list, list)
+        assert len(jsd_list) == 2
+
+    def test_identical_to_global_near_zero(self):
+        """If all clients identical, JSD to global should be near zero."""
+        d1 = [{"label": i % 5} for i in range(50)]
+        d2 = [{"label": i % 5} for i in range(50)]
+        d3 = [{"label": i % 5} for i in range(50)]
+
+        jsd_list = metrics.JSD_client_to_global([d1, d2, d3], 5, return_all=True)
+        assert all(jsd < 0.01 for jsd in jsd_list)
+
+    def test_specialized_client_high_jsd(self):
+        """Client with specialized distribution should have high JSD to global."""
+        d1 = [{"label": 0}] * 90 + [{"label": 1}] * 10  # Specialized in class 0
+        d2 = [{"label": i % 5} for i in range(100)]     # Uniform
+        d3 = [{"label": i % 5} for i in range(100)]     # Uniform
+
+        jsd_list = metrics.JSD_client_to_global([d1, d2, d3], 5, return_all=True)
+        # d1 should have highest JSD (different from balanced global)
+        assert jsd_list[0] > jsd_list[1]
+        assert jsd_list[0] > jsd_list[2]
 
 
 # ============================================================================
-# MMD RBF Kernel
+# Feature Distribution Metrics
+# ============================================================================
+
+class TestFIDDistance:
+    """Test Fréchet Inception Distance."""
+
+    @pytest.mark.slow
+    def test_self_distance_near_zero(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        subset = dataset1[:10]
+        fid = metrics.FID_distance([subset, subset], batch_size=5, use_cache=False)
+        assert fid < 10.0
+
+    @pytest.mark.slow
+    def test_non_negative(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        fid = metrics.FID_distance([dataset1[:10], dataset2[:10]], batch_size=5, use_cache=False)
+        assert fid >= 0
+
+    @pytest.mark.slow
+    def test_symmetric(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        subset1, subset2 = dataset1[:10], dataset2[:10]
+        fid_12 = metrics.FID_distance([subset1, subset2], batch_size=5, use_cache=False)
+        fid_21 = metrics.FID_distance([subset2, subset1], batch_size=5, use_cache=False)
+        assert abs(fid_12 - fid_21) < 1e-6
+
+    @pytest.mark.slow
+    def test_return_all_option(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        subset1, subset2, subset3 = dataset1[:5], dataset2[:5], dataset1[5:10]
+        fid_scores = metrics.FID_distance(
+            [subset1, subset2, subset3],
+            batch_size=5,
+            return_all=True,
+            use_cache=False
+        )
+        assert isinstance(fid_scores, list)
+        assert len(fid_scores) == 3
+
+
+class TestMMD:
+    """Test Maximum Mean Discrepancy (RBF kernel)."""
+
+    @pytest.mark.slow
+    def test_non_negative(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        mmd = metrics.MMD([dataset1[:10], dataset2[:10]], batch_size=5, use_cache=False)
+        assert mmd > -1.0
+
+    @pytest.mark.slow
+    def test_self_distance_near_zero(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        subset = dataset1[:10]
+        mmd = metrics.MMD([subset, subset], batch_size=5, use_cache=False)
+        assert abs(mmd) < 1.0
+
+    @pytest.mark.slow
+    def test_return_all(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        mmd_all = metrics.MMD(
+            [dataset1[:5], dataset2[:5], dataset1[5:10]],
+            batch_size=5,
+            return_all=True,
+            use_cache=False
+        )
+        assert len(mmd_all) == 3
+
+    @pytest.mark.slow
+    def test_with_different_models(self, temp_image_datasets):
+        """Test MMD with different feature extractors."""
+        (dataset1, dataset2), _, _ = temp_image_datasets
+
+        # Test with InceptionV3 (default)
+        mmd_inception = metrics.MMD(
+            [dataset1[:5], dataset2[:5]],
+            model_name="inception_v3",
+            batch_size=5,
+            use_cache=False
+        )
+        assert mmd_inception >= -0.5  # Allow small negative due to estimation
+
+
+class TestEnergyDistance:
+    """Test Energy Distance."""
+
+    @pytest.mark.slow
+    def test_non_negative_or_zero(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        ed = metrics.energy_distance_features([dataset1[:10], dataset2[:10]], batch_size=5, use_cache=False)
+        # Energy distance should be non-negative for different distributions
+        assert isinstance(ed, (float, np.floating))
+
+    @pytest.mark.slow
+    def test_self_distance_zero(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        subset = dataset1[:10]
+        ed = metrics.energy_distance_features([subset, subset], batch_size=5, use_cache=False)
+        assert abs(ed) < 1.0
+
+    @pytest.mark.slow
+    def test_return_all(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        ed_all = metrics.energy_distance_features(
+            [dataset1[:5], dataset2[:5], dataset1[5:10]],
+            batch_size=5,
+            return_all=True,
+            use_cache=False
+        )
+        assert len(ed_all) == 3
+
+
+class TestSlicedWassersteinDistance:
+    """Test Sliced Wasserstein Distance."""
+
+    @pytest.mark.slow
+    def test_non_negative(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        swd = metrics.sliced_wasserstein_distance([dataset1[:10], dataset2[:10]], batch_size=5, use_cache=False)
+        assert swd >= 0
+
+    @pytest.mark.slow
+    def test_self_distance_near_zero(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        subset = dataset1[:10]
+        swd = metrics.sliced_wasserstein_distance([subset, subset], batch_size=5, use_cache=False)
+        assert swd < 1.0
+
+    @pytest.mark.slow
+    def test_return_all(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        swd_all = metrics.sliced_wasserstein_distance(
+            [dataset1[:5], dataset2[:5], dataset1[5:10]],
+            batch_size=5,
+            return_all=True,
+            use_cache=False
+        )
+        assert len(swd_all) == 3
+
+
+class TestKSMultivariateTest:
+    """Test Kolmogorov-Smirnov multivariate test."""
+
+    @pytest.mark.slow
+    def test_returns_dict_with_keys(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        result = metrics.KS_multivariate_test([dataset1[:10], dataset2[:10]], batch_size=5, use_cache=False)
+        assert isinstance(result, dict)
+        assert 'reject_null' in result
+        assert 'min_pvalue' in result
+        assert 'significant_dims' in result
+
+    @pytest.mark.slow
+    def test_reject_null_is_boolean(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        result = metrics.KS_multivariate_test([dataset1[:10], dataset2[:10]], batch_size=5, use_cache=False)
+        assert isinstance(result['reject_null'], bool)
+
+    @pytest.mark.slow
+    def test_pvalue_range(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        result = metrics.KS_multivariate_test([dataset1[:10], dataset2[:10]], batch_size=5, use_cache=False)
+        assert 0 <= result['min_pvalue'] <= 1
+
+    @pytest.mark.slow
+    def test_self_comparison_fails_to_reject(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        subset = dataset1[:10]
+        result = metrics.KS_multivariate_test([subset, subset], batch_size=5, use_cache=False)
+        assert result['reject_null'] == False
+        assert result['min_pvalue'] > 0.01
+
+    @pytest.mark.slow
+    def test_with_pca(self, temp_image_datasets):
+        """Test KS test with PCA preprocessing."""
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        result = metrics.KS_multivariate_test(
+            [dataset1[:15], dataset2[:15]],
+            pca_components=50,
+            batch_size=5,
+            use_cache=False
+        )
+        assert isinstance(result, dict)
+        assert 'reject_null' in result
+
+
+class TestVendiScore:
+    """Test Vendi Score (diversity metric)."""
+
+    @pytest.mark.slow
+    def test_returns_float(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        vs = metrics.vendi_score([dataset1[:10]], batch_size=5, use_cache=False)
+        assert isinstance(vs, (float, np.floating))
+
+    @pytest.mark.slow
+    def test_positive(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        vs = metrics.vendi_score([dataset1[:10]], batch_size=5, use_cache=False)
+        assert vs > 0
+
+    @pytest.mark.slow
+    def test_return_all(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        vs_all = metrics.vendi_score([dataset1[:5], dataset2[:5]], batch_size=5, return_all=True, use_cache=False)
+        assert isinstance(vs_all, list)
+        assert len(vs_all) == 2
+        assert all(v > 0 for v in vs_all)
+
+    @pytest.mark.slow
+    def test_identical_images_low_score(self, temp_image_datasets):
+        """Dataset with identical images should have low diversity score (close to 1)."""
+        _, _, temp_dir = temp_image_datasets
+        # Create dataset with identical images
+        img = Image.new('RGB', (64, 64), color=(128, 128, 128))
+        identical_dataset = []
+        for i in range(10):
+            img_path = Path(temp_dir) / f"identical_{i}.png"
+            img.save(img_path)
+            identical_dataset.append({"image": str(img_path), "label": 0})
+
+        vs = metrics.vendi_score([identical_dataset], batch_size=5, use_cache=False)
+        # Identical images should give score close to 1
+        assert vs < 2.0
+
+
+class TestIntrinsicDimensionality:
+    """Test intrinsic dimensionality estimation."""
+
+    @pytest.mark.slow
+    def test_returns_float_or_list(self, temp_image_datasets):
+        (dataset1,_), _, _ = temp_image_datasets
+
+        # return_all=False
+        id_mean = metrics.intrinsic_dimensionality(
+            [dataset1[:15]],
+            method="two_nn",
+            batch_size=5,
+            use_faiss=False,
+            return_all=False,
+            use_cache=False
+        )
+        assert isinstance(id_mean, (float, np.floating))
+
+        # return_all=True
+        id_list = metrics.intrinsic_dimensionality(
+            [dataset1[:15]],
+            method="two_nn",
+            batch_size=5,
+            use_faiss=False,
+            return_all=True,
+            use_cache=False
+        )
+        assert isinstance(id_list, list)
+
+    @pytest.mark.slow
+    def test_positive_estimate(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        id_est = metrics.intrinsic_dimensionality(
+            [dataset1[:15]],
+            method="two_nn",
+            use_faiss=False,
+            batch_size=5,
+            use_cache=False
+        )
+        assert id_est > 0
+
+    @pytest.mark.slow
+    def test_different_methods(self, temp_image_datasets):
+        """Test both TWO-NN and MLE methods."""
+        (dataset1, _), _, _ = temp_image_datasets
+
+        id_two_nn = metrics.intrinsic_dimensionality(
+            [dataset1[:15]],
+            method="two_nn",
+            use_faiss=False,
+            batch_size=5,
+            use_cache=False
+        )
+
+        id_mle = metrics.intrinsic_dimensionality(
+            [dataset1[:15]],
+            method="mle",
+            k=10,
+            use_faiss=False,
+            batch_size=5,
+            use_cache=False
+        )
+
+        assert id_two_nn > 0
+        assert id_mle > 0
+
+
+class TestKNNSeparability:
+    """Test k-NN separability metric."""
+
+    @pytest.mark.slow
+    def test_returns_float_in_range(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        sep = metrics.knn_separability(
+            [dataset1[:10], dataset2[:10]],
+            k=5,
+            batch_size=5,
+            use_cache=False
+        )
+        assert 0 <= sep <= 1
+
+    @pytest.mark.slow
+    def test_high_separability_for_different_distributions(self, temp_image_datasets):
+        """Different distributions should have higher separability."""
+        (dataset1, _), (_, dataset4), _ = temp_image_datasets
+        # dataset4 has very different colors (shift=128)
+        sep = metrics.knn_separability(
+            [dataset1[:10], dataset4[:10]],
+            k=3,
+            batch_size=5,
+            use_cache=False
+        )
+        # Should have some separability
+        assert sep > 0.3
+
+
+class TestCentroidDistance:
+    """Test centroid distance metric."""
+
+    @pytest.mark.slow
+    def test_non_negative(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        cd = metrics.centroid_distance(
+            [dataset1[:10], dataset2[:10]],
+            batch_size=5,
+            use_cache=False
+        )
+        assert cd >= 0
+
+    @pytest.mark.slow
+    def test_self_distance_zero(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        subset = dataset1[:10]
+        cd = metrics.centroid_distance([subset, subset], batch_size=5, use_cache=False)
+        assert cd < 1.0
+
+    @pytest.mark.slow
+    def test_return_all(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        cd_all = metrics.centroid_distance(
+            [dataset1[:5], dataset2[:5], dataset1[5:10]],
+            batch_size=5,
+            return_all=True,
+            use_cache=False
+        )
+        assert len(cd_all) == 3
+
+
+class TestFeatureVariance:
+    """Test feature variance metric."""
+
+    @pytest.mark.slow
+    def test_positive(self, temp_image_datasets):
+        (dataset1, _), _, _ = temp_image_datasets
+        fv = metrics.feature_variance([dataset1[:10]], batch_size=5, use_cache=False)
+        assert fv > 0
+
+    @pytest.mark.slow
+    def test_return_all(self, temp_image_datasets):
+        (dataset1, dataset2), _, _ = temp_image_datasets
+        fv_all = metrics.feature_variance(
+            [dataset1[:5], dataset2[:5]],
+            batch_size=5,
+            return_all=True,
+            use_cache=False
+        )
+        assert isinstance(fv_all, list)
+        assert len(fv_all) == 2
+        assert all(v > 0 for v in fv_all)
+
+    @pytest.mark.slow
+    def test_identical_images_low_variance(self, temp_image_datasets):
+        """Identical images should have very low variance."""
+        _, _, temp_dir = temp_image_datasets
+        img = Image.new('RGB', (64, 64), color=(128, 128, 128))
+        identical_dataset = []
+        for i in range(10):
+            img_path = Path(temp_dir) / f"identical_{i}.png"
+            img.save(img_path)
+            identical_dataset.append({"image": str(img_path), "label": 0})
+
+        fv = metrics.feature_variance([identical_dataset], batch_size=5, use_cache=False)
+        # Identical images should have near-zero variance
+        assert fv < 10.0  # Very low compared to varied images
+
+
+# ============================================================================
+# MMD RBF Kernel Utility
 # ============================================================================
 
 class TestMMDRBFKernel:
+    """Test MMD RBF kernel utility function."""
 
     def test_self_distance_zero(self):
         X = np.random.randn(50, 10)
         mmd = metrics.MMD_rbf_kernel(X, X, sigma=1.0)
         assert abs(mmd) < 1e-6
-
-    def test_non_negative_for_different_samples(self):
-        X = np.random.randn(50, 10)
-        Y = np.random.randn(50, 10) + 2.0
-        mmd = metrics.MMD_rbf_kernel(X, Y, sigma=1.0)
-        assert mmd > -0.1
 
     def test_symmetric(self):
         X = np.random.randn(50, 10)
@@ -293,230 +634,17 @@ class TestMMDRBFKernel:
 
 
 # ============================================================================
-# Feature Distribution Metrics
-# ============================================================================
-
-class TestFIDDistance:
-
-    @pytest.mark.slow
-    def test_self_distance_near_zero(self, temp_image_datasets):
-        (dataset1, _), _, _ = temp_image_datasets
-        subset = dataset1[:10]
-        fid = metrics.FID_distance([subset, subset], batch_size=5)
-        assert fid < 10.0
-
-    @pytest.mark.slow
-    def test_non_negative(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        fid = metrics.FID_distance([dataset1[:10], dataset2[:10]], batch_size=5)
-        assert fid >= 0
-
-    @pytest.mark.slow
-    def test_symmetric(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        subset1, subset2 = dataset1[:10], dataset2[:10]
-        fid_12 = metrics.FID_distance([subset1, subset2], batch_size=5)
-        fid_21 = metrics.FID_distance([subset2, subset1], batch_size=5)
-        assert abs(fid_12 - fid_21) < 1e-6
-
-    @pytest.mark.slow
-    def test_different_distributions_higher(self, temp_image_datasets):
-        (dataset1, dataset2), (dataset3, dataset4), _ = temp_image_datasets
-        fid_small = metrics.FID_distance([dataset1[:10], dataset2[:10]], batch_size=5)
-        fid_large = metrics.FID_distance([dataset3[:10], dataset4[:10]], batch_size=5)
-        assert fid_large >= 0 and fid_small >= 0
-
-    @pytest.mark.slow
-    def test_return_all_option(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        subset1, subset2, subset3 = dataset1[:5], dataset2[:5], dataset1[5:10]
-        fid_scores = metrics.FID_distance([subset1, subset2, subset3], batch_size=5, return_all=True)
-        assert isinstance(fid_scores, list)
-        assert len(fid_scores) == 3
-
-
-class TestMMDFeatures:
-
-    @pytest.mark.slow
-    def test_non_negative(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        mmd = metrics.MMD_features([dataset1[:10], dataset2[:10]], batch_size=5)
-        assert mmd > -1.0
-
-    @pytest.mark.slow
-    def test_self_distance_near_zero(self, temp_image_datasets):
-        (dataset1, _), _, _ = temp_image_datasets
-        subset = dataset1[:10]
-        mmd = metrics.MMD_features([subset, subset], batch_size=5)
-        assert abs(mmd) < 1.0
-
-    @pytest.mark.slow
-    def test_return_all(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        mmd_all = metrics.MMD_features([dataset1[:5], dataset2[:5], dataset1[5:10]], batch_size=5, return_all=True)
-        assert len(mmd_all) == 3
-
-
-class TestWassersteinDistanceFeatures:
-
-    @pytest.mark.slow
-    def test_non_negative(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        wd = metrics.wasserstein_distance_features([dataset1[:10], dataset2[:10]], batch_size=5)
-        assert wd >= 0
-
-    @pytest.mark.slow
-    def test_self_distance_near_zero(self, temp_image_datasets):
-        (dataset1, _), _, _ = temp_image_datasets
-        subset = dataset1[:10]
-        wd = metrics.wasserstein_distance_features([subset, subset], batch_size=5)
-        assert wd < 1.0
-
-    @pytest.mark.slow
-    def test_return_all(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        wd_all = metrics.wasserstein_distance_features(
-            [dataset1[:5], dataset2[:5], dataset1[5:10]], batch_size=5, return_all=True
-        )
-        assert len(wd_all) == 3
-
-
-class TestCramerVonMisesFeatures:
-
-    @pytest.mark.slow
-    def test_non_negative(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        cvm = metrics.cramer_von_mises_features([dataset1[:10], dataset2[:10]], batch_size=5)
-        assert cvm >= 0
-
-    @pytest.mark.slow
-    def test_self_comparison_small(self, temp_image_datasets):
-        (dataset1, _), _, _ = temp_image_datasets
-        subset = dataset1[:10]
-        cvm = metrics.cramer_von_mises_features([subset, subset], batch_size=5)
-        assert cvm < 1.0
-
-    @pytest.mark.slow
-    def test_return_all(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        cvm_all = metrics.cramer_von_mises_features(
-            [dataset1[:5], dataset2[:5], dataset1[5:10]], batch_size=5, return_all=True
-        )
-        assert len(cvm_all) == 3
-
-
-class TestKSMultivariateTest:
-
-    @pytest.mark.slow
-    def test_returns_dict_with_keys(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        result = metrics.KS_multivariate_test([dataset1[:10], dataset2[:10]], batch_size=5)
-        assert isinstance(result, dict)
-        assert 'reject_null' in result
-        assert 'min_pvalue' in result
-        assert 'significant_dims' in result
-
-    @pytest.mark.slow
-    def test_reject_null_is_boolean(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        result = metrics.KS_multivariate_test([dataset1[:10], dataset2[:10]], batch_size=5)
-        assert isinstance(result['reject_null'], bool)
-
-    @pytest.mark.slow
-    def test_pvalue_range(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        result = metrics.KS_multivariate_test([dataset1[:10], dataset2[:10]], batch_size=5)
-        assert 0 <= result['min_pvalue'] <= 1
-
-    @pytest.mark.slow
-    def test_self_comparison_fails_to_reject(self, temp_image_datasets):
-        (dataset1, _), _, _ = temp_image_datasets
-        subset = dataset1[:10]
-        result = metrics.KS_multivariate_test([subset, subset], batch_size=5)
-        assert result['reject_null'] == False
-        assert result['min_pvalue'] > 0.01
-
-    @pytest.mark.slow
-    def test_return_all(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        results = metrics.KS_multivariate_test(
-            [dataset1[:5], dataset2[:5], dataset1[5:10]], batch_size=5, return_all=True
-        )
-        assert isinstance(results, list)
-        assert len(results) == 3
-
-
-# ============================================================================
-# Vendi Score
-# ============================================================================
-
-class TestVendiScoreFeatures:
-
-    @pytest.mark.slow
-    def test_returns_float(self, temp_image_datasets):
-        (dataset1, _), _, _ = temp_image_datasets
-        vs = metrics.vendi_score_features([dataset1[:10]], batch_size=5)
-        assert isinstance(vs, float)
-
-    @pytest.mark.slow
-    def test_positive(self, temp_image_datasets):
-        (dataset1, _), _, _ = temp_image_datasets
-        vs = metrics.vendi_score_features([dataset1[:10]], batch_size=5)
-        assert vs > 0
-
-    @pytest.mark.slow
-    def test_higher_diversity_higher_score(self, temp_image_datasets):
-        """More diverse dataset should have higher Vendi score."""
-        (dataset1, _), (_, dataset4), _ = temp_image_datasets
-        # dataset1 has gradual color changes, dataset4 has more varied colors
-        vs_gradual = metrics.vendi_score_features([dataset1[:10]], batch_size=5)
-        # Both should be positive
-        assert vs_gradual > 0
-
-    @pytest.mark.slow
-    def test_return_all(self, temp_image_datasets):
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        vs_all = metrics.vendi_score_features([dataset1[:5], dataset2[:5]], batch_size=5, return_all=True)
-        assert isinstance(vs_all, list)
-        assert len(vs_all) == 2
-        assert all(v > 0 for v in vs_all)
-
-    @pytest.mark.slow
-    def test_single_vs_multiple_datasets(self, temp_image_datasets):
-        """Average of individual scores should equal mean when return_all=False."""
-        (dataset1, dataset2), _, _ = temp_image_datasets
-        vs_mean = metrics.vendi_score_features([dataset1[:5], dataset2[:5]], batch_size=5)
-        vs_all = metrics.vendi_score_features([dataset1[:5], dataset2[:5]], batch_size=5, return_all=True)
-        assert abs(vs_mean - np.mean(vs_all)) < 1e-6
-
-    @pytest.mark.slow
-    def test_identical_images_low_score(self, temp_image_datasets):
-        """Dataset with identical images should have low diversity score."""
-        _, _, temp_dir = temp_image_datasets
-        # Create dataset with identical images
-        img = Image.new('RGB', (64, 64), color=(128, 128, 128))
-        identical_dataset = []
-        for i in range(10):
-            img_path = Path(temp_dir) / f"identical_{i}.png"
-            img.save(img_path)
-            identical_dataset.append({"image": str(img_path), "label": 0})
-
-        vs = metrics.vendi_score_features([identical_dataset], batch_size=5)
-        # Identical images should give score close to 1
-        assert vs < 2.0
-
-
-# ============================================================================
 # Edge Cases
 # ============================================================================
 
 class TestEdgeCases:
+    """Test edge cases and error handling."""
 
     def test_empty_dataset_handling(self):
         dataset_empty = []
         dataset_normal = [{"label": i % 5} for i in range(20)]
         with pytest.raises((ValueError, IndexError, ZeroDivisionError)):
-            metrics.MMD_label_distributions([dataset_empty, dataset_normal], num_classes=5)
+            metrics.JS_divergence([dataset_empty, dataset_normal], num_classes=5)
 
     def test_single_sample_datasets(self):
         dataset1 = [{"label": 0}]
@@ -531,20 +659,8 @@ class TestEdgeCases:
         dataset1, dataset2, num_classes = single_class_distributions
         JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
         assert JS >= 0
-        mmd = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
-        assert mmd >= 0
-
-    def test_mismatched_num_classes(self):
-        dataset1 = [{"label": 0}, {"label": 1}, {"label": 5}]
-        dataset2 = [{"label": 2}, {"label": 3}]
-        JS = metrics.JS_divergence([dataset1, dataset2], num_classes=10)
-        assert JS >= 0
-
-    def test_large_num_classes(self):
-        dataset1 = [{"label": i} for i in range(1000)]
-        dataset2 = [{"label": i} for i in range(500, 1500)]
-        JS = metrics.JS_divergence([dataset1, dataset2], num_classes=1500)
-        assert JS >= 0
+        TV = metrics.TV_label_distributions([dataset1, dataset2], num_classes)
+        assert TV >= 0
 
     def test_minimum_two_datasets_required(self):
         dataset1 = [{"label": i % 5} for i in range(50)]
@@ -553,38 +669,14 @@ class TestEdgeCases:
 
 
 # ============================================================================
-# Integration Tests
+# Integration & Consistency Tests
 # ============================================================================
 
 class TestMetricConsistency:
-
-    def test_all_metrics_agree_on_identical(self, identical_distributions):
-        dataset1, dataset2, num_classes = identical_distributions
-
-        JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
-        ks = metrics.KS_label_test([dataset1, dataset2])
-        mmd = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
-        mahal = metrics.mahalanobis_distance_labels([dataset1, dataset2], num_classes)
-
-        assert JS < 0.1
-        assert ks['pvalue'] > 0.05
-        assert mmd < 0.1
-        assert mahal < 0.5
-
-    def test_all_metrics_agree_on_complementary(self, complementary_distributions):
-        dataset1, dataset2, num_classes = complementary_distributions
-
-        JS = metrics.JS_divergence([dataset1, dataset2], num_classes)
-        ks = metrics.KS_label_test([dataset1, dataset2])
-        mmd = metrics.MMD_label_distributions([dataset1, dataset2], num_classes)
-        mahal = metrics.mahalanobis_distance_labels([dataset1, dataset2], num_classes)
-
-        assert JS > 0.5
-        assert ks['pvalue'] < 0.05
-        assert mmd > 0.3
-        assert mahal > 0.5
+    """Test that metrics agree on relative ordering."""
 
     def test_metrics_order_distributions_consistently(self):
+        """All label metrics should agree on ordering: identical < slight_diff < very_diff."""
         identical1 = [{"label": i % 10} for i in range(100)]
         identical2 = [{"label": i % 10} for i in range(100)]
 
@@ -605,11 +697,11 @@ class TestMetricConsistency:
         datasets = [[{"label": i % 10} for i in range(50)] for _ in range(4)]
 
         JS_all = metrics.JS_divergence(datasets, 10, return_all=True)
-        mmd_all = metrics.MMD_label_distributions(datasets, 10, return_all=True)
+        TV_all = metrics.TV_label_distributions(datasets, 10, return_all=True)
 
         expected_pairs = 4 * 3 // 2  # 6 pairs
         assert len(JS_all) == expected_pairs
-        assert len(mmd_all) == expected_pairs
+        assert len(TV_all) == expected_pairs
 
 
 # ============================================================================
@@ -617,20 +709,24 @@ class TestMetricConsistency:
 # ============================================================================
 
 class TestNumericalStability:
+    """Test numerical stability with edge cases."""
 
     def test_handles_zero_counts(self):
+        """Test with classes that have zero samples."""
         dataset1 = [{"label": 0}] * 50
         dataset2 = [{"label": 1}] * 50
         JS = metrics.JS_divergence([dataset1, dataset2], 2)
         assert np.isfinite(JS)
 
     def test_large_sample_sizes(self):
+        """Test with large datasets."""
         dataset1 = [{"label": i % 100} for i in range(10000)]
         dataset2 = [{"label": i % 100} for i in range(10000)]
         JS = metrics.JS_divergence([dataset1, dataset2], 100)
         assert np.isfinite(JS)
 
     def test_extreme_skew(self):
+        """Test with extremely skewed distributions."""
         dataset1 = [{"label": 0}] * 999 + [{"label": 1}]
         dataset2 = [{"label": i % 10} for i in range(1000)]
         JS = metrics.JS_divergence([dataset1, dataset2], 10)

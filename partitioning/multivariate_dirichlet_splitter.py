@@ -1,3 +1,109 @@
+"""Multivariate Dirichlet data splitting using Vision-Language Model annotations.
+
+This module implements advanced data partitioning for federated learning by creating
+heterogeneity across multiple semantic criteria simultaneously. Unlike traditional
+label-based partitioning that only considers class labels, this approach uses
+Vision-Language Model (VLM) annotations to create realistic multi-dimensional
+heterogeneity.
+
+Key Concepts
+------------
+
+**Multi-Criterion Heterogeneity**:
+    Instead of only distributing samples by class labels, this splitter considers
+    multiple visual criteria:
+    - **Color**: Color palettes and schemes (e.g., warm, cool, monochrome)
+    - **Main Object**: Primary subject types (e.g., animals, people, buildings)
+    - **Size**: Object scale and composition (e.g., close-up, wide-angle)
+    - **Location**: Environmental context (e.g., indoor, outdoor, urban, natural)
+    - **Time**: Temporal context (e.g., day, night, seasons)
+
+**Client Preferences**:
+    Each client has preference vectors for each criterion, sampled from Dirichlet
+    distributions. These preferences determine which types of samples the client
+    is more likely to receive, creating natural heterogeneity patterns.
+
+**Affinity-Based Assignment**:
+    Samples are assigned to clients using softmax probabilities based on affinity
+    scores. The affinity between a sample and client is the sum of the client's
+    preferences for the sample's attributes across all criteria.
+
+VLM Annotation Format
+---------------------
+
+This splitter expects pre-computed VLM annotations in JSONL format:
+
+    {"image": "/path/to/image.jpg", "class": "warm_colors"}
+    {"image": "/path/to/image2.jpg", "class": "cool_colors"}
+
+The annotations should be organized by criterion in separate directories:
+    - output_color_train/step3_result.jsonl
+    - output_main_object_train/step3_result.jsonl
+    - output_size_train/step3_result.jsonl
+    - output_location_train/step3_result.jsonl
+    - output_time_train/step3_result.jsonl
+
+Alpha Parameter Effects
+-----------------------
+
+The heterogeneity (alpha) parameter controls preference diversity:
+
+- **Low alpha (0.1-0.5)**: Highly heterogeneous preferences
+    - Clients have strong preferences for specific attributes
+    - Example: Client A prefers warm colors AND outdoor scenes AND daytime
+    - Creates extreme specialization across multiple dimensions
+
+- **Medium alpha (1.0-5.0)**: Moderately heterogeneous preferences
+    - Clients have diverse but not extreme preferences
+    - Balanced across multiple criteria
+    - Realistic for many federated scenarios
+
+- **High alpha (10.0+)**: Nearly uniform preferences
+    - All clients have similar preferences across criteria
+    - Approaches random (IID) assignment
+
+Examples
+--------
+
+Basic usage with VLM annotations:
+
+    >>> from partitioning import MultivariateDirichletSplitter
+    >>> from data_loading.dataset import BaseDataset
+    >>>
+    >>> train_data = BaseDataset("tiny_imagenet", "/data/", "train")
+    >>> val_data = BaseDataset("tiny_imagenet", "/data/", "val")
+    >>>
+    >>> splitter = MultivariateDirichletSplitter(
+    ...     train_dataset=train_data,
+    ...     val_dataset=val_data,
+    ...     n_clients=10,
+    ...     heterogeneity=0.5,  # High heterogeneity
+    ...     cluster_labels_dir="/data/vlm_annotations/",
+    ...     valset_type="global",
+    ...     seed=42,
+    ...     min_samples_per_client=100
+    ... )
+    >>> splits = splitter.get_client_splits()
+    >>> preferences = splitter.get_preference_summary()
+
+Analyzing client preferences:
+
+    >>> summary = splitter.get_preference_summary()
+    >>> # See each client's top preferences for each criterion
+    >>> for client_id in range(3):
+    ...     for criterion in splitter.CRITERIA:
+    ...         top_pref = summary[f"{criterion}_top_preferences"][client_id]
+    ...         print(f"Client {client_id} prefers {criterion}={top_pref['label']} "
+    ...               f"({top_pref['preference']:.2f})")
+
+See Also
+--------
+
+- DirichletSplitter: Single-criterion (label-based) heterogeneity
+- EmbeddingSplitter: Semantic clustering without explicit criteria
+- For VLM annotation generation, see: docs/MULTIVARIATE_USAGE.md
+"""
+
 import json
 import os
 from pathlib import Path
@@ -5,18 +111,59 @@ from typing import Dict, List, Optional, Any
 import numpy as np
 from collections import defaultdict
 
-from data_partitioning.base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
+from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
 from data_loading.dataset import BaseDataset
 
 
 class MultivariateDirichletSplitter(BaseDatasetSplitter):
-    """
-    Splits dataset using multiple VLM-generated clustering criteria with
-    Dirichlet-based weighted random assignment.
+    """Split dataset using multi-criterion VLM annotations with Dirichlet preferences.
 
-    Each client has preference vectors for each criterion (color, object, size,
-    location, time), sampled from Dirichlet distribution. Samples are assigned
-    based on softmax probabilities derived from affinity scores.
+    This splitter creates federated data heterogeneity across multiple semantic
+    dimensions simultaneously using Vision-Language Model (VLM) annotations. Unlike
+    traditional single-criterion splitters, this approach models realistic scenarios
+    where clients have preferences across multiple independent criteria.
+
+    The splitting process:
+    1. Load VLM annotations for each criterion (color, object, size, location, time)
+    2. Sample client preference vectors from Dirichlet distributions for each criterion
+    3. Compute affinity scores between samples and clients based on preferences
+    4. Assign samples using softmax probabilities over affinity scores
+    5. Retry with resampled preferences if minimum sample constraints aren't met
+
+    Attributes:
+        CRITERIA: List of supported criteria (color, main_object, size, location, time)
+        CRITERION_TO_DIR: Mapping from criteria to VLM annotation directory names
+        cluster_labels_dir: Path to directory containing VLM annotation files
+        min_samples_per_client: Minimum samples each client must receive
+        max_retries: Maximum retry attempts for constraint satisfaction
+        temperature: Softmax temperature for assignment probabilities
+        cluster_labels: Loaded VLM annotations (criterion -> image -> label)
+        unique_labels: Unique label values for each criterion
+        client_preferences: Sampled Dirichlet preferences (client -> criterion -> vector)
+
+    Examples:
+        Create heterogeneous splits with strong preferences:
+
+        >>> splitter = MultivariateDirichletSplitter(
+        ...     train_dataset=train_data,
+        ...     val_dataset=val_data,
+        ...     n_clients=10,
+        ...     heterogeneity=0.3,  # Low alpha = strong preferences
+        ...     cluster_labels_dir="/data/vlm_annotations/",
+        ...     valset_type="global",
+        ...     seed=42
+        ... )
+        >>> splits = splitter.get_client_splits()
+
+        Analyze client preferences after splitting:
+
+        >>> summary = splitter.get_preference_summary()
+        >>> print(summary['color_top_preferences'][0])
+        {'client': 0, 'label': 'warm_colors', 'preference': 0.85}
+
+    See Also:
+        DirichletSplitter: Single-criterion (label-based) heterogeneity
+        EmbeddingSplitter: Semantic clustering-based partitioning
     """
 
     CRITERIA = ["color", "main_object", "size", "location", "time"]
@@ -41,20 +188,68 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         max_retries: int = 1000,
         temperature: float = 1.0,
     ):
-        """
+        """Initialize the multivariate Dirichlet splitter.
+
         Args:
-            train_dataset: Training dataset
-            val_dataset: Validation dataset (optional)
-            n_clients: Number of clients to split data among
-            heterogeneity: Alpha parameter for Dirichlet distribution
-                          Lower α (e.g., 0.1) → high heterogeneity (skewed preferences)
-                          Higher α (e.g., 10.0) → low heterogeneity (uniform preferences)
-            cluster_labels_dir: Path to directory containing cluster label JSONL files
-            valset_type: "global", "local", or "none"
-            seed: Random seed for reproducibility
-            min_samples_per_client: Minimum samples each client must have
-            max_retries: Maximum attempts to satisfy min_samples constraint
-            temperature: Temperature parameter for softmax (default 1.0)
+            train_dataset: Training dataset to split across clients.
+            val_dataset: Optional validation dataset. Required if valset_type
+                is "local" or "global".
+            n_clients: Number of clients in the federation. Must be >= 1.
+            heterogeneity: Dirichlet concentration parameter (alpha) controlling
+                preference diversity. Applies to all criteria uniformly.
+                - Low (0.1-0.5): Strong, skewed preferences (high heterogeneity)
+                - Medium (1.0-5.0): Moderate preferences (balanced heterogeneity)
+                - High (10.0+): Weak, uniform preferences (low heterogeneity, ~IID)
+            cluster_labels_dir: Path to directory containing VLM annotation JSONL
+                files. Expected structure:
+                    cluster_labels_dir/
+                    ├── output_color_train/step3_result.jsonl
+                    ├── output_main_object_train/step3_result.jsonl
+                    ├── output_size_train/step3_result.jsonl
+                    ├── output_location_train/step3_result.jsonl
+                    └── output_time_train/step3_result.jsonl
+            valset_type: Validation set configuration - "local", "global", or "none".
+                See BaseDatasetSplitter for details.
+            seed: Random seed for reproducibility. Controls preference sampling
+                and sample assignment randomness.
+            min_samples_per_client: Minimum number of samples each client must
+                receive. If not satisfied, preferences are resampled (up to
+                max_retries attempts).
+            max_retries: Maximum number of retry attempts if min_samples_per_client
+                constraint is not satisfied. After max_retries, raises ValueError.
+            temperature: Softmax temperature for assignment probabilities.
+                - Low (<1.0): Sharpens probabilities (more deterministic)
+                - 1.0: Standard softmax (default)
+                - High (>1.0): Smooths probabilities (more random)
+
+        Raises:
+            ValueError: If valset_type is invalid or incompatible with val_dataset.
+
+        Examples:
+            Basic initialization with moderate heterogeneity:
+
+            >>> splitter = MultivariateDirichletSplitter(
+            ...     train_dataset=train_data,
+            ...     val_dataset=val_data,
+            ...     n_clients=10,
+            ...     heterogeneity=1.0,
+            ...     cluster_labels_dir="/data/vlm_annotations/",
+            ...     seed=42
+            ... )
+
+            High heterogeneity with strict sample constraints:
+
+            >>> splitter = MultivariateDirichletSplitter(
+            ...     train_dataset=train_data,
+            ...     val_dataset=None,
+            ...     n_clients=20,
+            ...     heterogeneity=0.1,  # Strong preferences
+            ...     cluster_labels_dir="/data/vlm_annotations/",
+            ...     valset_type="none",
+            ...     min_samples_per_client=50,
+            ...     max_retries=5000,
+            ...     seed=42
+            ... )
         """
         super().__init__(
             train_dataset=train_dataset,
@@ -74,8 +269,26 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         self.cluster_labels: Dict[str, Dict[str, str]] = {}
         self.unique_labels: Dict[str, List[str]] = {}
         self.client_preferences: Dict[int, Dict[str, np.ndarray]] = {}
-    def _load_cluster_labels(self) -> None:
 
+    def _load_cluster_labels(self) -> None:
+        """Load VLM cluster labels from JSONL files for all criteria.
+
+        Reads annotation files from the cluster_labels_dir for each criterion
+        (color, main_object, size, location, time) and populates self.cluster_labels
+        and self.unique_labels. Supports both JSON array and JSONL formats.
+
+        The method normalizes image paths to be user-independent by taking only
+        the last 5 path components (e.g., "tiny-imagenet-200/train/n01/images/img.jpg").
+
+        Raises:
+            FileNotFoundError: If any expected annotation file (step3_result.jsonl)
+                is missing from the criterion directories.
+
+        Side Effects:
+            - Populates self.cluster_labels: {criterion: {image_path: label}}
+            - Populates self.unique_labels: {criterion: [sorted unique labels]}
+            - Prints loading progress for each criterion
+        """
         print("Loading cluster labels from JSONL files...")
 
         for criterion in self.CRITERIA:
@@ -135,6 +348,20 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                   f"{len(criterion_labels)} images")
 
     def _sample_client_preferences(self) -> None:
+        """Sample client preference vectors from Dirichlet distributions.
+
+        For each client and each criterion, samples a preference vector from
+        Dirichlet(alpha) where alpha = [heterogeneity, ..., heterogeneity].
+        The dimensionality equals the number of unique labels for that criterion.
+
+        Lower heterogeneity (alpha) values produce more skewed preferences,
+        while higher values produce more uniform preferences.
+
+        Side Effects:
+            - Populates self.client_preferences: {client_id: {criterion: vector}}
+            - Prints preference statistics for client 0 and aggregate stats
+            - Sets random seed if self.seed is not None
+        """
         if self.seed is not None:
             np.random.seed(self.seed)
 
@@ -175,20 +402,40 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         print(f"    Std deviation - Mean: {np.mean(all_stds):.4f}, Std: {np.std(all_stds):.4f}")
 
     def _get_cluster_label_for_sample(self, image_path: str, criterion: str) -> Optional[str]:
+        """Get the cluster label for a sample under a specific criterion.
+
+        Args:
+            image_path: Full path to the image.
+            criterion: The criterion to query (e.g., "color", "main_object").
+
+        Returns:
+            The cluster label string for the sample under the criterion,
+            or None if not found.
+        """
         return self.cluster_labels[criterion]["/".join(image_path.split("/")[-5:])]
 
     def _compute_affinity_score(self, image_path: str, client_id: int) -> float:
-        """
-        Compute affinity score between a sample and a client.
+        """Compute affinity score between a sample and a client.
 
-        Affinity = Σ(preference[criterion][sample's label]) across all criteria
+        The affinity score measures how well a sample matches a client's preferences
+        across all criteria. It is computed as the sum of the client's preference
+        weights for the sample's labels across all criteria:
+
+            affinity = Σ[criterion] preference[criterion][sample_label[criterion]]
+
+        Higher affinity scores indicate stronger matches between sample attributes
+        and client preferences.
 
         Args:
-            image_path: Path to the sample image
-            client_id: ID of the client
+            image_path: Path to the sample image.
+            client_id: ID of the client (0 to n_clients-1).
 
         Returns:
-            Affinity score (sum of preferences across all criteria)
+            Affinity score as a float. Typically in range [0, n_criteria], where
+            n_criteria=5 (color, main_object, size, location, time).
+
+        Raises:
+            ValueError: If the sample's cluster label is missing for any criterion.
         """
         affinity = 0.0
 
@@ -215,15 +462,27 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         sample_indices: List[int],
         sample_paths: List[str]
     ) -> Dict[int, List[int]]:
-        """
-        Assign samples to clients using softmax probabilities based on affinity scores.
+        """Assign samples to clients using softmax probabilities over affinity scores.
+
+        For each sample, computes affinity scores with all clients and converts
+        them to assignment probabilities using softmax:
+
+            P(client_i | sample) = exp(affinity_i / T) / Σ exp(affinity_j / T)
+
+        where T is the temperature parameter. Samples are then randomly assigned
+        to clients according to these probabilities.
 
         Args:
-            sample_indices: List of sample indices to assign
-            sample_paths: List of corresponding image paths
+            sample_indices: List of dataset sample indices to assign.
+            sample_paths: List of corresponding image paths (same length as indices).
 
         Returns:
-            Dict mapping client_id to list of assigned sample indices
+            Dictionary mapping client_id (int) to list of assigned sample indices.
+            All samples are assigned exactly once.
+
+        Side Effects:
+            - Sets random seed to self.seed + 1000 if seed is not None
+            - Prints assignment statistics for first 10 samples (affinities, probs, entropy)
         """
         if self.seed is not None:
             np.random.seed(self.seed + 1000)  # Different seed for assignment
@@ -273,14 +532,15 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         return client_assignments
 
     def _validate_assignments(self, client_assignments: Dict[int, List[int]]) -> bool:
-        """
-        Check if all clients have at least min_samples_per_client samples.
+        """Validate that all clients satisfy the minimum sample constraint.
 
         Args:
-            client_assignments: Dict mapping client_id to sample indices
+            client_assignments: Dictionary mapping client_id to list of assigned
+                sample indices.
 
         Returns:
-            True if valid, False otherwise
+            True if all clients have at least min_samples_per_client samples,
+            False otherwise.
         """
         for client_id in range(self.n_clients):
             if len(client_assignments[client_id]) < self.min_samples_per_client:
@@ -292,18 +552,32 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         sample_indices: List[int],
         sample_paths: List[str]
     ) -> Dict[int, List[int]]:
-        """
-        Partition samples with retry logic to satisfy min_samples constraint.
+        """Partition samples with retry logic to satisfy minimum sample constraints.
+
+        Attempts to assign samples to clients while ensuring all clients receive
+        at least min_samples_per_client samples. If the constraint is not satisfied,
+        resamples client preferences with a different seed and tries again.
+
+        The retry mechanism helps overcome unlucky preference samples that result
+        in highly imbalanced assignments. Each retry uses a different random seed
+        (seed + attempt) to generate new preferences.
 
         Args:
-            sample_indices: List of sample indices
-            sample_paths: List of corresponding image paths
+            sample_indices: List of dataset sample indices to partition.
+            sample_paths: List of corresponding image paths.
 
         Returns:
-            Dict mapping client_id to assigned sample indices
+            Dictionary mapping client_id to assigned sample indices. Guaranteed
+            to satisfy the minimum sample constraint.
 
         Raises:
-            ValueError: If unable to satisfy constraints after max_retries
+            ValueError: If unable to satisfy min_samples_per_client constraint
+                after max_retries attempts. Includes the actual sample distribution
+                from the final attempt in the error message.
+
+        Side Effects:
+            - May resample client preferences multiple times
+            - Prints success message if constraints satisfied after retries
         """
         for attempt in range(self.max_retries):
             # Resample preferences with different seed each attempt
@@ -329,11 +603,32 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         )
 
     def _compute_client_splits(self) -> DatasetSplits:
-        """
-        Compute client splits using multivariate Dirichlet approach.
+        """Compute client splits using multivariate Dirichlet approach.
+
+        Implements the complete splitting pipeline:
+        1. Load VLM cluster labels from annotation files
+        2. Sample client preference vectors from Dirichlet distributions
+        3. Assign training samples to clients based on affinity scores
+        4. Handle validation set according to valset_type configuration
+        5. Build ClientSplit structures for each client
 
         Returns:
-            DatasetSplits containing client assignments
+            DatasetSplits dictionary containing:
+                - "clients": Dict[str, ClientSplit] mapping client IDs to their
+                  train/val data
+                - "global_val": Optional list of validation samples (if valset_type="global")
+
+        Side Effects:
+            - Populates self.cluster_labels and self.unique_labels
+            - Populates self.client_preferences
+            - Prints progress messages and statistics
+
+        Examples:
+            After calling get_client_splits():
+
+            >>> splits = splitter.get_client_splits()
+            >>> client_0_train = splits["clients"]["client_0"]["train"]
+            >>> print(f"Client 0 has {len(client_0_train)} training samples")
         """
 
         self._load_cluster_labels()
@@ -395,11 +690,44 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         }
 
     def get_preference_summary(self) -> Dict[str, Any]:
-        """
-        Get a summary of client preferences for analysis.
+        """Get a summary of client preferences for analysis and visualization.
+
+        Compiles statistics about each client's preferences across all criteria,
+        including their top (most preferred) label for each criterion. Useful
+        for understanding and visualizing the heterogeneity patterns created
+        by the splitting process.
 
         Returns:
-            Dictionary with preference statistics
+            Dictionary containing:
+                - "n_clients": Number of clients
+                - "heterogeneity": Alpha parameter used
+                - "criteria": List of criteria names
+                - "{criterion}_top_preferences": For each criterion, list of dicts
+                  with keys:
+                    - "client": Client ID
+                    - "label": Top preferred label for this criterion
+                    - "preference": Preference weight for that label (float)
+
+        Raises:
+            Returns error dict if preferences haven't been sampled yet.
+
+        Examples:
+            Analyze top preferences after splitting:
+
+            >>> summary = splitter.get_preference_summary()
+            >>> print(f"Number of clients: {summary['n_clients']}")
+            >>> print(f"Alpha parameter: {summary['heterogeneity']}")
+            >>>
+            >>> # See client 0's top color preference
+            >>> color_prefs = summary['color_top_preferences']
+            >>> client_0_color = color_prefs[0]
+            >>> print(f"Client 0 prefers {client_0_color['label']} "
+            ...       f"with weight {client_0_color['preference']:.2f}")
+            >>>
+            >>> # Analyze specialization: count how many clients prefer each label
+            >>> from collections import Counter
+            >>> color_counts = Counter(p['label'] for p in color_prefs)
+            >>> print(f"Most common color preference: {color_counts.most_common(1)}")
         """
         if not self.client_preferences:
             return {"error": "Preferences not yet sampled. Run get_client_splits() first."}

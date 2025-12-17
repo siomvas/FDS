@@ -2,8 +2,8 @@ import argparse
 import sys
 from pathlib import Path
 from typing import List
-from cache_manager import CacheManager
-from embedding_extractors import ModelRegistry
+from .cache_manager import CacheManager
+from .embedding_extractors import ModelRegistry
 from data_loading.dataset import BaseDataset
 
 def main():

@@ -1,38 +1,39 @@
-"""
-Embedding-based dataset splitter for federated learning.
+"""Embedding-based data splitting using foundation models and clustering.
 
-Uses foundation model embeddings + clustering to create semantically
-meaningful data partitions across clients.
+This module implements semantic data partitioning by:
+1. Extracting image embeddings using foundation models (DINOv2, CLIP, SigLIP)
+2. Applying pooling strategies to aggregate spatial features
+3. Clustering embeddings to group semantically similar samples
+4. Assigning clusters to clients for heterogeneous splits
+
+This creates natural, semantically-meaningful heterogeneity where clients
+receive data with similar visual characteristics, mimicking real-world
+scenarios where different clients have different types of data.
 """
 
-import sys
 from pathlib import Path
-
-# Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent))
-
-from base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
-from data_loading.dataset import BaseDataset
 from typing import Dict, List, Optional, Any
 import numpy as np
 import json
 
-from ..embedding.embedding_extractors import (
+from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
+from data_loading.dataset import BaseDataset
+from embedding.embedding_extractors import (
     EmbeddingExtractor,
     DINOv2Extractor,
     CLIPExtractor,
     SigLIPExtractor,
 )
-from .embedding_pipeline.pooling_strategies import (
+from .embedding_utils.pooling_strategies import (
     PoolingStrategy,
     get_pooling_strategy,
 )
-from .embedding_pipeline.clustering_methods import (
+from .embedding_utils.clustering_methods import (
     ClusteringMethod,
     get_clustering_method,
 )
-from ..embedding.cache_manager import CacheManager
-from .embedding_pipeline.config import EmbeddingConfig
+from embedding.cache_manager import CacheManager
+from .embedding_utils.config import EmbeddingConfig
 
 
 class EmbeddingSplitter(BaseDatasetSplitter):

@@ -7,14 +7,95 @@ import numpy as np
 
 
 class CacheManager:
-    """
-    Manages caching of embeddings to disk.
-    
-    Features:
-    - Content-based hashing (batch mode).
-    - Dataset-based lookups (dataset mode).
-    - Relative path support for shared HPC environments.
-    - In-memory caching for faster repeated access.
+    """Persistent caching system for embedding storage and retrieval.
+
+    Provides intelligent caching of image embeddings to disk with support for
+    two operating modes: batch mode (for ad-hoc computations) and dataset mode
+    (for large-scale datasets with subset access). Includes in-memory caching
+    for fast repeated access and supports relative paths for shared HPC environments.
+
+    **Operating Modes**:
+
+    1. **Batch Mode** (default):
+       - Caches specific lists of images based on content hash
+       - Cache key depends on exact image list
+       - Use when processing arbitrary batches of images
+
+    2. **Dataset Mode**:
+       - Caches entire datasets indexed by image paths
+       - Supports efficient subset retrieval
+       - Cache key independent of specific queried subset
+       - Use when working with named datasets (e.g., "imagenet_train")
+
+    **Features**:
+    - **Content-based hashing**: Cache keys derived from MD5/SHA256 hashes
+    - **In-memory caching**: Loaded .npz files cached in memory for speed
+    - **Relative paths**: Convert absolute paths to relative for portability
+    - **Metadata tracking**: JSON metadata file tracks all cache entries
+    - **Model-specific clearing**: Clear cache by model name
+    - **Compression**: Numpy compressed format (.npz) for space efficiency
+
+    Attributes:
+        cache_dir: Directory for storing cache files.
+        enabled: Whether caching is active. If False, all operations are no-ops.
+        metadata: Dict tracking all cache entries (loaded from metadata.json).
+        _memory_cache: In-memory dict of loaded cache data for fast access.
+
+    Examples:
+        Basic usage with embedding extractors:
+
+        >>> cache = CacheManager(cache_dir=".cache")
+        >>>
+        >>> # Batch mode - specific images
+        >>> embeddings = cache.get(
+        ...     model_name="dinov2-base",
+        ...     image_paths=["img1.jpg", "img2.jpg"]
+        ... )
+        >>>
+        >>> if embeddings is None:
+        ...     # Compute embeddings
+        ...     embeddings = extractor.extract_embeddings(image_paths)
+        ...     # Store for future use
+        ...     cache.put(
+        ...         embeddings=embeddings,
+        ...         model_name="dinov2-base",
+        ...         image_paths=image_paths
+        ...     )
+
+        Dataset mode for large-scale caching:
+
+        >>> # Cache entire dataset
+        >>> all_paths = ["img1.jpg", "img2.jpg", ..., "img10000.jpg"]
+        >>> all_embeddings = extractor.extract_embeddings(all_paths)
+        >>> cache.put(
+        ...     embeddings=all_embeddings,
+        ...     model_name="dinov2-base",
+        ...     image_paths=all_paths,
+        ...     dataset_name="imagenet_train",
+        ...     base_path="/data/imagenet/"  # For relative paths
+        ... )
+        >>>
+        >>> # Retrieve subset efficiently
+        >>> subset_paths = ["img5.jpg", "img100.jpg", "img500.jpg"]
+        >>> subset_embs = cache.get(
+        ...     model_name="dinov2-base",
+        ...     image_paths=subset_paths,
+        ...     dataset_name="imagenet_train",
+        ...     base_path="/data/imagenet/"
+        ... )
+
+        Cache management:
+
+        >>> # Get cache statistics
+        >>> info = cache.get_cache_info()
+        >>> print(f"Cache size: {info['total_size_mb']:.2f} MB")
+        >>> print(f"Entries: {info['num_entries']}")
+        >>>
+        >>> # Clear specific model's cache
+        >>> cache.clear(model_name="dinov2-base")
+        >>>
+        >>> # Clear all cache
+        >>> cache.clear()
     """
 
     def __init__(
@@ -22,6 +103,13 @@ class CacheManager:
         cache_dir: Union[str, Path] = "./.embedding_cache",
         enabled: bool = True,
     ):
+        """Initialize the cache manager.
+
+        Args:
+            cache_dir: Directory path for storing cache files. Created if doesn't exist.
+            enabled: Whether caching is active. If False, get() always returns None
+                and put() does nothing.
+        """
         self.cache_dir = Path(cache_dir)
         self.enabled = enabled
         self._memory_cache = {}  # In-memory store for loaded .npz content
@@ -109,8 +197,45 @@ class CacheManager:
         layers: Optional[List[int]] = None,
         **kwargs,
     ) -> Optional[Union[np.ndarray, Dict[int, np.ndarray]]]:
-        """
-        Retrieve cached embeddings.
+        """Retrieve cached embeddings if available.
+
+        Checks cache (memory then disk) for embeddings matching the specified
+        configuration. Returns None if not found, triggering recomputation.
+
+        Args:
+            model_name: Model identifier (e.g., "dinov2-base").
+            image_paths: List of image file paths to retrieve embeddings for.
+            dataset_name: Optional dataset name for dataset mode. If provided,
+                enables subset retrieval from larger cached datasets.
+            base_path: Optional base directory for converting paths to relative.
+                Useful for shared HPC environments where absolute paths vary.
+            pooling_strategy: Optional pooling method used during extraction
+                (e.g., "cls", "avg"). Part of cache key.
+            layers: Optional list of layer indices used during extraction.
+                Part of cache key.
+            **kwargs: Additional configuration parameters that affect the cache
+                key (e.g., return_which_tokens, k_last).
+
+        Returns:
+            - np.ndarray: Cached embeddings (shape: [N, D]) if found
+            - Dict[int, np.ndarray]: Multi-layer embeddings if that's how they
+              were stored
+            - None: If no matching cache entry exists
+
+        Examples:
+            >>> # Batch mode
+            >>> embs = cache.get(
+            ...     model_name="clip-vit-b-32",
+            ...     image_paths=["a.jpg", "b.jpg"]
+            ... )
+            >>>
+            >>> # Dataset mode with subset retrieval
+            >>> embs = cache.get(
+            ...     model_name="dinov2-large",
+            ...     image_paths=["train/001.jpg", "train/100.jpg"],
+            ...     dataset_name="imagenet",
+            ...     base_path="/data/imagenet"
+            ... )
         """
         if not self.enabled:
             return None
@@ -202,8 +327,46 @@ class CacheManager:
         layers: Optional[List[int]] = None,
         **kwargs,
     ) -> None:
-        """
-        Store embeddings.
+        """Store embeddings to cache.
+
+        Saves embeddings to disk in compressed .npz format and updates in-memory
+        cache and metadata. Supports multiple storage formats (array, dict, multi-layer).
+
+        Args:
+            embeddings: Embeddings to store. Can be:
+                - np.ndarray: Simple array of shape [N, D]
+                - Dict[str, np.ndarray]: Path-to-embedding mapping
+                - Dict[int, np.ndarray]: Multi-layer embeddings (layer_id -> array)
+            model_name: Model identifier (e.g., "dinov2-base").
+            image_paths: List of image paths corresponding to embeddings.
+            dataset_name: Optional dataset name for dataset mode.
+            base_path: Optional base directory for converting to relative paths.
+            pooling_strategy: Optional pooling method. Part of cache key.
+            layers: Optional layer indices. Part of cache key.
+            **kwargs: Additional configuration affecting cache key.
+
+        Side Effects:
+            - Writes .npz file to cache_dir
+            - Updates in-memory cache
+            - Updates metadata.json file
+            - Prints warning if operation fails
+
+        Examples:
+            >>> # Store simple array
+            >>> cache.put(
+            ...     embeddings=np.random.randn(10, 768),
+            ...     model_name="dinov2-base",
+            ...     image_paths=["a.jpg", "b.jpg", ...]
+            ... )
+            >>>
+            >>> # Store with dataset mode
+            >>> cache.put(
+            ...     embeddings=all_embeddings,
+            ...     model_name="clip-vit-l-14",
+            ...     image_paths=all_paths,
+            ...     dataset_name="coco_train",
+            ...     base_path="/data/coco"
+            ... )
         """
         if not self.enabled:
             return
