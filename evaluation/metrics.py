@@ -19,7 +19,7 @@ _GLOBAL_CACHE: Optional[CacheManager] = None
 List of available metrics
 
 - Label Metrics:
-    - Jensen-Shannon Divergence (JSD)
+    - Jensen-Shannon Divergence (JSD) -> across many?
     - Total Variation (TV)
     - JSD one-to-many
 
@@ -116,6 +116,18 @@ def _extract_features(
         features_list.append(features)
 
     return features_list
+
+"""
+Concept: Compare datasets D1 and D2 by computing pairwise metrics.
+Compare -> 
+are D1 and D2 the same distribution? <- KS-test
+How "far" are D1 and D2? <- FID, MMD, SWD, Energy Distance
+Other aspects of diversity <- Vendi Score, Intrinsic Dimensionality
+
+So then if we have datasets = [D1, D2, D3, ..., Dn], we can compute pairwise metrics
+and if return_all = False, return the mean across all pairs.
+This way we can compare with a single number how heterogeneous two entire partitionings are.
+"""
 
 
 def _compute_pairwise(items, metric_fn, return_all=False):
