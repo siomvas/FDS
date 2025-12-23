@@ -50,14 +50,15 @@ elif args.dataset == FOOD101:
         4: {"prompt": "Lighting Intensity", "examplar": "Bright", "num_classes": 5},
     }
 elif args.dataset == ADE20K:
-    criteria_choices = ["main_object", "scene", "light", "color", "size", "human"]
+    criteria_choices = ["main_object", "scene", "light", "color", "size", "living", "camera"]
     criteria_config = {
         0: {"prompt": "Main Object", "examplar": "Tree", "num_classes": 8},
         1: {"prompt": "Location", "examplar": "Field", "num_classes": 4},
         2: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
         3: {"prompt": "Lighting Intensity", "examplar": "Bright", "num_classes": 4}, #(x)
         4: {"prompt": "Size of the main object", "examplar": "Large", "num_classes": 5}, #(x)
-        5: {"prompt": "Human Presence", "examplar": "", "num_classes": 0},
+        5: {"prompt": "Living Being Presence", "examplar": "", "num_classes": 3}, # --rerun
+        6: {"prompt": "Camera Perspective", "examplar": "Wide-shot", "num_classes": 5},
     }
 elif args.dataset == PASCALVOC:
     # TODO: CHANGE THIS
