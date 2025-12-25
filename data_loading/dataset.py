@@ -8,6 +8,34 @@ from PIL import Image, UnidentifiedImageError
 
 
 class ImageDataset(Dataset):
+    """Generic image dataset with flexible preprocessing support.
+
+    Loads images from file paths and applies either torchvision transforms or
+    Hugging Face processors (for models like CLIP, DINO). Supports graceful
+    handling of corrupt images.
+
+    Args:
+        file_dataset: List of dicts with 'image' key containing file paths
+        transform: Optional torchvision transform pipeline
+        processor: Optional Hugging Face processor (mutually exclusive with transform)
+
+    Raises:
+        ValueError: If both transform and processor are provided
+
+    Examples:
+        >>> from torchvision import transforms as T
+        >>> transform = T.Compose([T.Resize(224), T.ToTensor()])
+        >>> dataset = ImageDataset(
+        ...     file_dataset=[{"image": "img1.jpg"}, {"image": "img2.jpg"}],
+        ...     transform=transform
+        ... )
+        >>> img = dataset[0]  # Returns transformed tensor
+
+    Notes:
+        - Images are converted to RGB mode
+        - Returns None for corrupt/missing images with a warning
+        - Lazy loading: images loaded only when accessed
+    """
     def __init__(self, file_dataset, transform: Callable = None, processor: Any = None):
         self.file_dataset = file_dataset
         if transform and processor:
@@ -36,6 +64,35 @@ class ImageDataset(Dataset):
             return None
 
 class ClassificationDataset(Dataset):
+    """Image classification dataset for federated learning.
+
+    Loads image-label pairs from split data and applies transforms. Designed
+    for use with data produced by partitioning splitters.
+
+    Args:
+        split_data: List of dicts with 'image' (path) and 'label' (class) keys
+        transform: Optional torchvision transform pipeline
+
+    Returns:
+        Tuple of (image_tensor, label) where label is the raw label value
+
+    Examples:
+        >>> from torchvision import transforms as T
+        >>> transform = T.Compose([T.Resize(224), T.ToTensor()])
+        >>> dataset = ClassificationDataset(
+        ...     split_data=[
+        ...         {"image": "img1.jpg", "label": "cat"},
+        ...         {"image": "img2.jpg", "label": "dog"}
+        ...     ],
+        ...     transform=transform
+        ... )
+        >>> image, label = dataset[0]
+
+    Notes:
+        - Labels are returned as-is (not converted to integers)
+        - Use with label_map for integer conversion in training loops
+        - Images are converted to RGB
+    """
     def __init__(self, split_data: List[Dict[str, Any]], transform=None):
         self.samples = split_data
         self.transform = transform
@@ -52,6 +109,33 @@ class ClassificationDataset(Dataset):
 
 
 class SegmentationDataset(Dataset):
+    """Semantic segmentation dataset for image-mask pairs.
+
+    Loads synchronized image and segmentation mask pairs for pixel-level
+    classification tasks. Applies transforms to both images and masks.
+
+    Args:
+        split_data: List of dicts with 'image' (path) and 'mask_path' (mask path) keys
+        transform: Optional transform pipeline applied to both image and mask
+
+    Returns:
+        Tuple of (image_tensor, mask_tensor)
+
+    Examples:
+        >>> dataset = SegmentationDataset(
+        ...     split_data=[
+        ...         {"image": "img1.jpg", "mask_path": "mask1.png"},
+        ...         {"image": "img2.jpg", "mask_path": "mask2.png"}
+        ...     ],
+        ...     transform=my_transform
+        ... )
+        >>> image, mask = dataset[0]
+
+    Notes:
+        - Transform should handle both images and masks (e.g., synchronized crops)
+        - Masks should use nearest-neighbor interpolation for resizing
+        - Images are converted to RGB, masks loaded as-is
+    """
     def __init__(self, split_data: List[Dict[str, Any]], transform=None):
         self.samples = split_data  # [{"image": img_path, "label": mask_path}, ...]
         self.transform = transform
@@ -68,15 +152,56 @@ class SegmentationDataset(Dataset):
 
 
 class BaseDataset(Dataset):
+    """Registry-based dataset loader for standard benchmarks.
+
+    Provides a unified interface for loading common datasets using a registry
+    pattern. New datasets can be added via the `register_dataset` decorator.
+
+    Attributes:
+        _loaders: Class-level registry mapping dataset names to loader functions
+
+    Supported Datasets:
+        - **tiny_imagenet**: Tiny ImageNet (200 classes, 64x64 images)
+        - **food101**: Food-101 (101 food categories, variable size)
+        - **ade20k**: ADE20K (semantic segmentation, 150 classes)
+
+    Examples:
+        >>> # Load existing dataset
+        >>> dataset = BaseDataset("tiny_imagenet", "/data/datasets", "train")
+        >>> print(f"Size: {len(dataset)}")
+        >>> img_path, label = dataset[0]
+        >>>
+        >>> # Get dataset summary
+        >>> summary = dataset.get_summary()
+        >>> print(f"Classes: {summary['unique_labels']}")
+        >>>
+        >>> # Register custom dataset
+        >>> @BaseDataset.register_dataset("cifar10")
+        ... def load_cifar10(self):
+        ...     # Custom loading logic
+        ...     for img_path in (self.base_path / "images").glob("*.png"):
+        ...         self.data.append(str(img_path))
+        ...         self.labels.append(img_path.stem.split("_")[0])
+
+    Notes:
+        - Data and labels are stored as lists of strings (file paths and label strings)
+        - Lazy evaluation: actual image loading happens in downstream datasets
+        - Loader functions are registered at module import time
+    """
 
     _loaders = {}
 
     def __init__(self, dataset_name: str, base_path: str, split="train"):
-        """
+        """Initialize dataset loader.
+
         Args:
             dataset_name: Name of the dataset (must be registered)
             base_path: Root directory containing the dataset
             split: Dataset split ('train', 'val', 'test')
+
+        Raises:
+            FileNotFoundError: If base_path doesn't exist
+            ValueError: If dataset_name is not registered
         """
         self.dataset_name = dataset_name
         self.base_path = Path(base_path)
@@ -101,7 +226,30 @@ class BaseDataset(Dataset):
 
     @classmethod
     def register_dataset(cls, name: str):
-        """Decorator to register dataset loader functions."""
+        """Decorator to register dataset loader functions.
+
+        Args:
+            name: Unique identifier for the dataset
+
+        Returns:
+            Decorator function that registers the loader
+
+        Examples:
+            >>> @BaseDataset.register_dataset("my_dataset")
+            ... def load_my_dataset(self):
+            ...     # self has attributes: base_path, split, data, labels
+            ...     for img in (self.base_path / self.split).glob("*.jpg"):
+            ...         self.data.append(str(img))
+            ...         self.labels.append(img.stem)
+            >>>
+            >>> # Now can use it
+            >>> dataset = BaseDataset("my_dataset", "/path/to/data", "train")
+
+        Notes:
+            - Loader function receives self (BaseDataset instance)
+            - Must populate self.data (list of image paths) and self.labels
+            - Called automatically during __init__ after validation
+        """
 
         def decorator(func):
             cls._loaders[name] = func
@@ -117,6 +265,23 @@ class BaseDataset(Dataset):
         return self.data[idx], self.labels[idx]
 
     def get_summary(self) -> dict:
+        """Get dataset summary statistics.
+
+        Returns:
+            Dictionary containing:
+                - dataset_name: Name of the dataset
+                - split: Split name (train/val/test)
+                - total_samples: Number of samples
+                - unique_labels: Number of unique classes
+                - base_path: Root directory path
+
+        Examples:
+            >>> dataset = BaseDataset("food101", "/data", "train")
+            >>> summary = dataset.get_summary()
+            >>> print(f"Dataset: {summary['dataset_name']}")
+            >>> print(f"Samples: {summary['total_samples']}")
+            >>> print(f"Classes: {summary['unique_labels']}")
+        """
         return {
             "dataset_name": self.dataset_name,
             "split": self.split,

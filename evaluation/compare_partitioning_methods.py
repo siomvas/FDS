@@ -33,13 +33,13 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data_partitioning.random_splitter import RandomSplitter
-from data_partitioning.dirichlet_splitter import DirichletSplitter
-from data_partitioning.multivariate_dirichlet_splitter import MultivariateDirichletSplitter
-from data_partitioning.embedding_splitter import EmbeddingSplitter
-from data_partitioning.embedding_pipeline.config import get_preset_config
+from partitioning.random_splitter import RandomSplitter
+from partitioning.dirichlet_splitter import DirichletSplitter
+from partitioning.multivariate_dirichlet_splitter import MultivariateDirichletSplitter
+from partitioning.embedding_splitter import EmbeddingSplitter
+from partitioning.embedding_pipeline.config import get_preset_config
 from data_loading.dataset import BaseDataset
-from data_partitioning.base_splitter import BaseDatasetSplitter, DatasetSplits
+from partitioning.base_splitter import BaseDatasetSplitter, DatasetSplits
 from evaluation import metrics
 
 
@@ -72,12 +72,10 @@ class MetricResults:
     # Label metrics
     JS_divergence_mean: float = 0.0
     JS_divergence_std: float = 0.0
-    mmd_labels_mean: float = 0.0
-    mmd_labels_std: float = 0.0
-    mahalanobis_mean: float = 0.0
-    mahalanobis_std: float = 0.0
-    ks_label_statistic_mean: float = 0.0
-    ks_label_pvalue_mean: float = 0.0
+    tv_labels_mean: float = 0.0
+    tv_labels_std: float = 0.0
+    jsd_global_mean: float = 0.0
+    jsd_global_std: float = 0.0
 
     # Feature metrics
     fid_mean: Optional[float] = None
@@ -86,12 +84,22 @@ class MetricResults:
     mmd_features_std: Optional[float] = None
     wasserstein_mean: Optional[float] = None
     wasserstein_std: Optional[float] = None
-    cramer_von_mises_mean: Optional[float] = None
-    cramer_von_mises_std: Optional[float] = None
+    energy_dist_mean: Optional[float] = None
+    energy_dist_std: Optional[float] = None
     ks_multivariate_reject_rate: Optional[float] = None
     ks_multivariate_min_pvalue: Optional[float] = None
     vendi_score_mean: Optional[float] = None
     vendi_score_std: Optional[float] = None
+    
+    # New Feature Metrics
+    id_mean: Optional[float] = None
+    id_std: Optional[float] = None
+    knn_sep_mean: Optional[float] = None
+    knn_sep_std: Optional[float] = None
+    centroid_dist_mean: Optional[float] = None
+    centroid_dist_std: Optional[float] = None
+    feature_variance_mean: Optional[float] = None
+    feature_variance_std: Optional[float] = None
 
     # Balance metrics
     samples_per_client_mean: float = 0.0
@@ -305,34 +313,39 @@ def compute_label_metrics(
     results['JS_divergence_mean'] = float(np.mean(JS_all))
     results['JS_divergence_std'] = float(np.std(JS_all))
 
-    # MMD labels
-    mmd_all = metrics.MMD_label_distributions(client_datasets, num_classes, return_all=True)
-    results['mmd_labels_mean'] = float(np.mean(mmd_all))
-    results['mmd_labels_std'] = float(np.std(mmd_all))
+    # Total Variation
+    tv_all = metrics.TV_label_distributions(client_datasets, num_classes, return_all=True)
+    results['tv_labels_mean'] = float(np.mean(tv_all))
+    results['tv_labels_std'] = float(np.std(tv_all))
 
-    # Mahalanobis
-    mahal_all = metrics.mahalanobis_distance_labels(client_datasets, num_classes, return_all=True)
-    results['mahalanobis_mean'] = float(np.mean(mahal_all))
-    results['mahalanobis_std'] = float(np.std(mahal_all))
-
-    # KS label test
-    ks_all = metrics.KS_label_test(client_datasets, return_all=True)
-    results['ks_label_statistic_mean'] = float(np.mean([r['statistic'] for r in ks_all]))
-    results['ks_label_pvalue_mean'] = float(np.mean([r['pvalue'] for r in ks_all]))
+    # JSD Client to Global
+    jsd_global_all = metrics.JSD_client_to_global(client_datasets, num_classes, return_all=True)
+    results['jsd_global_mean'] = float(np.mean(jsd_global_all))
+    results['jsd_global_std'] = float(np.std(jsd_global_all))
 
     return results
 
 
 def compute_feature_metrics(
     client_datasets: List[List[Dict]],
+    feature_model: str = "dinov2-small",
     batch_size: int = 50,
     use_cache: bool = True,
-    cache_dir: str = "./.inception_cache"
+    cache_dir: str = "./.embedding_cache"
 ) -> Dict[str, float]:
     """Compute all feature-based metrics using the refactored API."""
     results = {}
+    
+    # Common kwargs for feature extraction
+    ext_kwargs = {
+        "model_name": feature_model,
+        "batch_size": batch_size,
+        "use_cache": use_cache,
+        "cache_dir": cache_dir
+    }
 
-    print("    Computing FID...")
+    print("    Computing FID (InceptionV3)...")
+    # FID always uses InceptionV3 regardless of feature_model
     fid_all = metrics.FID_distance(
         client_datasets, batch_size=batch_size, return_all=True,
         use_cache=use_cache, cache_dir=cache_dir
@@ -340,42 +353,70 @@ def compute_feature_metrics(
     results['fid_mean'] = float(np.mean(fid_all))
     results['fid_std'] = float(np.std(fid_all))
 
-    print("    Computing MMD features...")
-    mmd_all = metrics.MMD_features(
-        client_datasets, batch_size=batch_size, return_all=True,
-        use_cache=use_cache, cache_dir=cache_dir
+    print(f"    Computing MMD features ({feature_model})...")
+    mmd_all = metrics.MMD(
+        client_datasets, return_all=True, **ext_kwargs
     )
     results['mmd_features_mean'] = float(np.mean(mmd_all))
     results['mmd_features_std'] = float(np.std(mmd_all))
 
-    print("    Computing Wasserstein distance...")
-    wass_all = metrics.wasserstein_distance_features(
-        client_datasets, batch_size=batch_size, return_all=True,
-        use_cache=use_cache, cache_dir=cache_dir
+    print(f"    Computing Wasserstein distance ({feature_model})...")
+    wass_all = metrics.sliced_wasserstein_distance(
+        client_datasets, return_all=True, **ext_kwargs
     )
     results['wasserstein_mean'] = float(np.mean(wass_all))
     results['wasserstein_std'] = float(np.std(wass_all))
 
-    print("    Computing Cramér-von Mises...")
-    cvm_all = metrics.cramer_von_mises_features(
-        client_datasets, batch_size=batch_size, return_all=True,
-        use_cache=use_cache, cache_dir=cache_dir
+    print(f"    Computing Energy Distance ({feature_model})...")
+    ed_all = metrics.energy_distance_features(
+        client_datasets, return_all=True, **ext_kwargs
     )
-    results['cramer_von_mises_mean'] = float(np.mean(cvm_all))
-    results['cramer_von_mises_std'] = float(np.std(cvm_all))
+    results['energy_dist_mean'] = float(np.mean(ed_all))
+    results['energy_dist_std'] = float(np.std(ed_all))
 
-    print("    Computing KS multivariate test...")
+    print(f"    Computing Feature Variance ({feature_model})...")
+    fv_all = metrics.feature_variance(
+        client_datasets, return_all=True, **ext_kwargs
+    )
+    results['feature_variance_mean'] = float(np.mean(fv_all))
+    results['feature_variance_std'] = float(np.std(fv_all))
+
+    print(f"    Computing Intrinsic Dimensionality ({feature_model})...")
+    id_all = metrics.intrinsic_dimensionality(
+        client_datasets, method="two_nn", return_all=True, **ext_kwargs
+    )
+    # Filter out NaNs
+    id_clean = [x for x in id_all if not np.isnan(x)]
+    if id_clean:
+        results['id_mean'] = float(np.mean(id_clean))
+        results['id_std'] = float(np.std(id_clean))
+    
+    print(f"    Computing k-NN Separability ({feature_model})...")
+    knn_all = metrics.knn_separability(
+        client_datasets, k=5, return_all=True, **ext_kwargs
+    )
+    results['knn_sep_mean'] = float(np.mean(knn_all))
+    results['knn_sep_std'] = float(np.std(knn_all))
+    
+    print(f"    Computing Centroid Distance ({feature_model})...")
+    cd_all = metrics.centroid_distance(
+        client_datasets, return_all=True, **ext_kwargs
+    )
+    results['centroid_dist_mean'] = float(np.mean(cd_all))
+    results['centroid_dist_std'] = float(np.std(cd_all))
+
+    print(f"    Computing KS multivariate test ({feature_model})...")
     ks_all = metrics.KS_multivariate_test(
-        client_datasets, batch_size=batch_size, return_all=True,
-        use_cache=use_cache, cache_dir=cache_dir
+        client_datasets, pca_variance=0.95, return_all=True, **ext_kwargs
     )
     results['ks_multivariate_reject_rate'] = float(np.mean([r['reject_null'] for r in ks_all]))
-    results['ks_multivariate_min_pvalue'] = float(np.min([r['min_pvalue'] for r in ks_all]))
+    # p-values might be small, handle safely
+    min_pvals = [r['min_pvalue'] for r in ks_all]
+    results['ks_multivariate_min_pvalue'] = float(np.min(min_pvals)) if min_pvals else 0.0
 
-    print("    Computing Vendi score...")
-    vendi_all = metrics.vendi_score_features(
-        client_datasets, batch_size=batch_size, return_all=True,
-        use_cache=use_cache, cache_dir=cache_dir
+    print(f"    Computing Vendi score ({feature_model})...")
+    vendi_all = metrics.vendi_score(
+        client_datasets, return_all=True, **ext_kwargs
     )
     results['vendi_score_mean'] = float(np.mean(vendi_all))
     results['vendi_score_std'] = float(np.std(vendi_all))
@@ -396,6 +437,7 @@ def run_experiment(
     metrics_mode: str,
     subsample: Optional[int],
     wnid_mapping: Optional[Dict[str, int]],
+    feature_model: str,
     use_cache: bool,
     cache_dir: str,
 ) -> ExperimentResult:
@@ -445,6 +487,7 @@ def run_experiment(
         start_time = time.time()
         feature_results = compute_feature_metrics(
             client_datasets_sub,
+            feature_model=feature_model,
             use_cache=use_cache,
             cache_dir=cache_dir
         )
@@ -633,9 +676,8 @@ def create_visualizations(df: pd.DataFrame, output_dir: Path):
     # Label metrics
     label_metrics = [
         ('JS_divergence_mean', 'JS_divergence_std', 'JS Divergence', 'JS Divergence'),
-        ('mmd_labels_mean', 'mmd_labels_std', 'MMD (Labels)', 'MMD'),
-        ('mahalanobis_mean', 'mahalanobis_std', 'Mahalanobis Distance', 'Distance'),
-        ('ks_label_statistic_mean', None, 'KS Statistic (Labels)', 'Statistic'),
+        ('tv_labels_mean', 'tv_labels_std', 'Total Variation (Labels)', 'TV'),
+        ('jsd_global_mean', 'jsd_global_std', 'JSD (Client vs Global)', 'JSD'),
     ]
 
     for metric, std, title, ylabel in label_metrics:
@@ -651,8 +693,12 @@ def create_visualizations(df: pd.DataFrame, output_dir: Path):
         ('fid_mean', 'fid_std', 'FID Score', 'FID'),
         ('mmd_features_mean', 'mmd_features_std', 'MMD (Features)', 'MMD'),
         ('wasserstein_mean', 'wasserstein_std', 'Wasserstein Distance', 'Distance'),
-        ('cramer_von_mises_mean', 'cramer_von_mises_std', 'Cramér-von Mises', 'Statistic'),
+        ('energy_dist_mean', 'energy_dist_std', 'Energy Distance', 'Distance'),
+        ('id_mean', 'id_std', 'Intrinsic Dimensionality', 'Dim'),
+        ('knn_sep_mean', 'knn_sep_std', 'k-NN Separability', 'Score'),
+        ('centroid_dist_mean', 'centroid_dist_std', 'Centroid Distance', 'Distance'),
         ('vendi_score_mean', 'vendi_score_std', 'Vendi Score', 'Score'),
+        ('feature_variance_mean', 'feature_variance_std', 'Feature Variance', 'Variance'),
         ('ks_multivariate_reject_rate', None, 'KS Multivariate Reject Rate', 'Rate'),
     ]
 
@@ -693,32 +739,36 @@ def generate_summary_report(df: pd.DataFrame, output_dir: Path, metrics_mode: st
     # Label metrics table
     if metrics_mode in ["label", "both"]:
         report.append("### Label Distribution Metrics\n")
-        report.append("| Method | n | α | JS Div | MMD | Mahalanobis | KS Stat |\n")
-        report.append("|--------|---|---|--------|-----|-------------|--------|\n")
+        report.append("| Method | n | α | JS Div | TV | JSD (Global) |\n")
+        report.append("|--------|---|---|--------|----|--------------|\n")
 
         for _, row in df.iterrows():
             report.append(
                 f"| {row['method']} | {row['n_clients']} | {row['heterogeneity']} | "
-                f"{row['JS_divergence_mean']:.4f} | {row['mmd_labels_mean']:.4f} | "
-                f"{row['mahalanobis_mean']:.4f} | {row['ks_label_statistic_mean']:.4f} |\n"
+                f"{row['JS_divergence_mean']:.4f} | {row['tv_labels_mean']:.4f} | "
+                f"{row['jsd_global_mean']:.4f} |\n"
             )
 
     # Feature metrics table
     if metrics_mode in ["feature", "both"] and 'fid_mean' in df.columns and df['fid_mean'].notna().any():
         report.append("\n### Feature Distribution Metrics\n")
-        report.append("| Method | n | α | FID | MMD | Wasserstein | CvM | Vendi |\n")
-        report.append("|--------|---|---|-----|-----|-------------|-----|-------|\n")
+        report.append("| Method | n | α | FID | MMD | Wass | Energy | ID | KNN | CenDist | Vendi | Var |\n")
+        report.append("|--------|---|---|-----|-----|------|--------|---|-----|---------|-------|-----|\n")
 
         for _, row in df.iterrows():
             fid = f"{row['fid_mean']:.2f}" if pd.notna(row.get('fid_mean')) else "N/A"
             mmd = f"{row['mmd_features_mean']:.4f}" if pd.notna(row.get('mmd_features_mean')) else "N/A"
             wass = f"{row['wasserstein_mean']:.4f}" if pd.notna(row.get('wasserstein_mean')) else "N/A"
-            cvm = f"{row['cramer_von_mises_mean']:.4f}" if pd.notna(row.get('cramer_von_mises_mean')) else "N/A"
+            eng = f"{row['energy_dist_mean']:.4f}" if pd.notna(row.get('energy_dist_mean')) else "N/A"
+            id_val = f"{row['id_mean']:.2f}" if pd.notna(row.get('id_mean')) else "N/A"
+            knn = f"{row['knn_sep_mean']:.3f}" if pd.notna(row.get('knn_sep_mean')) else "N/A"
+            cd = f"{row['centroid_dist_mean']:.2f}" if pd.notna(row.get('centroid_dist_mean')) else "N/A"
             vendi = f"{row['vendi_score_mean']:.2f}" if pd.notna(row.get('vendi_score_mean')) else "N/A"
+            var = f"{row['feature_variance_mean']:.2f}" if pd.notna(row.get('feature_variance_mean')) else "N/A"
 
             report.append(
                 f"| {row['method']} | {row['n_clients']} | {row['heterogeneity']} | "
-                f"{fid} | {mmd} | {wass} | {cvm} | {vendi} |\n"
+                f"{fid} | {mmd} | {wass} | {eng} | {id_val} | {knn} | {cd} | {vendi} | {var} |\n"
             )
 
     # Balance metrics table
@@ -741,9 +791,11 @@ def generate_summary_report(df: pd.DataFrame, output_dir: Path, metrics_mode: st
 
     ranking_metrics = [
         ('JS_divergence_mean', 'JS Divergence', True),
-        ('mmd_labels_mean', 'MMD (Labels)', True),
+        ('tv_labels_mean', 'Total Variation (Labels)', True),
         ('fid_mean', 'FID', True),
-        ('vendi_score_mean', 'Vendi Score', False),
+        ('knn_sep_mean', 'KNN Separability', False), # Higher is better (more separable/heterogeneous)
+        ('vendi_score_mean', 'Vendi Score', False),  # Higher is better (more diverse intra-client)
+        ('feature_variance_mean', 'Feature Variance', False),
         ('coefficient_of_variation', 'Balance (CV)', True),
     ]
 
@@ -784,11 +836,13 @@ def main():
     parser.add_argument("--cluster_labels_dir", type=str, default="../data_partitioning/legacy_vlm/data/tiny_imagenet")
     parser.add_argument("--metrics", type=str, default="both", choices=["label", "feature", "both"])
     parser.add_argument("--subsample", type=int, default=1000)
+    parser.add_argument("--feature_model", type=str, default="dinov2-small", 
+                        help="Model to use for feature extraction metrics")
     parser.add_argument("--output_dir", type=str, default="../results")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--use_cache", action="store_true", default=True)
     parser.add_argument("--no_cache", action="store_true")
-    parser.add_argument("--cache_dir", type=str, default="./.inception_cache")
+    parser.add_argument("--cache_dir", type=str, default="./.embedding_cache")
 
     args = parser.parse_args()
     use_cache = args.use_cache and not args.no_cache
@@ -796,6 +850,7 @@ def main():
     print("=" * 80)
     print("PARTITIONING METHODS COMPARISON")
     print("=" * 80)
+    print(f"Feature Model: {args.feature_model}")
 
     output_dir = Path(args.output_dir)
 
@@ -842,6 +897,7 @@ def main():
                 metrics_mode=args.metrics,
                 subsample=args.subsample,
                 wnid_mapping=wnid_mapping,
+                feature_model=args.feature_model,
                 use_cache=use_cache,
                 cache_dir=args.cache_dir,
             )

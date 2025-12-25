@@ -1,3 +1,11 @@
+"""Dirichlet distribution-based data splitting for non-IID federated learning.
+
+This module implements label-based non-IID (Non-Independent and Identically Distributed)
+data splitting using the Dirichlet distribution. This creates realistic heterogeneity
+where different clients have different class distributions, simulating real-world
+federated learning scenarios.
+"""
+
 import numpy as np
 from typing import List
 import matplotlib.pyplot as plt
@@ -6,26 +14,73 @@ import matplotlib.patches as mpatches
 from scipy.stats import entropy
 
 from .base_splitter import DatasetSplits, ClientSplit
-from ..data_loading.dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 from .random_splitter import RandomSplitter
 
 
 class DirichletSplitter(RandomSplitter):
-    """
-    Splits dataset across clients using a Dirichlet distribution to control heterogeneity.
+    """Split dataset across clients using Dirichlet distribution for label heterogeneity.
 
-    The Dirichlet distribution (parameterized by alpha/heterogeneity) controls class imbalance:
-    - Lower alpha (e.g., 0.1-0.5): More heterogeneous, clients have very different class distributions
-    - Higher alpha (e.g., 1.0-10.0): More homogeneous, clients have similar class distributions
+    Creates non-IID (Non-Independent and Identically Distributed) data splits by
+    using a Dirichlet distribution to control how class labels are distributed
+    across clients. This simulates realistic federated learning scenarios where
+    different clients have different data distributions.
 
-    Two modes for client size distribution:
-    - proportions_constrained=True: Enforces roughly equal client sizes (capacity constraints)
-    - proportions_constrained=False: Allows natural size variation from Dirichlet sampling
+    The Dirichlet distribution is parameterized by alpha (heterogeneity parameter):
+    - **Low alpha (0.1-0.5)**: Highly heterogeneous
+      - Each client specializes in few classes
+      - Extreme label imbalance across clients
+      - Mimics scenarios like hospitals specializing in certain conditions
 
-    Validation set modes:
-    - 'local': Each client gets a Dirichlet-sampled train and val set
-    - 'global': All clients share the same global validation set
-    - 'none': No validation sets are created
+    - **Medium alpha (1.0-5.0)**: Moderately heterogeneous
+      - Clients have diverse but unequal class distributions
+      - Realistic imbalance patterns
+
+    - **High alpha (10.0+)**: Nearly IID
+      - Approaches uniform random distribution
+      - Similar to RandomSplitter
+
+    **Capacity Constraints**:
+    The `proportions_constrained` parameter controls client size distribution:
+    - True (default): Enforces roughly equal client sizes using capacity constraints
+    - False: Allows natural size variation from Dirichlet sampling
+
+    **Validation Set Modes**:
+    - "local": Each client gets Dirichlet-sampled train and validation sets
+    - "global": All clients share the same global validation set
+    - "none": No validation sets created
+
+    Examples:
+        >>> from data_loading.dataset import BaseDataset
+        >>> train_data = BaseDataset("cifar10", "/data/", "train")
+        >>> val_data = BaseDataset("cifar10", "/data/", "val")
+        >>>
+        >>> # Create highly heterogeneous splits
+        >>> splitter = DirichletSplitter(
+        ...     train_dataset=train_data,
+        ...     val_dataset=val_data,
+        ...     n_clients=10,
+        ...     heterogeneity=0.1,  # Low alpha = high heterogeneity
+        ...     valset_type="global",
+        ...     seed=42
+        ... )
+        >>> splits = splitter.get_client_splits()
+        >>> splitter.visualize_class_distribution()  # Visualize imbalance
+        >>>
+        >>> # Create nearly IID splits
+        >>> iid_splitter = DirichletSplitter(
+        ...     train_dataset=train_data,
+        ...     val_dataset=val_data,
+        ...     n_clients=10,
+        ...     heterogeneity=10.0,  # High alpha = low heterogeneity
+        ...     valset_type="global",
+        ...     seed=42
+        ... )
+
+    Note:
+        The splitting process uses a retry mechanism to ensure all clients
+        receive at least `min_samples_per_client` samples. If unable to
+        create valid splits after `max_retries` attempts, raises ValueError.
     """
 
     def __init__(
@@ -40,18 +95,29 @@ class DirichletSplitter(RandomSplitter):
         max_retries: int = 1000,
         proportions_constrained: bool = True,
     ):
-        """
+        """Initialize the Dirichlet splitter.
+
         Args:
-            train_dataset: Training dataset
-            val_dataset: Validation dataset
-            n_clients: Number of clients
-            heterogeneity: Dirichlet alpha parameter (lower = more heterogeneous)
-            valset_type: "global", "local", or "none"
-            seed: Random seed
-            min_samples_per_client: Minimum samples each client must have
-            max_retries: Maximum attempts to create valid partition
-            proportions_constrained: If True, enforce equal client sizes via capacity constraints.
-                                    If False, let sizes vary naturally based on Dirichlet sampling.
+            train_dataset: Training dataset to split.
+            val_dataset: Optional validation dataset. Required if valset_type
+                is "local" or "global".
+            n_clients: Number of clients to distribute data across.
+            heterogeneity: Dirichlet alpha (concentration) parameter.
+                - Lower values (0.1-0.5): High heterogeneity (specialized clients)
+                - Medium values (1.0-5.0): Moderate heterogeneity
+                - Higher values (10.0+): Low heterogeneity (nearly IID)
+            valset_type: Validation set configuration - "local", "global", or "none".
+            seed: Random seed for reproducibility.
+            min_samples_per_client: Minimum number of samples each client must
+                receive. The splitter will retry until this constraint is met.
+            max_retries: Maximum number of attempts to create valid splits
+                meeting the min_samples_per_client constraint.
+            proportions_constrained: If True, enforces roughly equal client sizes
+                via capacity constraints. If False, allows natural size variation
+                from Dirichlet sampling.
+
+        Raises:
+            ValueError: If unable to create valid splits after max_retries attempts.
         """
         self.min_samples_per_client = min_samples_per_client
         self.max_retries = max_retries
@@ -59,6 +125,16 @@ class DirichletSplitter(RandomSplitter):
         super().__init__(train_dataset, val_dataset, n_clients, heterogeneity, valset_type, seed)
 
     def _compute_client_splits(self) -> DatasetSplits:
+        """Compute Dirichlet-based non-IID splits across clients.
+
+        Uses Dirichlet distribution to create label-heterogeneous splits where
+        each client has a different class distribution. Applies retry logic to
+        ensure minimum sample requirements are met.
+
+        Returns:
+            DatasetSplits: Dictionary containing client splits and optional
+                global validation set.
+        """
         splits: DatasetSplits = {
             "clients": {},
             "global_val": None,
@@ -81,17 +157,35 @@ class DirichletSplitter(RandomSplitter):
     def _partition_with_retry(
         self, all_labels: List, unique_labels: List, total_samples: int, dataset_type: str = "train"
     ) -> List[List[int]]:
-        """
-        Partition data using Dirichlet distribution with retry logic to ensure minimum samples per client.
+        """Partition data using Dirichlet distribution with retry logic.
+
+        For each class, samples client proportions from Dir(α, ..., α) and
+        distributes class samples accordingly. Retries until all clients meet
+        the minimum sample requirement.
+
+        The algorithm:
+        1. For each class label:
+           a. Sample proportions from Dirichlet(α) for all clients
+           b. If proportions_constrained=True, zero out proportions for clients
+              that have reached capacity
+           c. Split class samples according to (renormalized) proportions
+        2. Check if all clients have >= min_samples_per_client
+        3. If not, retry with new Dirichlet samples
 
         Args:
-            all_labels: List of labels for all samples in the dataset
-            unique_labels: Sorted list of unique class labels
-            total_samples: Total number of samples in the dataset
-            dataset_type: "train" or "val" for error messages
+            all_labels: List of labels for all samples in the dataset.
+            unique_labels: Sorted list of unique class labels.
+            total_samples: Total number of samples in the dataset (for capacity calc).
+            dataset_type: "train" or "val", used in error messages.
 
         Returns:
-            List of client indices lists
+            List of client index lists, where each inner list contains indices
+            assigned to that client.
+
+        Raises:
+            ValueError: If unable to create valid partition meeting
+                min_samples_per_client constraint after max_retries attempts.
+                Suggests increasing alpha or decreasing n_clients.
         """
 
         for attempt in range(self.max_retries):
@@ -183,12 +277,29 @@ class DirichletSplitter(RandomSplitter):
         return splits
 
     def visualize_class_distribution(self, max_classes_to_show: int = 20, figsize: tuple = (12, 8)) -> None:
-        """
-        Create a horizontal bar chart showing class distribution for each client.
+        """Visualize class label distribution across clients.
+
+        Creates a horizontal stacked bar chart showing how class labels are
+        distributed across clients. Each bar represents a client, with colored
+        segments representing different classes. Useful for visually assessing
+        the degree of heterogeneity created by the Dirichlet distribution.
+
+        The visualization helps identify:
+        - Which clients specialize in which classes
+        - Overall balance vs. imbalance patterns
+        - Effect of different alpha (heterogeneity) values
 
         Args:
-            max_classes_to_show: Maximum number of classes to show individually (top N by frequency)
-            figsize: Figure size (width, height)
+            max_classes_to_show: Maximum number of classes to show individually.
+                If the dataset has more classes, only the top N most frequent
+                classes are shown individually, with others grouped as "Other".
+            figsize: Figure size as (width, height) tuple in inches.
+
+        Example:
+            >>> splitter = DirichletSplitter(..., heterogeneity=0.1)
+            >>> splits = splitter.get_client_splits()
+            >>> splitter.visualize_class_distribution(max_classes_to_show=10)
+            >>> # Shows highly imbalanced distribution with low alpha
         """
         splits = self.get_client_splits()
 

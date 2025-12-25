@@ -1,16 +1,52 @@
+"""Random IID data splitting for federated learning.
+
+This module implements random (IID - Independent and Identically Distributed)
+splitting of datasets across federated learning clients. Data is distributed
+uniformly at random, creating balanced, homogeneous client datasets.
+"""
+
 import numpy as np
 from typing import List
 from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
-from ..data_loading.dataset import BaseDataset
+from data_loading.dataset import BaseDataset
 
 
 class RandomSplitter(BaseDatasetSplitter):
-    """
-    Randomly splits dataset across clients with optional validation sets.
+    """Randomly split dataset across clients for IID data distribution.
 
-    For 'local' validation: Each client gets a random train set from the original train set and a random val set from the original val set
-    For 'global' validation: The global validation set is taken from the original val set
-    For 'none': No validation sets are created
+    Creates Independent and Identically Distributed (IID) splits by randomly
+    shuffling and partitioning data across clients. Each client receives
+    approximately equal amounts of data with similar label distributions.
+
+    This splitting strategy is useful for:
+    - Baseline experiments (comparing against non-IID scenarios)
+    - Scenarios where data is naturally homogeneous across clients
+    - Testing federated algorithms under ideal conditions
+
+    The heterogeneity parameter is ignored for RandomSplitter since splits
+    are always uniform/IID.
+
+    Validation set modes:
+    - "local": Each client gets random subsets from both train and val datasets
+    - "global": Single shared validation set (all of val_dataset)
+    - "none": No validation sets created
+
+    Examples:
+        >>> from data_loading.dataset import BaseDataset
+        >>> train_data = BaseDataset("cifar10", "/data/", "train")
+        >>> val_data = BaseDataset("cifar10", "/data/", "val")
+        >>>
+        >>> # Create IID splits with global validation
+        >>> splitter = RandomSplitter(
+        ...     train_dataset=train_data,
+        ...     val_dataset=val_data,
+        ...     n_clients=10,
+        ...     valset_type="global",
+        ...     seed=42
+        ... )
+        >>> splits = splitter.get_client_splits()
+        >>> summary = splitter.get_split_summary()
+        >>> print(f"Client 0 has {summary['client_sizes']['client_0']['train_samples']} samples")
     """
 
     def __init__(
@@ -22,15 +58,30 @@ class RandomSplitter(BaseDatasetSplitter):
         valset_type: str = "global",
         seed: int | None = None,
     ):
+        """Initialize the random splitter.
 
+        Args:
+            train_dataset: Training dataset to split.
+            val_dataset: Optional validation dataset. Required if valset_type
+                is "local" or "global".
+            n_clients: Number of clients to distribute data across.
+            heterogeneity: Ignored for RandomSplitter (kept for interface
+                consistency). Random splits are always IID.
+            valset_type: Validation set configuration - "local", "global", or "none".
+            seed: Random seed for reproducibility.
+        """
         super().__init__(train_dataset, val_dataset, n_clients, heterogeneity, valset_type, seed)
 
     def _compute_client_splits(self) -> DatasetSplits:
-        """
-        Perform random splitting and return the complete split structure.
+        """Perform random IID splitting of the dataset.
+
+        Randomly shuffles training data and distributes it evenly across clients.
+        Validation sets are handled according to valset_type configuration.
 
         Returns:
-            DatasetSplits dictionary with client splits and optional global validation
+            DatasetSplits: Dictionary containing:
+                - clients: Per-client train/val splits
+                - global_val: Global validation set (if valset_type="global")
         """
         print("Performing random splitting of the dataset...")
         # Seed already set in base class init
@@ -52,7 +103,18 @@ class RandomSplitter(BaseDatasetSplitter):
             return self._split_without_val(client_train_indices, splits)
 
     def _split_with_global_val(self, client_train_indices: List[np.ndarray], splits: DatasetSplits) -> DatasetSplits:
+        """Create splits with a single global validation set.
 
+        Args:
+            client_train_indices: Pre-shuffled training indices for each client.
+            splits: DatasetSplits structure to populate.
+
+        Returns:
+            DatasetSplits: Populated splits with global validation set.
+
+        Raises:
+            ValueError: If val_dataset is None.
+        """
         if self.val_dataset is None:
             raise ValueError("val_dataset must be provided for global validation splitting.")
 
@@ -63,11 +125,26 @@ class RandomSplitter(BaseDatasetSplitter):
             client_train_data = self._load_dataset_samples(self.train_dataset, indices.tolist())
 
             splits["clients"][client_id] = ClientSplit(train=client_train_data, val=[])
-        
+
         print("Random splitting with global validation completed.")
         return splits
 
     def _split_with_local_val(self, client_train_indices: List[np.ndarray], splits: DatasetSplits) -> DatasetSplits:
+        """Create splits with per-client local validation sets.
+
+        Randomly distributes validation data across clients in addition to
+        training data.
+
+        Args:
+            client_train_indices: Pre-shuffled training indices for each client.
+            splits: DatasetSplits structure to populate.
+
+        Returns:
+            DatasetSplits: Populated splits with local validation sets.
+
+        Raises:
+            ValueError: If val_dataset is None.
+        """
         if self.val_dataset is None:
             raise ValueError("val_dataset must be provided for local validation splitting.")
 
@@ -85,6 +162,15 @@ class RandomSplitter(BaseDatasetSplitter):
         return splits
 
     def _split_without_val(self, client_train_indices: List[np.ndarray], splits: DatasetSplits) -> DatasetSplits:
+        """Create splits without any validation sets.
+
+        Args:
+            client_train_indices: Pre-shuffled training indices for each client.
+            splits: DatasetSplits structure to populate.
+
+        Returns:
+            DatasetSplits: Populated splits with no validation data.
+        """
         for i, train_indices in enumerate(client_train_indices):
             client_id = f"client_{i}"
             client_train_data = self._load_dataset_samples(self.train_dataset, train_indices.tolist())
