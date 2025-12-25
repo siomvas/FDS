@@ -127,8 +127,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import transforms, models
 
-from data_loading.dataset import ImageDataset
-from .cache_manager import CacheManager
+from data_loading.dataset import to_image_dataset
+from cache_manager import CacheManager
 
 from transformers import (
     AutoImageProcessor,
@@ -462,7 +462,7 @@ class EmbeddingExtractor(ABC):
         if not (self.transform or self.processor):
             raise RuntimeError("Processor or Transform not initialized. Call load_model() first.")
 
-        dataset = ImageDataset(images, transform=self.transform, processor=self.processor)
+        dataset = to_image_dataset(images, transform=self.transform, processor=self.processor)
         return DataLoader(
             dataset,
             batch_size=self.batch_size,
@@ -664,7 +664,7 @@ class MAEExtractor(EmbeddingExtractor):
     def get_embedding_dim(self) -> int:
         return {"base": 768, "large": 1024, "huge": 1280}[self.variant]
 
-@ModelRegistry.register("dino")
+@ModelRegistry.register("dinov2")
 class DINOv2Extractor(EmbeddingExtractor):
     VARIANTS = {"small": "facebook/dinov2-small", "base": "facebook/dinov2-base", "large": "facebook/dinov2-large", "giant": "facebook/dinov2-giant"}
     def __init__(self, variant: str = "base", **kwargs):

@@ -277,6 +277,10 @@ class BaseDataset(Dataset):
             # "label_distribution": {label: self.labels.count(label) for label in set(self.labels)},
         }
 
+# Helper function converting from list of strings to ImageDataset
+def to_image_dataset(images: List[str], transform: Callable = None, processor: Any = None) -> ImageDataset:
+    file_dataset = [{"image": path} for path in images]
+    return ImageDataset(file_dataset=file_dataset, transform=transform, processor=processor)
 
 @BaseDataset.register_dataset("tiny_imagenet")
 def _load_tiny_imagenet(self) -> None:
