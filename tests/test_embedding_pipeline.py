@@ -13,7 +13,7 @@ from pathlib import Path
 import json
 
 # Import components to test
-from pooling_strategies import (
+from partitioning.embedding_utils.pooling_strategies import (
     CLSPooling,
     MeanPooling,
     MaxPooling,
@@ -22,15 +22,15 @@ from pooling_strategies import (
     SpectralSharpeningPooling,
     get_pooling_strategy,
 )
-from clustering_methods import (
+from partitioning.embedding_utils.clustering_methods import (
     HDBSCANMethod,
     KMeansMethod,
     KNNGraphMethod,
     SpectralMethod,
     get_clustering_method,
 )
-from cache_manager import CacheManager
-from config import (
+from embedding.cache_manager import CacheManager
+from partitioning.embedding_utils.config import (
     EmbeddingConfig,
     ModelConfig,
     PoolingConfig,
@@ -69,12 +69,7 @@ def layer_embeddings():
     }
 
 
-@pytest.fixture
-def temp_cache_dir():
-    """Temporary directory for cache tests."""
-    tmpdir = tempfile.mkdtemp()
-    yield tmpdir
-    shutil.rmtree(tmpdir)
+# tmp_cache_dir fixture removed - using tmp_cache_dir from conftest.py instead
 
 
 @pytest.fixture
@@ -418,9 +413,9 @@ class TestClusteringFactory:
 class TestCacheManager:
     """Test cache manager."""
 
-    def test_cache_put_and_get(self, temp_cache_dir):
+    def test_cache_put_and_get(self, tmp_cache_dir):
         """Should store and retrieve embeddings."""
-        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+        cache = CacheManager(cache_dir=tmp_cache_dir, enabled=True)
 
         embeddings = np.random.randn(100, 768)
         image_paths = [f"img_{i}.jpg" for i in range(100)]
@@ -428,14 +423,14 @@ class TestCacheManager:
         # Put in cache
         cache.put(
             embeddings=embeddings,
-            model_name="dinov2/base",
+            model_name="dinov2-base",
             image_paths=image_paths,
             pooling_strategy="cls",
         )
 
         # Get from cache
         retrieved = cache.get(
-            model_name="dinov2/base",
+            model_name="dinov2-base",
             image_paths=image_paths,
             pooling_strategy="cls",
         )
@@ -443,9 +438,9 @@ class TestCacheManager:
         assert retrieved is not None
         np.testing.assert_array_almost_equal(retrieved, embeddings)
 
-    def test_cache_miss_returns_none(self, temp_cache_dir):
+    def test_cache_miss_returns_none(self, tmp_cache_dir):
         """Cache miss should return None."""
-        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+        cache = CacheManager(cache_dir=tmp_cache_dir, enabled=True)
 
         result = cache.get(
             model_name="nonexistent",
@@ -455,28 +450,28 @@ class TestCacheManager:
 
         assert result is None
 
-    def test_different_params_different_cache(self, temp_cache_dir):
+    def test_different_params_different_cache(self, tmp_cache_dir):
         """Different parameters should have different cache entries."""
-        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+        cache = CacheManager(cache_dir=tmp_cache_dir, enabled=True)
 
         embeddings1 = np.random.randn(10, 768)
         embeddings2 = np.random.randn(10, 768)
         image_paths = [f"img_{i}.jpg" for i in range(10)]
 
         # Store with different pooling strategies
-        cache.put(embeddings1, "dinov2/base", image_paths, pooling_strategy="cls")
-        cache.put(embeddings2, "dinov2/base", image_paths, pooling_strategy="mean")
+        cache.put(embeddings1, "dinov2-base", image_paths, pooling_strategy="cls")
+        cache.put(embeddings2, "dinov2-base", image_paths, pooling_strategy="mean")
 
         # Retrieve should get different embeddings
-        retrieved1 = cache.get("dinov2/base", image_paths, pooling_strategy="cls")
-        retrieved2 = cache.get("dinov2/base", image_paths, pooling_strategy="mean")
+        retrieved1 = cache.get("dinov2-base", image_paths, pooling_strategy="cls")
+        retrieved2 = cache.get("dinov2-base", image_paths, pooling_strategy="mean")
 
         np.testing.assert_array_almost_equal(retrieved1, embeddings1)
         np.testing.assert_array_almost_equal(retrieved2, embeddings2)
 
-    def test_cache_dict_embeddings(self, temp_cache_dir):
+    def test_cache_dict_embeddings(self, tmp_cache_dir):
         """Should handle dictionary of embeddings (multi-layer)."""
-        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+        cache = CacheManager(cache_dir=tmp_cache_dir, enabled=True)
 
         layer_embs = {
             -2: np.random.randn(10, 768),
@@ -484,54 +479,54 @@ class TestCacheManager:
         }
         image_paths = [f"img_{i}.jpg" for i in range(10)]
 
-        cache.put(layer_embs, "dinov2/base", image_paths, layers=[-2, -1])
-        retrieved = cache.get("dinov2/base", image_paths, layers=[-2, -1])
+        cache.put(layer_embs, "dinov2-base", image_paths, layers=[-2, -1])
+        retrieved = cache.get("dinov2-base", image_paths, layers=[-2, -1])
 
         assert isinstance(retrieved, dict)
         assert set(retrieved.keys()) == {-2, -1}
         np.testing.assert_array_almost_equal(retrieved[-2], layer_embs[-2])
 
-    def test_disabled_cache_does_nothing(self, temp_cache_dir):
+    def test_disabled_cache_does_nothing(self, tmp_cache_dir):
         """Disabled cache should not store or retrieve."""
-        cache = CacheManager(cache_dir=temp_cache_dir, enabled=False)
+        cache = CacheManager(cache_dir=tmp_cache_dir, enabled=False)
 
         embeddings = np.random.randn(10, 768)
         image_paths = ["img1.jpg"]
 
-        cache.put(embeddings, "dinov2/base", image_paths, pooling_strategy="cls")
-        retrieved = cache.get("dinov2/base", image_paths, pooling_strategy="cls")
+        cache.put(embeddings, "dinov2-base", image_paths, pooling_strategy="cls")
+        retrieved = cache.get("dinov2-base", image_paths, pooling_strategy="cls")
 
         assert retrieved is None
 
-    def test_clear_all_cache(self, temp_cache_dir):
+    def test_clear_all_cache(self, tmp_cache_dir):
         """Should clear all cache entries."""
-        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+        cache = CacheManager(cache_dir=tmp_cache_dir, enabled=True)
 
         # Add some entries
-        cache.put(np.random.randn(10, 768), "dinov2/base", ["img1.jpg"], pooling_strategy="cls")
-        cache.put(np.random.randn(10, 768), "clip/base", ["img1.jpg"], pooling_strategy="cls")
+        cache.put(np.random.randn(10, 768), "dinov2-base", ["img1.jpg"], pooling_strategy="cls")
+        cache.put(np.random.randn(10, 768), "clip-base-patch16", ["img1.jpg"], pooling_strategy="cls")
 
         # Clear all
         cache.clear()
 
         # Both should be gone
-        assert cache.get("dinov2/base", ["img1.jpg"], pooling_strategy="cls") is None
-        assert cache.get("clip/base", ["img1.jpg"], pooling_strategy="cls") is None
+        assert cache.get("dinov2-base", ["img1.jpg"], pooling_strategy="cls") is None
+        assert cache.get("clip-base-patch16", ["img1.jpg"], pooling_strategy="cls") is None
 
-    def test_clear_specific_model(self, temp_cache_dir):
+    def test_clear_specific_model(self, tmp_cache_dir):
         """Should clear only specific model cache."""
-        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+        cache = CacheManager(cache_dir=tmp_cache_dir, enabled=True)
 
         # Add entries for two models
-        cache.put(np.random.randn(10, 768), "dinov2/base", ["img1.jpg"], pooling_strategy="cls")
-        cache.put(np.random.randn(10, 768), "clip/base", ["img1.jpg"], pooling_strategy="cls")
+        cache.put(np.random.randn(10, 768), "dinov2-base", ["img1.jpg"], pooling_strategy="cls")
+        cache.put(np.random.randn(10, 768), "clip-base-patch16", ["img1.jpg"], pooling_strategy="cls")
 
         # Clear only dinov2
-        cache.clear(model_name="dinov2/base")
+        cache.clear(model_name="dinov2-base")
 
         # DINOv2 should be gone, CLIP should remain
-        assert cache.get("dinov2/base", ["img1.jpg"], pooling_strategy="cls") is None
-        assert cache.get("clip/base", ["img1.jpg"], pooling_strategy="cls") is not None
+        assert cache.get("dinov2-base", ["img1.jpg"], pooling_strategy="cls") is None
+        assert cache.get("clip-base-patch16", ["img1.jpg"], pooling_strategy="cls") is not None
 
 
 # ============================================================================
@@ -598,7 +593,7 @@ class TestConfiguration:
         assert config_dict["n_clients"] == 10
         assert config_dict["model"]["model_type"] == "dinov2"
 
-    def test_config_to_json_and_from_json(self, temp_cache_dir):
+    def test_config_to_json_and_from_json(self, tmp_cache_dir):
         """Should save and load config as JSON."""
         config = EmbeddingConfig(
             model=ModelConfig(model_type="dinov2", variant="base"),
@@ -608,7 +603,7 @@ class TestConfiguration:
         )
 
         # Save to JSON
-        json_path = Path(temp_cache_dir) / "config.json"
+        json_path = Path(tmp_cache_dir) / "config.json"
         config.to_json(str(json_path))
 
         # Load from JSON
@@ -633,71 +628,131 @@ class TestConfiguration:
         with pytest.raises(ValueError, match="Unknown preset"):
             get_preset_config("invalid", n_clients=10)
 
+    def test_cache_settings_flattened(self):
+        """Cache settings should be direct fields, not nested."""
+        config = EmbeddingConfig(
+            model=ModelConfig(model_type="dinov2", variant="base"),
+            pooling=PoolingConfig(strategy="cls"),
+            clustering=ClusteringConfig(method="hdbscan"),
+            n_clients=10,
+            cache_dir="/custom/cache",
+            cache_enabled=False,
+        )
+
+        # Direct field access (not config.cache.cache_dir)
+        assert config.cache_dir == "/custom/cache"
+        assert config.cache_enabled == False
+
+    def test_assignment_settings_flattened(self):
+        """Assignment settings should be direct fields, not nested."""
+        config = EmbeddingConfig(
+            model=ModelConfig(model_type="dinov2", variant="base"),
+            pooling=PoolingConfig(strategy="cls"),
+            clustering=ClusteringConfig(method="hdbscan"),
+            n_clients=10,
+            assignment_strategy="size_balanced",
+            handle_noise="ignore",
+        )
+
+        # Direct field access (not config.assignment.strategy)
+        assert config.assignment_strategy == "size_balanced"
+        assert config.handle_noise == "ignore"
+
+    def test_assignment_validation(self):
+        """Invalid assignment settings should raise errors."""
+        # Invalid assignment_strategy
+        with pytest.raises(ValueError, match="Invalid assignment_strategy"):
+            EmbeddingConfig(
+                model=ModelConfig(model_type="dinov2", variant="base"),
+                pooling=PoolingConfig(strategy="cls"),
+                clustering=ClusteringConfig(method="hdbscan"),
+                n_clients=10,
+                assignment_strategy="invalid_strategy",
+            )
+
+        # Invalid handle_noise
+        with pytest.raises(ValueError, match="Invalid handle_noise"):
+            EmbeddingConfig(
+                model=ModelConfig(model_type="dinov2", variant="base"),
+                pooling=PoolingConfig(strategy="cls"),
+                clustering=ClusteringConfig(method="hdbscan"),
+                n_clients=10,
+                handle_noise="invalid_noise_handling",
+            )
+
 
 # ============================================================================
 # MODEL REGISTRY TESTS
 # ============================================================================
 
 class TestModelRegistry:
-    """Test model registry and instantiation."""
+    """Test embedding extractor instantiation and API."""
 
     def test_dinov2_variants_instantiate(self):
         """All DINOv2 variants should instantiate successfully."""
-        from embedding_extractor import get_embedding_extractor
+        from embedding.embedding_extractors import DINOv2Extractor
 
         variants = ["small", "base", "large", "giant"]
 
         for variant in variants:
-            config = ModelConfig(model_type="dinov2", variant=variant)
-            extractor = get_embedding_extractor(config)
+            extractor = DINOv2Extractor(variant=variant, device="cpu", batch_size=1)
             assert extractor is not None
-            assert hasattr(extractor, "extract")
+            # Verify correct API methods exist
+            assert hasattr(extractor, "extract_embeddings")
+            assert hasattr(extractor, "load_model")
+            assert hasattr(extractor, "get_embedding_dim")
+            # Verify model_name is cache-friendly (no slashes)
+            assert "/" not in extractor.model_name
+            assert extractor.model_name == f"dinov2-{variant}"
 
     def test_clip_variants_instantiate(self):
         """All CLIP variants should instantiate successfully."""
-        from embedding_extractor import get_embedding_extractor
+        from embedding.embedding_extractors import CLIPExtractor
 
-        variants = ["base", "large"]
+        variants = ["base-patch32", "base-patch16", "large-patch14"]
 
         for variant in variants:
-            config = ModelConfig(model_type="clip", variant=variant)
-            extractor = get_embedding_extractor(config)
+            extractor = CLIPExtractor(variant=variant, device="cpu", batch_size=1)
             assert extractor is not None
-            assert hasattr(extractor, "extract")
+            assert hasattr(extractor, "extract_embeddings")
+            assert hasattr(extractor, "load_model")
+            assert hasattr(extractor, "get_embedding_dim")
+            assert "/" not in extractor.model_name
+            assert extractor.model_name == f"clip-{variant}"
 
     def test_siglip_variants_instantiate(self):
         """SigLIP variants should instantiate successfully."""
-        from embedding_extractor import get_embedding_extractor
+        from embedding.embedding_extractors import SigLIPExtractor
 
-        variants = ["base", "large"]
+        variants = ["base-patch16-224", "base-patch16-384", "large-patch16-256"]
 
         for variant in variants:
-            config = ModelConfig(model_type="siglip", variant=variant)
-            extractor = get_embedding_extractor(config)
+            extractor = SigLIPExtractor(variant=variant, device="cpu", batch_size=1)
             assert extractor is not None
-            assert hasattr(extractor, "extract")
+            assert hasattr(extractor, "extract_embeddings")
+            assert hasattr(extractor, "load_model")
+            assert hasattr(extractor, "get_embedding_dim")
+            assert "/" not in extractor.model_name
+            assert extractor.model_name == f"siglip-{variant}"
 
-    def test_unknown_model_type_raises(self):
-        """Unknown model type should raise ValueError."""
-        from embedding_extractor import get_embedding_extractor
+    def test_invalid_variant_raises_error(self):
+        """Invalid variant should raise ValueError with helpful message."""
+        from embedding.embedding_extractors import DINOv2Extractor
 
+        with pytest.raises(ValueError, match="Unknown DINOv2 variant"):
+            DINOv2Extractor(variant="invalid", device="cpu")
+
+    def test_model_config_validation(self):
+        """ModelConfig should validate model type."""
+        # Valid model types
+        valid_types = ["dinov2", "clip", "siglip"]
+        for model_type in valid_types:
+            config = ModelConfig(model_type=model_type, variant="base")
+            assert config.model_type == model_type
+
+        # Invalid model type should raise
         with pytest.raises(ValueError, match="Invalid model_type"):
-            config = ModelConfig(model_type="unknown", variant="base")
-
-    def test_unknown_variant_raises(self):
-        """Unknown variant should raise ValueError."""
-        from embedding_extractor import get_embedding_extractor
-
-        # Create config with valid model_type but invalid variant
-        # This should be caught by the extractor factory
-        config = ModelConfig(model_type="dinov2", variant="base")
-        config.variant = "nonexistent"  # Override after validation
-
-        # The extractor may or may not raise depending on implementation
-        # Just verify we can instantiate with valid variants
-        config_valid = ModelConfig(model_type="dinov2", variant="base")
-        extractor = get_embedding_extractor(config_valid)
-        assert extractor is not None
+            ModelConfig(model_type="unknown", variant="base")
 
     def test_proxy_configuration_preservation(self):
         """Proxy configuration should be preserved during model loading."""
@@ -746,14 +801,14 @@ class TestCrossComponentIntegration:
 
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_extractor_to_cache_to_pooling_to_clustering(self, temp_cache_dir):
+    def test_extractor_to_cache_to_pooling_to_clustering(self, tmp_cache_dir):
         """
         Full pipeline: Extract embeddings → Cache → Pool → Cluster.
 
         This tests the complete workflow that EmbeddingSplitter uses internally.
         """
         # Setup
-        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+        cache = CacheManager(cache_dir=tmp_cache_dir, enabled=True)
 
         # Simulate extracted embeddings (3D - with tokens)
         np.random.seed(42)
@@ -763,14 +818,14 @@ class TestCrossComponentIntegration:
         # Cache the raw embeddings
         cache.put(
             embeddings=embeddings_3d,
-            model_name="dinov2/base",
+            model_name="dinov2-base",
             image_paths=image_paths,
             pooling_strategy="raw",  # Store raw before pooling
         )
 
         # Retrieve from cache
         cached_embeddings = cache.get(
-            model_name="dinov2/base",
+            model_name="dinov2-base",
             image_paths=image_paths,
             pooling_strategy="raw",
         )
@@ -787,7 +842,7 @@ class TestCrossComponentIntegration:
         # Cache pooled embeddings
         cache.put(
             embeddings=pooled_embeddings,
-            model_name="dinov2/base",
+            model_name="dinov2-base",
             image_paths=image_paths,
             pooling_strategy="cls",
         )
@@ -805,7 +860,7 @@ class TestCrossComponentIntegration:
         assert info["num_clusters"] == 3
 
     @pytest.mark.integration
-    def test_config_serialization_preserves_behavior(self, temp_cache_dir):
+    def test_config_serialization_preserves_behavior(self, tmp_cache_dir):
         """
         Config serialization roundtrip preserves all parameters.
 
@@ -820,11 +875,11 @@ class TestCrossComponentIntegration:
                 params={"min_cluster_size": 20, "min_samples": 5}
             ),
             n_clients=15,
-            cache_dir=temp_cache_dir,
+            cache_dir=str(tmp_cache_dir),
         )
 
         # Save to JSON
-        json_path = Path(temp_cache_dir) / "config_test.json"
+        json_path = Path(tmp_cache_dir) / "config_test.json"
         original_config.to_json(str(json_path))
 
         # Load from JSON
@@ -832,7 +887,7 @@ class TestCrossComponentIntegration:
 
         # Verify all parameters preserved
         assert loaded_config.n_clients == 15
-        assert loaded_config.cache_dir == temp_cache_dir
+        assert loaded_config.cache_dir == str(tmp_cache_dir)
 
         # Model config
         assert loaded_config.model.model_type == "dinov2"
@@ -850,13 +905,13 @@ class TestCrossComponentIntegration:
         assert loaded_config.clustering.params["min_samples"] == 5
 
     @pytest.mark.integration
-    def test_multiple_pooling_strategies_same_cache(self, temp_cache_dir):
+    def test_multiple_pooling_strategies_same_cache(self, tmp_cache_dir):
         """
         Multiple pooling strategies can coexist in same cache.
 
         Tests cache key differentiation by pooling strategy.
         """
-        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+        cache = CacheManager(cache_dir=tmp_cache_dir, enabled=True)
 
         # Generate sample embeddings
         embeddings_3d = np.random.randn(50, 197, 768)
@@ -877,7 +932,7 @@ class TestCrossComponentIntegration:
             # Cache each pooled result
             cache.put(
                 embeddings=pooled,
-                model_name="dinov2/base",
+                model_name="dinov2-base",
                 image_paths=image_paths,
                 pooling_strategy=strategy_name,
             )
@@ -885,7 +940,7 @@ class TestCrossComponentIntegration:
         # Retrieve and verify each strategy's cache
         for strategy_name, expected_pooled in pooled_results.items():
             retrieved = cache.get(
-                model_name="dinov2/base",
+                model_name="dinov2-base",
                 image_paths=image_paths,
                 pooling_strategy=strategy_name,
             )
@@ -932,7 +987,7 @@ class TestCrossComponentIntegration:
         assert hdbscan_clusters >= 2
 
     @pytest.mark.integration
-    def test_preset_config_workflow_completeness(self, temp_cache_dir):
+    def test_preset_config_workflow_completeness(self, tmp_cache_dir):
         """
         Each preset config defines a complete, usable workflow.
 
@@ -960,8 +1015,8 @@ class TestCrossComponentIntegration:
             assert config.n_clients == 10
 
             # Cache dir should be settable
-            config.cache_dir = temp_cache_dir
-            assert config.cache_dir == temp_cache_dir
+            config.cache_dir = tmp_cache_dir
+            assert config.cache_dir == tmp_cache_dir
 
 
 # ============================================================================

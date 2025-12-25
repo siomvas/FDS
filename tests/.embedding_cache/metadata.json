@@ -1,0 +1,12 @@
+{
+  "version": "1.0",
+  "entries": {
+    "batch_dinov2-small_ca9fd66d_252417507db7dee9": {
+      "model_name": "dinov2-small",
+      "dataset_name": null,
+      "num_images": 30,
+      "base_path": null,
+      "file": "batch_dinov2-small_ca9fd66d_252417507db7dee9.npz"
+    }
+  }
+}

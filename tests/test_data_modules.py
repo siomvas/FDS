@@ -20,7 +20,7 @@ from data_loading.dataset import (
     SegmentationDataset,
     BaseDataset,
 )
-from data_loading.dm import (
+from data_loading.data_modules import (
     BaseDataModule,
     TinyImageNetDataModule,
     Food101DataModule,
@@ -107,6 +107,12 @@ def mock_split_file(tmp_path):
         json.dump(mock_splits, f)
 
     return str(split_file)
+
+@pytest.fixture
+def mock_label_map():
+    """Create a mock label map for testing."""
+    return {"class_a": 0, "class_b": 1}
+
 
 
 @pytest.fixture
@@ -204,6 +210,8 @@ class TestImageDataset:
 
 class TestClassificationDataset:
     """Test ClassificationDataset class."""
+    def __init__(self):
+        self.label_map = {"cat": 0, "dog": 1}
 
     def test_basic_loading(self, temp_images):
         """Test basic image-label loading."""
@@ -212,13 +220,13 @@ class TestClassificationDataset:
             {"image": temp_images[1], "label": "dog"},
             {"image": temp_images[2], "label": "cat"},
         ]
-        dataset = ClassificationDataset(split_data)
+        dataset = ClassificationDataset(split_data, label_map=self.label_map)
 
         assert len(dataset) == 3
 
         img, label = dataset[0]
         assert isinstance(img, Image.Image)
-        assert label == "cat"
+        assert label == 0  # Mapped label
 
     def test_with_transform(self, temp_images, simple_transform):
         """Test loading with transforms."""
@@ -226,28 +234,12 @@ class TestClassificationDataset:
             {"image": temp_images[0], "label": "cat"},
             {"image": temp_images[1], "label": "dog"},
         ]
-        dataset = ClassificationDataset(split_data, transform=simple_transform)
+        dataset = ClassificationDataset(split_data, label_map=self.label_map, transform=simple_transform)
 
         img_tensor, label = dataset[0]
         assert isinstance(img_tensor, torch.Tensor)
         assert img_tensor.shape == (3, 32, 32)
-        assert label == "cat"
-
-    def test_label_preservation(self, temp_images):
-        """Test that labels are preserved as-is (not converted)."""
-        split_data = [
-            {"image": temp_images[0], "label": "class_123"},
-            {"image": temp_images[1], "label": "another_class"},
-        ]
-        dataset = ClassificationDataset(split_data)
-
-        _, label1 = dataset[0]
-        _, label2 = dataset[1]
-
-        assert isinstance(label1, str)
-        assert isinstance(label2, str)
-        assert label1 == "class_123"
-        assert label2 == "another_class"
+        assert label == 0
 
 
 # ============================================================================
@@ -278,10 +270,13 @@ class TestSegmentationDataset:
         ]
 
         # Mock transform that processes both image and mask
-        def mock_transform(img, mask):
-            return T.ToTensor()(img), T.ToTensor()(mask)
+        def mock_transform(img):
+            return T.ToTensor()(img)
+        
+        def mock_mask_transform(mask):
+            return T.ToTensor()(mask)
 
-        dataset = SegmentationDataset(split_data, transform=mock_transform)
+        dataset = SegmentationDataset(split_data, transform=mock_transform, mask_transform=mock_mask_transform)
 
         img_tensor, mask_tensor = dataset[0]
         assert isinstance(img_tensor, torch.Tensor)
@@ -391,11 +386,12 @@ class TestBaseDatasetRegistry:
 class TestBaseDataModule:
     """Test BaseDataModule class."""
 
-    def test_load_splits(self, mock_split_file):
+    def test_load_splits(self, mock_split_file, mock_label_map):
         """Test loading splits from JSON file."""
         dm = TinyImageNetDataModule(
             data_dir="./data",
             split_file=mock_split_file,
+            label_map=mock_label_map,
             client_idx=0,
             batch_size=2,
         )
@@ -406,11 +402,12 @@ class TestBaseDataModule:
         assert "global_val" in splits
         assert len(splits["clients"]) == 2
 
-    def test_get_client_data_federated(self, mock_split_file):
+    def test_get_client_data_federated(self, mock_split_file, mock_label_map):
         """Test getting client data in federated mode."""
         dm = TinyImageNetDataModule(
             data_dir="./data",
             split_file=mock_split_file,
+            label_map=mock_label_map,
             client_idx=0,
             central=False,
             batch_size=2,
@@ -420,13 +417,14 @@ class TestBaseDataModule:
         train_data, val_data = dm.get_client_data(splits)
 
         assert len(train_data) == 2  # client_0 has 2 train samples
-        assert len(val_data) == 1     # client_0 has 1 val sample
+        assert len(val_data) == 2     # global_val has 2 samples
 
-    def test_get_client_data_central(self, mock_split_file):
+    def test_get_client_data_central(self, mock_split_file, mock_label_map):
         """Test getting data in central mode (all clients)."""
         dm = TinyImageNetDataModule(
             data_dir="./data",
             split_file=mock_split_file,
+            label_map=mock_label_map,
             central=True,
             batch_size=2,
         )
@@ -438,34 +436,12 @@ class TestBaseDataModule:
         assert len(train_data) == 4  # 2 + 2 from both clients
         assert len(val_data) == 2    # Using global_val
 
-    def test_create_label_map(self, mock_split_file):
-        """Test label map creation."""
-        dm = TinyImageNetDataModule(
-            data_dir="./data",
-            split_file=mock_split_file,
-            client_idx=0,
-        )
-
-        train_data = [
-            {"image": "img1.jpg", "label": "zebra"},
-            {"image": "img2.jpg", "label": "apple"},
-            {"image": "img3.jpg", "label": "zebra"},
-            {"image": "img4.jpg", "label": "banana"},
-        ]
-
-        label_map = dm.create_label_map(train_data)
-
-        # Should be sorted alphabetically
-        assert label_map["apple"] == 0
-        assert label_map["banana"] == 1
-        assert label_map["zebra"] == 2
-        assert len(label_map) == 3
-
-    def test_repr_federated(self, mock_split_file):
+    def test_repr_federated(self, mock_split_file, mock_label_map):
         """Test string representation in federated mode."""
         dm = TinyImageNetDataModule(
             data_dir="./data",
             split_file=mock_split_file,
+            label_map=mock_label_map,
             client_idx=5,
             central=False,
             batch_size=64,
@@ -475,11 +451,12 @@ class TestBaseDataModule:
         assert "Client 5" in repr_str
         assert "batch_size=64" in repr_str
 
-    def test_repr_central(self, mock_split_file):
+    def test_repr_central(self, mock_split_file, mock_label_map):
         """Test string representation in central mode."""
         dm = TinyImageNetDataModule(
             data_dir="./data",
             split_file=mock_split_file,
+            label_map=mock_label_map,
             central=True,
             batch_size=128,
         )
@@ -496,13 +473,15 @@ class TestBaseDataModule:
 class TestFactoryFunction:
     """Test get_datamodule factory function."""
 
-    def test_create_tiny_imagenet(self, mock_split_file):
+    def test_create_tiny_imagenet(self, mock_split_file, mock_label_map):
         """Test creating TinyImageNet data module."""
         dm = get_datamodule(
             dataset_name="tiny_imagenet",
             data_dir="./data",
             split_file=mock_split_file,
+            label_map=mock_label_map,
             client_idx=0,
+            image_size=64,
             batch_size=32,
         )
 
@@ -514,7 +493,9 @@ class TestFactoryFunction:
             dataset_name="food101",
             data_dir="./data",
             split_file=mock_split_file,
+            label_map=None,
             client_idx=0,
+            image_size=128,
             batch_size=32,
         )
 
@@ -526,7 +507,9 @@ class TestFactoryFunction:
             dataset_name="ade20k",
             data_dir="./data",
             split_file=mock_split_file,
+            label_map=None,
             client_idx=0,
+            image_size=256,
             batch_size=32,
         )
 
@@ -560,7 +543,7 @@ class TestTransformPipelines:
         ])
 
         split_data = [{"image": temp_images[0], "label": "test"}]
-        dataset = ClassificationDataset(split_data, transform=transform)
+        dataset = ClassificationDataset(split_data, transform=transform, label_map={"test": 0})
 
         img_tensor, _ = dataset[0]
 
@@ -573,7 +556,7 @@ class TestTransformPipelines:
     def test_no_transform(self, temp_images):
         """Test loading without transform returns PIL Image."""
         split_data = [{"image": temp_images[0], "label": "test"}]
-        dataset = ClassificationDataset(split_data, transform=None)
+        dataset = ClassificationDataset(split_data, transform=None, label_map={"test": 0})
 
         img, _ = dataset[0]
 
@@ -586,7 +569,7 @@ class TestTransformPipelines:
 
         # Resize only
         transform1 = T.Resize((128, 128))
-        dataset1 = ClassificationDataset(split_data, transform=transform1)
+        dataset1 = ClassificationDataset(split_data, transform=transform1, label_map={"test": 0})
         img1, _ = dataset1[0]
         assert isinstance(img1, Image.Image)
         assert img1.size == (128, 128)
@@ -597,7 +580,7 @@ class TestTransformPipelines:
             T.RandomHorizontalFlip(p=0),  # p=0 for deterministic testing
             T.ToTensor(),
         ])
-        dataset2 = ClassificationDataset(split_data, transform=transform2)
+        dataset2 = ClassificationDataset(split_data, transform=transform2, label_map={"test": 0})
         img2, _ = dataset2[0]
         assert isinstance(img2, torch.Tensor)
         assert img2.shape == (3, 64, 64)
@@ -656,6 +639,7 @@ class TestErrorHandling:
         dm = TinyImageNetDataModule(
             data_dir="./data",
             split_file=str(split_file),
+            label_map={},
             central=True,
         )
 
@@ -670,6 +654,7 @@ class TestErrorHandling:
         dm = TinyImageNetDataModule(
             data_dir="./data",
             split_file="/nonexistent/splits.json",
+            label_map={},
             client_idx=0,
         )
 

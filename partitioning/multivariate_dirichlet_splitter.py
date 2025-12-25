@@ -401,7 +401,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         print(f"    Min preference - Mean: {np.mean(all_min_prefs):.4f}, Std: {np.std(all_min_prefs):.4f}")
         print(f"    Std deviation - Mean: {np.mean(all_stds):.4f}, Std: {np.std(all_stds):.4f}")
 
-    def _get_cluster_label_for_sample(self, image_path: str, criterion: str) -> Optional[str]:
+    def _get_cluster_label_for_sample(self, image_path: str, criterion: str) -> str:
         """Get the cluster label for a sample under a specific criterion.
 
         Args:
@@ -409,10 +409,19 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             criterion: The criterion to query (e.g., "color", "main_object").
 
         Returns:
-            The cluster label string for the sample under the criterion,
-            or None if not found.
+            The cluster label string for the sample under the criterion.
+
+        Raises:
+            ValueError: If cluster label not found (data mismatch between dataset and VLM annotations).
         """
-        return self.cluster_labels[criterion]["/".join(image_path.split("/")[-5:])]
+        normalized_path = "/".join(image_path.split("/")[-5:])
+        try:
+            return self.cluster_labels[criterion][normalized_path]
+        except KeyError:
+            raise ValueError(
+                f"Cluster label for image {normalized_path} under criterion '{criterion}' not found. "
+                f"This indicates a mismatch between your dataset and VLM annotations."
+            )
 
     def _compute_affinity_score(self, image_path: str, client_id: int) -> float:
         """Compute affinity score between a sample and a client.
@@ -441,14 +450,6 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         for criterion in self.CRITERIA:
             cluster_label = self._get_cluster_label_for_sample(image_path, criterion)
-
-            if cluster_label is None:
-                # If label missing, use uniform preference (1/n_labels)
-                    raise ValueError(
-                    f"Cluster label for image {image_path} under criterion {criterion} not found."
-                    )
-                # affinity += 1.0 / len(self.unique_labels[criterion])
-                # continue
 
             # Get the preference weight for this label
             label_idx = self.unique_labels[criterion].index(cluster_label)

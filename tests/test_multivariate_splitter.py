@@ -570,10 +570,13 @@ class TestSoftmaxAssignment:
 class TestConstraintSatisfaction:
     """Test min_samples_per_client constraint and retry mechanism."""
 
-    def test_min_samples_satisfied(self, mock_train_dataset, vlm_annotation_directory):
+    def test_min_samples_satisfied(self, mock_dataset_with_vlm_paths, vlm_annotation_directory):
         """All clients satisfy min_samples_per_client constraint."""
+        from tests.conftest import MockDataset
+        train_dataset = MockDataset(mock_dataset_with_vlm_paths)
+
         splitter = MultivariateDirichletSplitter(
-            train_dataset=mock_train_dataset,
+            train_dataset=train_dataset,
             val_dataset=None,
             n_clients=3,
             heterogeneity=1.0,
@@ -586,8 +589,8 @@ class TestConstraintSatisfaction:
         splitter._load_cluster_labels()
         splitter._sample_client_preferences()
 
-        sample_indices = list(range(len(mock_train_dataset)))
-        sample_paths = [mock_train_dataset[i][0] for i in sample_indices]
+        sample_indices = list(range(len(train_dataset)))
+        sample_paths = [train_dataset[i][0] for i in sample_indices]
 
         assignments = splitter._partition_with_retry(sample_indices, sample_paths)
 
@@ -616,11 +619,14 @@ class TestConstraintSatisfaction:
         assert hasattr(splitter, 'max_retries')
         assert splitter.max_retries == 10
 
-    def test_max_retries_exhaustion_raises(self, mock_train_dataset, vlm_annotation_directory):
+    def test_max_retries_exhaustion_raises(self, mock_dataset_with_vlm_paths, vlm_annotation_directory):
         """Max retries exhaustion raises ValueError."""
+        from tests.conftest import MockDataset
+        train_dataset = MockDataset(mock_dataset_with_vlm_paths)
+
         # Create impossible constraint (30 samples, 10 clients, min 10 each)
         splitter = MultivariateDirichletSplitter(
-            train_dataset=mock_train_dataset,
+            train_dataset=train_dataset,
             val_dataset=None,
             n_clients=10,
             heterogeneity=0.01,  # Very low (extreme preferences)
@@ -632,9 +638,10 @@ class TestConstraintSatisfaction:
         )
 
         splitter._load_cluster_labels()
+        splitter._sample_client_preferences()
 
-        sample_indices = list(range(len(mock_train_dataset)))
-        sample_paths = [mock_train_dataset[i][0] for i in sample_indices]
+        sample_indices = list(range(len(train_dataset)))
+        sample_paths = [train_dataset[i][0] for i in sample_indices]
 
         with pytest.raises(ValueError, match="Unable to satisfy min_samples_per_client"):
             splitter._partition_with_retry(sample_indices, sample_paths)

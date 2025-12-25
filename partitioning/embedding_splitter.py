@@ -80,8 +80,8 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         self.pooling: Optional[PoolingStrategy] = None
         self.clustering: Optional[ClusteringMethod] = None
         self.cache_manager = CacheManager(
-            cache_dir=config.cache.cache_dir,
-            enabled=config.cache.enabled,
+            cache_dir=config.cache_dir,
+            enabled=config.cache_enabled,
         )
 
         # Clustering results
@@ -149,9 +149,13 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         # Get image paths from dataset
         image_paths = [str(self.train_dataset[i][0]) for i in range(len(self.train_dataset))]
 
-        # Check cache
+        # Initialize extractor to get cache-friendly model name
+        if self.extractor is None:
+            self.extractor = self._initialize_extractor()
+
+        # Check cache using extractor's model_name (no slashes)
         cache_key_params = {
-            "model_name": f"{self.config.model.model_type}/{self.config.model.variant}",
+            "model_name": self.extractor.model_name,
             "pooling_strategy": self.config.pooling.strategy,
             **self.config.pooling.params,
         }
@@ -247,7 +251,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             f"client_{i}": [] for i in range(self.n_clients)
         }
 
-        strategy = self.config.assignment.strategy
+        strategy = self.config.assignment_strategy
 
         if strategy == "round_robin":
             # Distribute clusters round-robin
@@ -282,7 +286,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
 
         # Handle noise samples
         if len(noise_indices) > 0:
-            handle_noise = self.config.assignment.handle_noise
+            handle_noise = self.config.handle_noise
 
             if handle_noise == "distribute":
                 # Distribute noise round-robin

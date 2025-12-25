@@ -7,115 +7,18 @@ apply transforms, and create dataloaders for FL training.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 import json
 import pickle
 
 import torch
 from torch.utils.data import Dataset, DataLoader
-from PIL import Image
 import torchvision.transforms as T
 
-
-class FederatedDataset(Dataset):
-    """
-    PyTorch Dataset wrapper for federated learning splits.
-
-    Loads images from paths and applies transforms.
-    """
-
-    def __init__(
-        self,
-        data_samples: List[Dict[str, Any]],
-        label_map: Dict[str, int],
-        transform: Optional[T.Compose] = None,
-    ):
-        """
-        Args:
-            data_samples: List of {"image": path, "label": label_str} dicts
-            label_map: Mapping from label string to integer index
-            transform: Torchvision transforms to apply
-        """
-        self.data_samples = data_samples
-        self.label_map = label_map
-        self.transform = transform
-
-    def __len__(self) -> int:
-        return len(self.data_samples)
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Load and transform image.
-
-        Returns:
-            (image_tensor, label_tensor)
-        """
-        sample = self.data_samples[idx]
-        img_path = sample["image"]
-        label_str = sample["label"]
-
-        # Load image
-        img = Image.open(img_path).convert("RGB")
-
-        # Apply transforms
-        if self.transform is not None:
-            img = self.transform(img)
-
-        # Convert label to integer
-        label = self.label_map[label_str]
-
-        return img, torch.tensor(label, dtype=torch.long)
-
-
-class SegmentationDataset(Dataset):
-    """
-    PyTorch Dataset for semantic segmentation tasks.
-
-    Loads image-mask pairs and applies synchronized transforms.
-    """
-
-    def __init__(
-        self,
-        data_samples: List[Dict[str, Any]],
-        transform: Optional[T.Compose] = None,
-        mask_transform: Optional[T.Compose] = None,
-    ):
-        """
-        Args:
-            data_samples: List of {"image": img_path, "label": mask_path} dicts
-            transform: Transforms for images
-            mask_transform: Transforms for masks
-        """
-        self.data_samples = data_samples
-        self.transform = transform
-        self.mask_transform = mask_transform
-
-    def __len__(self) -> int:
-        return len(self.data_samples)
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Load and transform image-mask pair.
-
-        Returns:
-            (image_tensor, mask_tensor)
-        """
-        sample = self.data_samples[idx]
-        img_path = sample["image"]
-        mask_path = sample["label"]  # For segmentation, label is mask path
-
-        # Load image and mask
-        img = Image.open(img_path).convert("RGB")
-        mask = Image.open(mask_path)
-
-        # Apply transforms
-        if self.transform is not None:
-            img = self.transform(img)
-
-        if self.mask_transform is not None:
-            mask = self.mask_transform(mask)
-
-        return img, mask
+from data_loading.dataset import (
+    ClassificationDataset,
+    SegmentationDataset,
+)
 
 
 class BaseDataModule(ABC):
@@ -129,7 +32,9 @@ class BaseDataModule(ABC):
         self,
         data_dir: str,
         split_file: str,
+        label_map: Optional[Dict[str, int]] = None,
         client_idx: Optional[int] = None,
+        image_size: Optional[int] = None,
         central: bool = False,
         batch_size: int = 32,
         num_workers: int = 4,
@@ -147,7 +52,9 @@ class BaseDataModule(ABC):
         """
         self.data_dir = Path(data_dir)
         self.split_file = split_file
+        self.label_map = label_map
         self.client_idx = client_idx
+        self.image_size = image_size
         self.central = central
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -156,7 +63,6 @@ class BaseDataModule(ABC):
         # Will be set by subclasses
         self.train_dataset: Optional[Dataset] = None
         self.val_dataset: Optional[Dataset] = None
-        self.label_map: Optional[Dict[str, int]] = None
 
         # Dataloaders
         self._train_dataloader: Optional[DataLoader] = None
@@ -221,19 +127,6 @@ class BaseDataModule(ABC):
 
             return train_data, val_data
 
-    def create_label_map(self, train_data: List[Dict]) -> Dict[str, int]:
-        """
-        Create mapping from string labels to integer indices.
-
-        Args:
-            train_data: Training data samples
-
-        Returns:
-            Dictionary mapping label string to integer index
-        """
-        unique_labels = sorted(set(sample["label"] for sample in train_data))
-        return {label: idx for idx, label in enumerate(unique_labels)}
-
     @abstractmethod
     def get_train_transform(self) -> T.Compose:
         """Return training transforms (with augmentation)."""
@@ -244,34 +137,10 @@ class BaseDataModule(ABC):
         """Return validation transforms (no augmentation)."""
         pass
 
+    @abstractmethod
     def setup(self):
         """Load data and create datasets."""
-        # Load splits
-        splits = self.load_splits()
-
-        # Get client-specific data
-        train_data, val_data = self.get_client_data(splits)
-
-        # Create label map
-        self.label_map = self.create_label_map(train_data)
-
-        # Get transforms
-        train_transform = self.get_train_transform()
-        val_transform = self.get_val_transform()
-
-        # Create datasets
-        self.train_dataset = FederatedDataset(
-            data_samples=train_data,
-            label_map=self.label_map,
-            transform=train_transform,
-        )
-
-        if val_data:
-            self.val_dataset = FederatedDataset(
-                data_samples=val_data,
-                label_map=self.label_map,
-                transform=val_transform,
-            )
+        pass
 
     @property
     def train_dataloader(self) -> DataLoader:
@@ -327,11 +196,6 @@ class BaseDataModule(ABC):
 
 
 class TinyImageNetDataModule(BaseDataModule):
-    """
-    Data module for Tiny ImageNet dataset.
-
-    Tiny ImageNet: 64x64 RGB images, 200 classes
-    """
 
     def get_train_transform(self) -> T.Compose:
         """Training transforms with augmentation."""
@@ -355,6 +219,27 @@ class TinyImageNetDataModule(BaseDataModule):
                 std=[0.229, 0.224, 0.225],
             ),
         ])
+    
+    def setup(self):
+        """Load data and create datasets."""
+        splits = self.load_splits()
+        train_data, val_data = self.get_client_data(splits)
+        train_transform = self.get_train_transform()
+        val_transform = self.get_val_transform()
+
+        # Create datasets
+        self.train_dataset = ClassificationDataset(
+            split_data=train_data,
+            label_map=self.label_map,
+            transform=train_transform,
+        )
+
+        if val_data:
+            self.val_dataset = ClassificationDataset(
+                split_data=val_data,
+                label_map=self.label_map,
+                transform=val_transform,
+            )
 
 
 class Food101DataModule(BaseDataModule):
@@ -391,6 +276,28 @@ class Food101DataModule(BaseDataModule):
                 std=[0.229, 0.224, 0.225],
             ),
         ])
+    
+    def setup(self):
+        """Load data and create datasets."""
+
+        splits = self.load_splits()
+        train_data, val_data = self.get_client_data(splits)
+        train_transform = self.get_train_transform()
+        val_transform = self.get_val_transform()
+
+        # Create datasets
+        self.train_dataset = ClassificationDataset(
+            split_data=train_data,
+            label_map=self.label_map,
+            transform=train_transform,
+        )
+
+        if val_data:
+            self.val_dataset = ClassificationDataset(
+                split_data=val_data,
+                label_map=self.label_map,
+                transform=val_transform,
+            )
 
 
 class ADE20KDataModule(BaseDataModule):
@@ -401,54 +308,27 @@ class ADE20KDataModule(BaseDataModule):
     150 semantic classes
     """
 
-    def __init__(
-        self,
-        data_dir: str,
-        split_file: str,
-        client_idx: Optional[int] = None,
-        central: bool = False,
-        batch_size: int = 16,  # Lower default for segmentation
-        num_workers: int = 4,
-        seed: int = 42,
-        image_size: int = 512,  # Standard size for ADE20K
-    ):
-        """
-        Args:
-            image_size: Size to resize images and masks to
-        """
-        super().__init__(data_dir, split_file, client_idx, central, batch_size, num_workers, seed)
-        self.image_size = image_size
-
     def setup(self):
         """Load data and create segmentation datasets."""
-        # Load splits
+
         splits = self.load_splits()
-
-        # Get client-specific data
         train_data, val_data = self.get_client_data(splits)
-
-        # Get transforms
         train_transform = self.get_train_transform()
         val_transform = self.get_val_transform()
-
-        # Get mask transforms (no normalization for masks)
         mask_transform = self.get_mask_transform()
 
-        # Create segmentation datasets
         self.train_dataset = SegmentationDataset(
-            data_samples=train_data,
+            split_data=train_data,
             transform=train_transform,
             mask_transform=mask_transform,
         )
 
         if val_data:
             self.val_dataset = SegmentationDataset(
-                data_samples=val_data,
+                split_data=val_data,
                 transform=val_transform,
                 mask_transform=mask_transform,
             )
-
-        # Note: No label_map needed for segmentation
 
     def get_train_transform(self) -> T.Compose:
         """Training transforms for images."""
@@ -491,7 +371,9 @@ def get_datamodule(
     dataset_name: str,
     data_dir: str,
     split_file: str,
+    label_map: Optional[Dict[str, int]] = None,
     client_idx: Optional[int] = None,
+    image_size: Optional[int] = None,
     central: bool = False,
     batch_size: int = 32,
     num_workers: int = 4,
@@ -543,7 +425,9 @@ def get_datamodule(
     return DataModuleClass(
         data_dir=data_dir,
         split_file=split_file,
+        label_map=label_map,
         client_idx=client_idx,
+        image_size=image_size,
         central=central,
         batch_size=batch_size,
         num_workers=num_workers,

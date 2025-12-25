@@ -1,6 +1,7 @@
 import os
 import json
 from torch.utils.data import Dataset
+import torch
 from typing import Callable, List, Tuple, Dict, Any
 from torch.utils.data import Dataset
 from pathlib import Path
@@ -64,48 +65,27 @@ class ImageDataset(Dataset):
             return None
 
 class ClassificationDataset(Dataset):
-    """Image classification dataset for federated learning.
-
-    Loads image-label pairs from split data and applies transforms. Designed
-    for use with data produced by partitioning splitters.
-
-    Args:
-        split_data: List of dicts with 'image' (path) and 'label' (class) keys
-        transform: Optional torchvision transform pipeline
-
-    Returns:
-        Tuple of (image_tensor, label) where label is the raw label value
-
-    Examples:
-        >>> from torchvision import transforms as T
-        >>> transform = T.Compose([T.Resize(224), T.ToTensor()])
-        >>> dataset = ClassificationDataset(
-        ...     split_data=[
-        ...         {"image": "img1.jpg", "label": "cat"},
-        ...         {"image": "img2.jpg", "label": "dog"}
-        ...     ],
-        ...     transform=transform
-        ... )
-        >>> image, label = dataset[0]
-
-    Notes:
-        - Labels are returned as-is (not converted to integers)
-        - Use with label_map for integer conversion in training loops
-        - Images are converted to RGB
-    """
-    def __init__(self, split_data: List[Dict[str, Any]], transform=None):
+    def __init__(
+            self, 
+            split_data: List[Dict[str, Any]],
+            label_map: Dict[str, int]|None = None,
+            transform=None):
         self.samples = split_data
+        self.label_map = label_map
         self.transform = transform
+    
+    def __len__(self):
+        return len(self.samples)
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
         image = Image.open(sample["image"]).convert("RGB")
-        label = sample["label"]
+        label = self.label_map[sample["label"]] if self.label_map else sample["label"]
 
         if self.transform:
             image = self.transform(image)
 
-        return image, label
+        return image, torch.tensor(label, dtype=torch.long)
 
 
 class SegmentationDataset(Dataset):
@@ -136,9 +116,13 @@ class SegmentationDataset(Dataset):
         - Masks should use nearest-neighbor interpolation for resizing
         - Images are converted to RGB, masks loaded as-is
     """
-    def __init__(self, split_data: List[Dict[str, Any]], transform=None):
+    def __init__(self, split_data: List[Dict[str, Any]], transform=None, mask_transform=None):
         self.samples = split_data  # [{"image": img_path, "label": mask_path}, ...]
         self.transform = transform
+        self.mask_transform = mask_transform
+    
+    def __len__(self):
+        return len(self.samples)
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
@@ -146,7 +130,9 @@ class SegmentationDataset(Dataset):
         mask = Image.open(sample["mask_path"])
 
         if self.transform:
-            image, mask = self.transform(image, mask)
+            image = self.transform(image)
+        if self.mask_transform:
+            mask = self.mask_transform(mask)
 
         return image, mask
 

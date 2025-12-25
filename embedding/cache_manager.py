@@ -385,7 +385,7 @@ class CacheManager:
             
             # 1. Dataset Mode OR Dictionary of Path->Embedding provided
             if (dataset_name is not None) or (isinstance(embeddings, dict) and all(isinstance(k, str) for k in embeddings.keys())):
-                
+
                 # If it's a list/array, we align it with rel_paths
                 if not isinstance(embeddings, dict):
                     if len(embeddings) != len(rel_paths):
@@ -394,8 +394,12 @@ class CacheManager:
                     # Create pairs
                     path_emb_pairs = zip(rel_paths, embeddings)
                 else:
-                    # It's already a dict, assuming keys are compatible (metrics.py usually passes arrays, only specialized extractors pass dicts)
-                    path_emb_pairs = embeddings.items()
+                    # It's already a dict with string keys as paths
+                    # Convert dict keys to relative paths for consistent storage
+                    orig_paths = list(embeddings.keys())
+                    rel_paths_for_dict = self._to_relative(orig_paths, base_path)
+                    # Create pairs with relative paths
+                    path_emb_pairs = [(rel_p, embeddings[orig_p]) for rel_p, orig_p in zip(rel_paths_for_dict, orig_paths)]
 
                 # Sort by path for deterministic storage
                 sorted_pairs = sorted(path_emb_pairs, key=lambda x: x[0])

@@ -61,7 +61,7 @@ class TestEmbeddingSplitterInitialization:
         )
 
         assert isinstance(splitter.cache_manager, CacheManager)
-        assert splitter.cache_manager.enabled == default_embedding_config.cache.enabled
+        assert splitter.cache_manager.enabled == default_embedding_config.cache_enabled
 
     def test_config_validation(self, mock_train_dataset):
         """Config object is properly stored and accessible."""
@@ -128,7 +128,7 @@ class TestModelInitialization:
         """Initialize CLIP extractor."""
         config = get_preset_config("default", n_clients=5)
         config.model.model_type = "clip"
-        config.model.variant = "vit-b-32"
+        config.model.variant = "base-patch32"
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,
@@ -149,7 +149,7 @@ class TestModelInitialization:
         """Initialize SigLIP extractor."""
         config = get_preset_config("default", n_clients=5)
         config.model.model_type = "siglip"
-        config.model.variant = "so400m"
+        config.model.variant = "base-patch16-224"
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,
@@ -195,8 +195,8 @@ class TestEmbeddingExtraction:
     def test_extract_embeddings_cache_miss(self, mock_train_dataset, default_embedding_config, tmp_cache_dir):
         """Extract embeddings when cache misses."""
         config = default_embedding_config
-        config.cache.cache_dir = str(tmp_cache_dir)
-        config.cache.enabled = True
+        config.cache_dir = str(tmp_cache_dir)
+        config.cache_enabled = True
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,
@@ -210,6 +210,7 @@ class TestEmbeddingExtraction:
 
         # Mock extractor
         mock_extractor = Mock()
+        mock_extractor.model_name = "dinov2-small"
         mock_embeddings = np.random.randn(len(mock_train_dataset), 768).astype(np.float32)
         mock_extractor.extract_embeddings.return_value = mock_embeddings
 
@@ -229,8 +230,8 @@ class TestEmbeddingExtraction:
     def test_extract_embeddings_cache_hit(self, mock_train_dataset, default_embedding_config, tmp_cache_dir):
         """Extract embeddings when cache hits (no extractor call)."""
         config = default_embedding_config
-        config.cache.cache_dir = str(tmp_cache_dir)
-        config.cache.enabled = True
+        config.cache_dir = str(tmp_cache_dir)
+        config.cache_enabled = True
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,
@@ -246,8 +247,9 @@ class TestEmbeddingExtraction:
         image_paths = [mock_train_dataset[i][0] for i in range(len(mock_train_dataset))]
         cached_embeddings = np.random.randn(len(mock_train_dataset), 768).astype(np.float32)
 
+        # Use cache-friendly model name (no slashes)
         cache_key_params = {
-            "model_name": f"{config.model.model_type}/{config.model.variant}",
+            "model_name": f"{config.model.model_type}-{config.model.variant}",
             "pooling_strategy": config.pooling.strategy,
             **config.pooling.params
         }
@@ -261,6 +263,7 @@ class TestEmbeddingExtraction:
         # Mock extractor (should NOT be called)
         mock_extractor = Mock()
         splitter.extractor = mock_extractor
+        mock_extractor.model_name = "dinov2-small"
 
         # Extract (should hit cache)
         embeddings = splitter._extract_embeddings()
@@ -283,6 +286,7 @@ class TestEmbeddingExtraction:
 
         # Mock extractor returning 3D embeddings
         mock_extractor = Mock()
+        mock_extractor.model_name = "dinov2-small"
         raw_embeddings_3d = np.random.randn(len(mock_train_dataset), 197, 768).astype(np.float32)
         mock_extractor.extract_embeddings.return_value = raw_embeddings_3d
 
@@ -291,8 +295,12 @@ class TestEmbeddingExtraction:
         pooled_embeddings_2d = np.random.randn(len(mock_train_dataset), 768).astype(np.float32)
         mock_pooling.pool.return_value = pooled_embeddings_2d
 
+        mock_cache_manager = Mock()
+        mock_cache_manager.get.return_value = None
+
         splitter.extractor = mock_extractor
         splitter.pooling = mock_pooling
+        splitter.cache_manager = mock_cache_manager
 
         # Extract
         embeddings = splitter._extract_embeddings()
@@ -379,15 +387,15 @@ class TestClusteringMethods:
 
         clustering = splitter._initialize_clustering()
 
-        from partitioning.embedding_utils.clustering_methods import KMeansClustering
-        assert isinstance(clustering, KMeansClustering)
+        from partitioning.embedding_utils.clustering_methods import KMeansMethod
+        assert isinstance(clustering, KMeansMethod)
 
     def test_clustering_produces_labels(self, clusterable_embeddings):
         """Clustering produces integer labels for each sample."""
         embeddings, true_labels = clusterable_embeddings
 
-        from partitioning.embedding_utils.clustering_methods import KMeansClustering
-        clustering = KMeansClustering(n_clusters=3, random_state=42)
+        from partitioning.embedding_utils.clustering_methods import KMeansMethod
+        clustering = KMeansMethod(n_clusters=3, random_state=42)
 
         cluster_labels = clustering.cluster(embeddings)
 
@@ -437,13 +445,82 @@ class TestClusteringMethods:
         """HDBSCAN can produce noise labels (-1)."""
         embeddings, _ = clusterable_embeddings
 
-        from partitioning.embedding_utils.clustering_methods import HDBSCANClustering
-        clustering = HDBSCANClustering(min_cluster_size=50)  # High threshold → noise
+        from partitioning.embedding_utils.clustering_methods import HDBSCANMethod
+        clustering = HDBSCANMethod(min_cluster_size=50)  # High threshold → noise
 
         cluster_labels = clustering.cluster(embeddings)
 
         # May contain -1 (noise) labels
-        assert -1 in cluster_labels or -1 not in cluster_labels  # Either is valid
+        # Just verify labels are returned (whether -1 exists or not)
+        assert len(cluster_labels) == len(embeddings)
+
+    def test_initialize_spectral_clustering(self, mock_train_dataset):
+        """Initialize Spectral clustering method."""
+        config = get_preset_config("default", n_clients=5)
+        config.clustering.method = "spectral"
+        config.clustering.params = {"n_clusters": 5, "affinity": "rbf"}
+
+        splitter = EmbeddingSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=5,
+            heterogeneity=0.5,
+            config=config,
+            valset_type="none",
+            seed=42
+        )
+
+        clustering = splitter._initialize_clustering()
+
+        from partitioning.embedding_utils.clustering_methods import SpectralMethod
+        assert isinstance(clustering, SpectralMethod)
+
+    def test_spectral_clustering_produces_labels(self, clusterable_embeddings):
+        """Spectral clustering produces cluster labels."""
+        embeddings, _ = clusterable_embeddings
+
+        from partitioning.embedding_utils.clustering_methods import SpectralMethod
+        clustering = SpectralMethod(n_clusters=3, affinity="rbf", random_state=42)
+
+        cluster_labels = clustering.cluster(embeddings)
+
+        assert len(cluster_labels) == len(embeddings)
+        assert cluster_labels.dtype in [np.int32, np.int64]
+        assert len(np.unique(cluster_labels)) == 3  # Should find 3 clusters
+
+    def test_initialize_knn_graph_clustering(self, mock_train_dataset):
+        """Initialize KNN graph clustering method."""
+        config = get_preset_config("default", n_clients=5)
+        config.clustering.method = "knn"
+        config.clustering.params = {"n_neighbors": 5}
+
+        splitter = EmbeddingSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=5,
+            heterogeneity=0.5,
+            config=config,
+            valset_type="none",
+            seed=42
+        )
+
+        clustering = splitter._initialize_clustering()
+
+        from partitioning.embedding_utils.clustering_methods import KNNGraphMethod
+        assert isinstance(clustering, KNNGraphMethod)
+
+    def test_knn_graph_clustering_produces_labels(self, clusterable_embeddings):
+        """KNN graph clustering produces cluster labels."""
+        embeddings, _ = clusterable_embeddings
+
+        from partitioning.embedding_utils.clustering_methods import KNNGraphMethod
+        clustering = KNNGraphMethod(n_neighbors=5)
+
+        cluster_labels = clustering.cluster(embeddings)
+
+        assert len(cluster_labels) == len(embeddings)
+        assert cluster_labels.dtype in [np.int32, np.int64]
+        assert len(np.unique(cluster_labels)) >= 1  # At least one cluster
 
 
 # ============================================================================
@@ -456,7 +533,7 @@ class TestClusterAssignment:
     def test_round_robin_strategy(self, mock_train_dataset, default_embedding_config):
         """Round-robin assignment distributes clusters evenly."""
         config = default_embedding_config
-        config.assignment.strategy = "round_robin"
+        config.assignment_strategy = "round_robin"
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,
@@ -485,7 +562,7 @@ class TestClusterAssignment:
     def test_size_balanced_strategy(self, mock_train_dataset, default_embedding_config):
         """Size-balanced assignment balances client sizes."""
         config = default_embedding_config
-        config.assignment.strategy = "size_balanced"
+        config.assignment_strategy = "size_balanced"
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,
@@ -510,7 +587,7 @@ class TestClusterAssignment:
     def test_random_strategy_with_seed(self, mock_train_dataset, default_embedding_config):
         """Random assignment is reproducible with seed."""
         config = default_embedding_config
-        config.assignment.strategy = "random"
+        config.assignment_strategy = "random"
 
         cluster_labels = np.array([0] * 10 + [1] * 10 + [2] * 10)
 
@@ -547,7 +624,7 @@ class TestClusterAssignment:
     def test_noise_distribution(self, mock_train_dataset, default_embedding_config):
         """Noise samples distributed according to handle_noise config."""
         config = default_embedding_config
-        config.assignment.handle_noise = "distribute"
+        config.handle_noise = "distribute"
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,
@@ -604,8 +681,8 @@ class TestEndToEnd:
     def test_full_pipeline_with_mocked_extractor(self, mock_train_dataset, default_embedding_config, tmp_cache_dir):
         """Full pipeline with mocked extractor for speed."""
         config = default_embedding_config
-        config.cache.cache_dir = str(tmp_cache_dir)
-        config.cache.enabled = False  # Disable cache for this test
+        config.cache_dir = str(tmp_cache_dir)
+        config.cache_enabled = False  # Disable cache for this test
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,
@@ -638,8 +715,8 @@ class TestEndToEnd:
     def test_reproducibility_with_seed(self, mock_train_dataset, default_embedding_config, tmp_cache_dir):
         """Same seed produces identical splits."""
         config = default_embedding_config
-        config.cache.cache_dir = str(tmp_cache_dir)
-        config.cache.enabled = False
+        config.cache_dir = str(tmp_cache_dir)
+        config.cache_enabled = False
 
         mock_embeddings = np.random.randn(len(mock_train_dataset), 768).astype(np.float32)
 
@@ -681,8 +758,8 @@ class TestEndToEnd:
     def test_validation_set_modes(self, mock_train_dataset, mock_val_dataset, default_embedding_config, tmp_cache_dir):
         """Test global, local, and none validation modes."""
         config = default_embedding_config
-        config.cache.cache_dir = str(tmp_cache_dir)
-        config.cache.enabled = False
+        config.cache_dir = str(tmp_cache_dir)
+        config.cache_enabled = False
 
         mock_embeddings = np.random.randn(len(mock_train_dataset), 768).astype(np.float32)
 
@@ -734,8 +811,8 @@ class TestClusterMetadata:
     def test_save_cluster_metadata(self, mock_train_dataset, default_embedding_config, tmp_path, tmp_cache_dir):
         """Save cluster metadata to JSON file."""
         config = default_embedding_config
-        config.cache.cache_dir = str(tmp_cache_dir)
-        config.cache.enabled = False
+        config.cache_dir = str(tmp_cache_dir)
+        config.cache_enabled = False
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,
@@ -767,8 +844,8 @@ class TestClusterMetadata:
     def test_save_embeddings(self, mock_train_dataset, default_embedding_config, tmp_path, tmp_cache_dir):
         """Save embeddings to NPZ file."""
         config = default_embedding_config
-        config.cache.cache_dir = str(tmp_cache_dir)
-        config.cache.enabled = False
+        config.cache_dir = str(tmp_cache_dir)
+        config.cache_enabled = False
 
         splitter = EmbeddingSplitter(
             train_dataset=mock_train_dataset,

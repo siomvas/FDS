@@ -6,7 +6,7 @@ from frontier foundation models (DINO, CLIP, SigLIP) combined with clustering
 algorithms (HDBSCAN, K-means, etc.).
 """
 
-from ...embedding.embedding_extractors import (
+from embedding.embedding_extractors import (
     EmbeddingExtractor,
     DINOv2Extractor,
     CLIPExtractor,
@@ -29,16 +29,15 @@ from .clustering_methods import (
     SpectralMethod,
     get_clustering_method,
 )
-from ..embedding_splitter import EmbeddingSplitter
-from ...embedding.cache_manager import CacheManager
+
+from embedding.cache_manager import CacheManager
 from .config import (
     EmbeddingConfig,
     ModelConfig,
     PoolingConfig,
     ClusteringConfig,
-    CacheConfig,
-    AssignmentConfig,
     get_preset_config,
+    create_custom_config
 )
 from .pooling_strategies import get_pooling_strategy
 from .clustering_methods import get_clustering_method
@@ -66,15 +65,12 @@ __all__ = [
     "KNNGraphMethod",
     "SpectralMethod",
     "get_clustering_method",
-    # Main classes
-    "EmbeddingSplitter",
     "CacheManager",
     # Configuration
     "EmbeddingConfig",
     "ModelConfig",
     "PoolingConfig",
     "ClusteringConfig",
-    "CacheConfig",
-    "AssignmentConfig",
     "get_preset_config",
+    "create_custom_config",
 ]

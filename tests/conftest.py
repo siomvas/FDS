@@ -232,54 +232,70 @@ def sample_vlm_annotations_color():
 def sample_vlm_annotations_all_criteria():
     """Sample VLM annotations for all 5 criteria.
 
+    Creates annotations for 30 samples (3 classes × 10 samples) to match mock_dataset_with_vlm_paths.
+
     Returns:
         Dict mapping criterion name to list of annotation dicts.
     """
-    base_images = [
-        "/users/user1/FDS/tiny-imagenet-200/train/n01/images/img_0.JPEG",
-        "/users/user1/FDS/tiny-imagenet-200/train/n01/images/img_1.JPEG",
-        "/users/user1/FDS/tiny-imagenet-200/train/n01/images/img_2.JPEG",
-        "/users/user1/FDS/tiny-imagenet-200/train/n02/images/img_3.JPEG",
-        "/users/user1/FDS/tiny-imagenet-200/train/n02/images/img_4.JPEG",
-    ]
+    # Generate 30 image paths matching mock_dataset_with_vlm_paths
+    # Each class has img_0 through img_9 (per-class numbering)
+    base_images = []
+    for class_id in range(3):
+        for sample_id in range(10):
+            base_images.append(
+                f"/users/user1/FDS/tiny-imagenet-200/train/n{class_id:02d}/images/img_{sample_id}.JPEG"
+            )
+
+    # Define label cycles for variety
+    color_labels = ["warm_colors", "cool_colors", "monochrome"]
+    main_object_labels = ["animal", "vehicle", "building", "person"]
+    size_labels = ["close_up", "wide_angle", "medium_shot"]
+    location_labels = ["outdoor", "urban", "natural", "indoor"]
+    time_labels = ["day", "night", "dusk"]
 
     return {
         "color": [
-            {"image": base_images[0], "class": "warm_colors"},
-            {"image": base_images[1], "class": "cool_colors"},
-            {"image": base_images[2], "class": "warm_colors"},
-            {"image": base_images[3], "class": "monochrome"},
-            {"image": base_images[4], "class": "cool_colors"},
+            {"image": img, "class": color_labels[i % len(color_labels)]}
+            for i, img in enumerate(base_images)
         ],
         "main_object": [
-            {"image": base_images[0], "class": "animal"},
-            {"image": base_images[1], "class": "vehicle"},
-            {"image": base_images[2], "class": "animal"},
-            {"image": base_images[3], "class": "building"},
-            {"image": base_images[4], "class": "person"},
+            {"image": img, "class": main_object_labels[i % len(main_object_labels)]}
+            for i, img in enumerate(base_images)
         ],
         "size": [
-            {"image": base_images[0], "class": "close_up"},
-            {"image": base_images[1], "class": "wide_angle"},
-            {"image": base_images[2], "class": "medium_shot"},
-            {"image": base_images[3], "class": "wide_angle"},
-            {"image": base_images[4], "class": "close_up"},
+            {"image": img, "class": size_labels[i % len(size_labels)]}
+            for i, img in enumerate(base_images)
         ],
         "location": [
-            {"image": base_images[0], "class": "outdoor"},
-            {"image": base_images[1], "class": "urban"},
-            {"image": base_images[2], "class": "natural"},
-            {"image": base_images[3], "class": "indoor"},
-            {"image": base_images[4], "class": "outdoor"},
+            {"image": img, "class": location_labels[i % len(location_labels)]}
+            for i, img in enumerate(base_images)
         ],
         "time": [
-            {"image": base_images[0], "class": "day"},
-            {"image": base_images[1], "class": "night"},
-            {"image": base_images[2], "class": "day"},
-            {"image": base_images[3], "class": "day"},
-            {"image": base_images[4], "class": "dusk"},
+            {"image": img, "class": time_labels[i % len(time_labels)]}
+            for i, img in enumerate(base_images)
         ],
     }
+
+
+@pytest.fixture
+def mock_dataset_with_vlm_paths():
+    """Mock dataset matching the VLM annotation paths.
+
+    This dataset has 30 samples (like mock_train_dataset) with paths that match
+    sample_vlm_annotations_all_criteria so multivariate splitter tests can use both.
+    Each class has img_0 through img_9 (per-class numbering).
+
+    Returns:
+        List of dicts with 'image' (path) and 'label' (string) keys.
+    """
+    dataset = []
+    for class_id in range(3):
+        for sample_id in range(10):
+            dataset.append({
+                "image": f"/users/user1/FDS/tiny-imagenet-200/train/n{class_id:02d}/images/img_{sample_id}.JPEG",
+                "label": f"n{class_id:02d}"
+            })
+    return dataset
 
 
 @pytest.fixture

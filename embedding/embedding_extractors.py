@@ -174,7 +174,7 @@ class ModelRegistry:
 
         List available models:
 
-        >>> available = list(ModelRegistry._REGISTRY.keys())
+        >>> available = ModelRegistry.list_models()
         >>> print(available)
         ['inception_v3', 'dinov2', 'clip', 'siglip', ...]
     """
@@ -250,6 +250,20 @@ class ModelRegistry:
              raise ValueError(f"Unknown model family '{family}'. Available: {list(cls._REGISTRY.keys())}")
 
         return cls._REGISTRY[family](variant=variant, **kwargs)
+    
+    @classmethod
+    def list_models(cls) -> List[str]:
+        """List all registered model families.
+
+        Returns:
+            List of registered model family names.
+
+        Examples:
+            >>> models = ModelRegistry.list_models()
+            >>> print(models)
+            ['inception_v3', 'dinov2', 'clip', 'siglip', ...]
+        """
+        return list(cls._REGISTRY.keys())
 
 
 def collate_fn(batch: List[Optional[torch.Tensor]]) -> Optional[torch.Tensor]:
@@ -333,7 +347,7 @@ class EmbeddingExtractor(ABC):
         device: Optional[Union[str, torch.device]] = None,
         batch_size: int = 64,
         num_workers: int = 4,
-        proxy: Optional[str] = None,
+        proxy: Optional[str] ='http://proxy.example.org:3128',
         model_dir: Optional[str] = None,
         cache_manager: Optional[CacheManager] = None,
     ):
@@ -636,13 +650,14 @@ class MAEExtractor(EmbeddingExtractor):
     def __init__(self, variant: str = "base", **kwargs):
         if variant not in self.VARIANTS:
             raise ValueError(f"Unknown MAE variant '{variant}'. Options: {list(self.VARIANTS.keys())}")
-        super().__init__(self.VARIANTS[variant], **kwargs)
+        super().__init__(f"mae-{variant}", **kwargs)
         self.variant = variant
+        self.hf_model_path = self.VARIANTS[variant]
 
     def load_model(self) -> None:
         print(f"Loading MAE {self.variant}...")
-        self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.model_name)
-        self.model = self._download_model_with_proxy(ViTMAEModel.from_pretrained, self.model_name)
+        self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.hf_model_path)
+        self.model = self._download_model_with_proxy(ViTMAEModel.from_pretrained, self.hf_model_path)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()
@@ -653,12 +668,15 @@ class MAEExtractor(EmbeddingExtractor):
 class DINOv2Extractor(EmbeddingExtractor):
     VARIANTS = {"small": "facebook/dinov2-small", "base": "facebook/dinov2-base", "large": "facebook/dinov2-large", "giant": "facebook/dinov2-giant"}
     def __init__(self, variant: str = "base", **kwargs):
-        super().__init__(self.VARIANTS.get(variant, "facebook/dinov2-base"), **kwargs)
+        if variant not in self.VARIANTS:
+            raise ValueError(f"Unknown DINOv2 variant '{variant}'. Options: {list(self.VARIANTS.keys())}")
+        super().__init__(f"dinov2-{variant}", **kwargs)
         self.variant = variant
+        self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
         print(f"Loading DINOv2 {self.variant}...")
-        self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.model_name)
-        self.model = self._download_model_with_proxy(AutoModel.from_pretrained, self.model_name)
+        self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.hf_model_path)
+        self.model = self._download_model_with_proxy(AutoModel.from_pretrained, self.hf_model_path)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()
@@ -674,12 +692,15 @@ class CLIPExtractor(EmbeddingExtractor):
     }
 
     def __init__(self, variant: str = "base-patch16", **kwargs):
-        super().__init__(self.VARIANTS.get(variant, "openai/clip-vit-base-patch16"), **kwargs)
+        if variant not in self.VARIANTS:
+            raise ValueError(f"Unknown CLIP variant '{variant}'. Options: {list(self.VARIANTS.keys())}")
+        super().__init__(f"clip-{variant}", **kwargs)
         self.variant = variant
+        self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
         print(f"Loading CLIP {self.variant}...")
-        self.processor = self._download_model_with_proxy(CLIPImageProcessor.from_pretrained, self.model_name)
-        self.model = self._download_model_with_proxy(CLIPVisionModel.from_pretrained, self.model_name)
+        self.processor = self._download_model_with_proxy(CLIPImageProcessor.from_pretrained, self.hf_model_path)
+        self.model = self._download_model_with_proxy(CLIPVisionModel.from_pretrained, self.hf_model_path)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()
@@ -696,12 +717,15 @@ class SigLIPExtractor(EmbeddingExtractor):
     }
 
     def __init__(self, variant: str = "base-patch16-224", **kwargs):
-        super().__init__(self.VARIANTS.get(variant, "google/siglip-base-patch16-224"), **kwargs)
+        if variant not in self.VARIANTS:
+            raise ValueError(f"Unknown SigLIP variant '{variant}'. Options: {list(self.VARIANTS.keys())}")
+        super().__init__(f"siglip-{variant}", **kwargs)
         self.variant = variant
+        self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
         print(f"Loading SigLIP {self.variant}...")
-        self.processor = self._download_model_with_proxy(SiglipImageProcessor.from_pretrained, self.model_name)
-        self.model = self._download_model_with_proxy(SiglipVisionModel.from_pretrained, self.model_name)
+        self.processor = self._download_model_with_proxy(SiglipImageProcessor.from_pretrained, self.hf_model_path)
+        self.model = self._download_model_with_proxy(SiglipVisionModel.from_pretrained, self.hf_model_path)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()

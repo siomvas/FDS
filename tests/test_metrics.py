@@ -2,8 +2,8 @@
 Unit tests for evaluation metrics.
 
 Updated to match current metrics in evaluation/metrics.py
-Run with: pytest metric_tests.py -v
-Run without slow tests: pytest metric_tests.py -v -m "not slow"
+Run with: pytest test_metrics.py -v
+Run without slow tests: pytest test_metrics.py -v -m "not slow"
 """
 
 import pytest
