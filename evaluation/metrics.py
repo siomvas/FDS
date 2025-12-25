@@ -4,13 +4,15 @@ import torch
 import scipy
 from scipy import stats
 from scipy.spatial.distance import cdist
-from scipy.decomposition import PCA
+from sklearn.decomposition import PCA
 from PIL import Image
 import os
 from typing import List, Dict, Optional, Any, Union
 from vendi_score import vendi
 
-from embedding import CacheManager, ModelRegistry
+from embedding.cache_embeddings import CacheManager
+from embedding.embedding_extractors import ModelRegistry
+
 from data_loading.dataset import ImageDataset
 
 _GLOBAL_CACHE: Optional[CacheManager] = None
@@ -37,7 +39,7 @@ List of available metrics
 """
 
 
-def get_global_cache(cache_dir: str = "./.embedding_cache") -> CacheManager:
+def get_global_cache(cache_dir: str = "/path/to/gtai/FDS/embedding_cache") -> CacheManager:
     global _GLOBAL_CACHE
     if _GLOBAL_CACHE is not None and str(_GLOBAL_CACHE.cache_dir) != str(cache_dir):
         _GLOBAL_CACHE = None
@@ -52,7 +54,7 @@ def _extract_features(
     device: Optional[str] = None,
     batch_size: int = 200,
     use_cache: bool = True,
-    cache_dir: str = "./.embedding_cache",
+    cache_dir: str = "/path/to/gtai/FDS/embedding_cache",
     dataset_name: Optional[str] = None,
     base_path: Optional[str] = None,
     proxy: Optional[str] = None,
@@ -175,7 +177,11 @@ def JS_divergence(dataset_list, num_classes=None, return_all=False):
         - JSD = 0 when distributions are identical
         - JSD ≈ 0.69 (log 2) when distributions are completely disjoint
     """
-    labels = [np.array([item["label"] for item in d]) for d in dataset_list]
+    labels = []
+    for d in dataset_list:
+        if len(d) == 0:
+            raise ValueError("Datasets must contain at least one sample each.")
+        labels.append(np.array([item["label"] for item in d]))
     if num_classes is None: num_classes = max(l.max() for l in labels) + 1
     dists = []
     for l in labels:
@@ -583,7 +589,7 @@ def intrinsic_dimensionality(
         dataset_list: List of datasets
         method: Estimation method ("two_nn" or "mle")
         k: Number of neighbors for MLE method
-        use_faiss: Use FAISS for GPU acceleration (if available)
+        use_faiss: Use FAISS
         return_all: Return list of per-dataset estimates or mean
         **kwargs: Passed to _extract_features
 
@@ -603,26 +609,14 @@ def intrinsic_dimensionality(
         try:
             import faiss
         except ImportError:
-            raise ImportError("FAISS required for GPU acceleration. Install with: pip install faiss-gpu")
+            raise ImportError("FAISS not installed")
 
         X = np.ascontiguousarray(X.astype('float32'))
         n, d = X.shape
 
-        # Build index on GPU if available
-        try:
-            res = faiss.StandardGpuResources()
-            index = faiss.IndexFlatL2(d)
-            gpu_index = faiss.index_cpu_to_gpu(res, 0, index)
-            gpu_index.add(X)
-
-            # Search for 3 nearest neighbors (including self)
-            distances, _ = gpu_index.search(X, 3)
-        except RuntimeError:
-            # Fallback to CPU if GPU not available
-            print("GPU not available, using CPU FAISS")
-            index = faiss.IndexFlatL2(d)
-            index.add(X)
-            distances, _ = index.search(X, 3)
+        index = faiss.IndexFlatL2(d)
+        index.add(X)
+        distances, _ = index.search(X, 3)
 
         r1 = np.sqrt(distances[:, 1])
         r2 = np.sqrt(distances[:, 2])
@@ -653,23 +647,14 @@ def intrinsic_dimensionality(
         try:
             import faiss
         except ImportError:
-            raise ImportError("FAISS required for GPU acceleration. Install with: pip install faiss-gpu")
+            raise ImportError("FAISS not installed")
 
         X = np.ascontiguousarray(X.astype('float32'))
         n, d = X.shape
 
-        # Build index on GPU if available
-        try:
-            res = faiss.StandardGpuResources()
-            index = faiss.IndexFlatL2(d)
-            gpu_index = faiss.index_cpu_to_gpu(res, 0, index)
-            gpu_index.add(X)
-            distances, _ = gpu_index.search(X, k + 1)
-        except RuntimeError:
-            print("GPU not available, using CPU FAISS")
-            index = faiss.IndexFlatL2(d)
-            index.add(X)
-            distances, _ = index.search(X, k + 1)
+        index = faiss.IndexFlatL2(d)
+        index.add(X)
+        distances, _ = index.search(X, k + 1)
 
         # MLE formula: m_hat = [1/k * Σ log(r_k / r_i)]^-1
         # distances[:, 0] is self, so skip it

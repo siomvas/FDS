@@ -128,7 +128,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms, models
 
 from data_loading.dataset import to_image_dataset
-from cache_manager import CacheManager
+from embedding.cache_manager import CacheManager
 
 from transformers import (
     AutoImageProcessor,

@@ -331,7 +331,7 @@ def compute_feature_metrics(
     feature_model: str = "dinov2-small",
     batch_size: int = 50,
     use_cache: bool = True,
-    cache_dir: str = "./.embedding_cache"
+    cache_dir: str = "/path/to/gtai/FDS/embedding_cache"
 ) -> Dict[str, float]:
     """Compute all feature-based metrics using the refactored API."""
     results = {}
@@ -842,7 +842,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--use_cache", action="store_true", default=True)
     parser.add_argument("--no_cache", action="store_true")
-    parser.add_argument("--cache_dir", type=str, default="./.embedding_cache")
+    parser.add_argument("--cache_dir", type=str, default="/path/to/gtai/FDS/embedding_cache")
 
     args = parser.parse_args()
     use_cache = args.use_cache and not args.no_cache

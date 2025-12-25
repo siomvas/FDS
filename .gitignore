@@ -42,3 +42,6 @@ venv.bak/
 
 # Docs
 docs/source/
+
+# Tests
+tests/.hypothesis/

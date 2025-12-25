@@ -145,7 +145,7 @@ class EmbeddingConfig:
         pooling: Pooling strategy configuration
         clustering: Clustering algorithm configuration
         n_clients: Number of federated learning clients
-        cache_dir: Directory for caching embeddings (default: ./.embedding_cache)
+        cache_dir: Directory for caching embeddings (default: /path/to/gtai/FDS/embedding_cache)
         cache_enabled: Whether to enable embedding caching
         assignment_strategy: How to assign clusters to clients -
             "round_robin", "random", or "size_balanced"

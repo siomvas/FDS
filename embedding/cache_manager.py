@@ -100,7 +100,7 @@ class CacheManager:
 
     def __init__(
         self,
-        cache_dir: Union[str, Path] = "./.embedding_cache",
+        cache_dir: Union[str, Path] = "/path/to/gtai/FDS/embedding_cache",
         enabled: bool = True,
     ):
         """Initialize the cache manager.

@@ -3,8 +3,8 @@ import sys
 from pathlib import Path
 from typing import List
 import torch
-from cache_manager import CacheManager
-from embedding_extractors import ModelRegistry
+from embedding.cache_manager import CacheManager
+from embedding.embedding_extractors import ModelRegistry
 from data_loading.dataset import BaseDataset
 
 def main():
