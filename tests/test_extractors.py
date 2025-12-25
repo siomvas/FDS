@@ -41,7 +41,7 @@ def sample_images(tmp_path) -> List[Dict[str, str]]:
         img = Image.new('RGB', (128, 128), color=(i * 50, 100 - i * 10, i * 30))
         path = tmp_path / f"img_{i}.jpg"
         img.save(path, quality=95)
-        images.append({"image": str(path)})
+        images.append(str(path))
     return images
 
 
@@ -53,7 +53,7 @@ def small_images(tmp_path) -> List[Dict[str, str]]:
         img = Image.new('RGB', (32, 32), color=(i * 80, i * 60, i * 40))
         path = tmp_path / f"small_img_{i}.jpg"
         img.save(path)
-        images.append({"image": str(path)})
+        images.append(str(path))
     return images
 
 
@@ -63,7 +63,7 @@ def single_image(tmp_path) -> List[Dict[str, str]]:
     img = Image.new('RGB', (64, 64), color=(100, 100, 100))
     path = tmp_path / "single.jpg"
     img.save(path)
-    return [{"image": str(path)}]
+    return [str(path)]
 
 
 @pytest.fixture
@@ -72,7 +72,7 @@ def grayscale_image(tmp_path) -> List[Dict[str, str]]:
     img = Image.new('L', (64, 64), color=128)
     path = tmp_path / "gray.jpg"
     img.save(path)
-    return [{"image": str(path)}]
+    return [str(path)]
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ def rgba_image(tmp_path) -> List[Dict[str, str]]:
     img = Image.new('RGBA', (64, 64), color=(100, 150, 200, 255))
     path = tmp_path / "rgba.png"
     img.save(path)
-    return [{"image": str(path)}]
+    return [str(path)]
 
 
 @pytest.fixture
@@ -89,7 +89,7 @@ def corrupt_image(tmp_path) -> List[Dict[str, str]]:
     """Create a corrupt/invalid image file."""
     path = tmp_path / "corrupt.jpg"
     path.write_bytes(b"not a valid image file content")
-    return [{"image": str(path)}]
+    return [str(path)]
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ def tiny_image(tmp_path) -> List[Dict[str, str]]:
     img = Image.new('RGB', (1, 1), color=(128, 128, 128))
     path = tmp_path / "tiny.jpg"
     img.save(path)
-    return [{"image": str(path)}]
+    return [str(path)]
 
 
 @pytest.fixture
@@ -107,7 +107,7 @@ def large_image(tmp_path) -> List[Dict[str, str]]:
     img = Image.new('RGB', (2048, 2048), color=(64, 128, 192))
     path = tmp_path / "large.jpg"
     img.save(path)
-    return [{"image": str(path)}]
+    return [str(path)]
 
 
 @pytest.fixture
@@ -122,7 +122,7 @@ def large_images(tmp_path) -> List[Dict[str, str]]:
         img = Image.fromarray(arr)
         path = tmp_path / f"large_img_{i}.jpg"
         img.save(path)
-        images.append({"image": str(path)})
+        images.append(str(path))
     return images
 
 
