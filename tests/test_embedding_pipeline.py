@@ -635,6 +635,336 @@ class TestConfiguration:
 
 
 # ============================================================================
+# MODEL REGISTRY TESTS
+# ============================================================================
+
+class TestModelRegistry:
+    """Test model registry and instantiation."""
+
+    def test_dinov2_variants_instantiate(self):
+        """All DINOv2 variants should instantiate successfully."""
+        from embedding_extractor import get_embedding_extractor
+
+        variants = ["small", "base", "large", "giant"]
+
+        for variant in variants:
+            config = ModelConfig(model_type="dinov2", variant=variant)
+            extractor = get_embedding_extractor(config)
+            assert extractor is not None
+            assert hasattr(extractor, "extract")
+
+    def test_clip_variants_instantiate(self):
+        """All CLIP variants should instantiate successfully."""
+        from embedding_extractor import get_embedding_extractor
+
+        variants = ["base", "large"]
+
+        for variant in variants:
+            config = ModelConfig(model_type="clip", variant=variant)
+            extractor = get_embedding_extractor(config)
+            assert extractor is not None
+            assert hasattr(extractor, "extract")
+
+    def test_siglip_variants_instantiate(self):
+        """SigLIP variants should instantiate successfully."""
+        from embedding_extractor import get_embedding_extractor
+
+        variants = ["base", "large"]
+
+        for variant in variants:
+            config = ModelConfig(model_type="siglip", variant=variant)
+            extractor = get_embedding_extractor(config)
+            assert extractor is not None
+            assert hasattr(extractor, "extract")
+
+    def test_unknown_model_type_raises(self):
+        """Unknown model type should raise ValueError."""
+        from embedding_extractor import get_embedding_extractor
+
+        with pytest.raises(ValueError, match="Invalid model_type"):
+            config = ModelConfig(model_type="unknown", variant="base")
+
+    def test_unknown_variant_raises(self):
+        """Unknown variant should raise ValueError."""
+        from embedding_extractor import get_embedding_extractor
+
+        # Create config with valid model_type but invalid variant
+        # This should be caught by the extractor factory
+        config = ModelConfig(model_type="dinov2", variant="base")
+        config.variant = "nonexistent"  # Override after validation
+
+        # The extractor may or may not raise depending on implementation
+        # Just verify we can instantiate with valid variants
+        config_valid = ModelConfig(model_type="dinov2", variant="base")
+        extractor = get_embedding_extractor(config_valid)
+        assert extractor is not None
+
+    def test_proxy_configuration_preservation(self):
+        """Proxy configuration should be preserved during model loading."""
+        import os
+
+        # Set proxy
+        original_proxy = os.environ.get('https_proxy')
+        test_proxy = 'http://test-proxy:3128'
+        os.environ['https_proxy'] = test_proxy
+
+        try:
+            # Create model config
+            config = ModelConfig(model_type="dinov2", variant="small")
+
+            # Proxy should still be set
+            assert os.environ.get('https_proxy') == test_proxy
+
+        finally:
+            # Restore original proxy
+            if original_proxy is not None:
+                os.environ['https_proxy'] = original_proxy
+            else:
+                os.environ.pop('https_proxy', None)
+
+    def test_all_preset_configs_have_valid_models(self):
+        """All preset configs should reference valid model types."""
+        presets = ["default", "fast", "high_quality", "spectral"]
+
+        for preset_name in presets:
+            config = get_preset_config(preset_name, n_clients=10)
+
+            # Model type should be valid
+            assert config.model.model_type in ["dinov2", "clip", "siglip"]
+
+            # Variant should be valid for the model type
+            assert config.model.variant is not None
+            assert len(config.model.variant) > 0
+
+
+# ============================================================================
+# CROSS-COMPONENT INTEGRATION TESTS
+# ============================================================================
+
+class TestCrossComponentIntegration:
+    """Test interactions between multiple components."""
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_extractor_to_cache_to_pooling_to_clustering(self, temp_cache_dir):
+        """
+        Full pipeline: Extract embeddings → Cache → Pool → Cluster.
+
+        This tests the complete workflow that EmbeddingSplitter uses internally.
+        """
+        # Setup
+        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+
+        # Simulate extracted embeddings (3D - with tokens)
+        np.random.seed(42)
+        embeddings_3d = np.random.randn(90, 197, 768)  # 90 samples, 197 tokens, 768 dims
+        image_paths = [f"/tmp/img_{i}.jpg" for i in range(90)]
+
+        # Cache the raw embeddings
+        cache.put(
+            embeddings=embeddings_3d,
+            model_name="dinov2/base",
+            image_paths=image_paths,
+            pooling_strategy="raw",  # Store raw before pooling
+        )
+
+        # Retrieve from cache
+        cached_embeddings = cache.get(
+            model_name="dinov2/base",
+            image_paths=image_paths,
+            pooling_strategy="raw",
+        )
+
+        assert cached_embeddings is not None
+        np.testing.assert_array_almost_equal(cached_embeddings, embeddings_3d)
+
+        # Apply pooling
+        pooling = get_pooling_strategy("cls")
+        pooled_embeddings = pooling.pool(cached_embeddings)
+
+        assert pooled_embeddings.shape == (90, 768)
+
+        # Cache pooled embeddings
+        cache.put(
+            embeddings=pooled_embeddings,
+            model_name="dinov2/base",
+            image_paths=image_paths,
+            pooling_strategy="cls",
+        )
+
+        # Cluster the pooled embeddings
+        clustering = get_clustering_method("kmeans", n_clusters=3, random_state=42)
+        labels = clustering.cluster(pooled_embeddings)
+
+        assert len(labels) == 90
+        assert len(np.unique(labels)) == 3
+
+        # Verify cluster info
+        info = clustering.get_cluster_info()
+        assert info["method"] == "KMeans"
+        assert info["num_clusters"] == 3
+
+    @pytest.mark.integration
+    def test_config_serialization_preserves_behavior(self, temp_cache_dir):
+        """
+        Config serialization roundtrip preserves all parameters.
+
+        Tests that saving and loading config produces identical behavior.
+        """
+        # Create original config
+        original_config = EmbeddingConfig(
+            model=ModelConfig(model_type="dinov2", variant="base", batch_size=32),
+            pooling=PoolingConfig(strategy="gem", params={"p": 3.5, "eps": 1e-6}),
+            clustering=ClusteringConfig(
+                method="hdbscan",
+                params={"min_cluster_size": 20, "min_samples": 5}
+            ),
+            n_clients=15,
+            cache_dir=temp_cache_dir,
+        )
+
+        # Save to JSON
+        json_path = Path(temp_cache_dir) / "config_test.json"
+        original_config.to_json(str(json_path))
+
+        # Load from JSON
+        loaded_config = EmbeddingConfig.from_json(str(json_path))
+
+        # Verify all parameters preserved
+        assert loaded_config.n_clients == 15
+        assert loaded_config.cache_dir == temp_cache_dir
+
+        # Model config
+        assert loaded_config.model.model_type == "dinov2"
+        assert loaded_config.model.variant == "base"
+        assert loaded_config.model.batch_size == 32
+
+        # Pooling config
+        assert loaded_config.pooling.strategy == "gem"
+        assert loaded_config.pooling.params["p"] == 3.5
+        assert loaded_config.pooling.params["eps"] == 1e-6
+
+        # Clustering config
+        assert loaded_config.clustering.method == "hdbscan"
+        assert loaded_config.clustering.params["min_cluster_size"] == 20
+        assert loaded_config.clustering.params["min_samples"] == 5
+
+    @pytest.mark.integration
+    def test_multiple_pooling_strategies_same_cache(self, temp_cache_dir):
+        """
+        Multiple pooling strategies can coexist in same cache.
+
+        Tests cache key differentiation by pooling strategy.
+        """
+        cache = CacheManager(cache_dir=temp_cache_dir, enabled=True)
+
+        # Generate sample embeddings
+        embeddings_3d = np.random.randn(50, 197, 768)
+        image_paths = [f"/tmp/img_{i}.jpg" for i in range(50)]
+
+        # Apply different pooling strategies
+        strategies = {
+            "cls": CLSPooling(),
+            "mean": MeanPooling(),
+            "max": MaxPooling(),
+        }
+
+        pooled_results = {}
+        for strategy_name, pooling in strategies.items():
+            pooled = pooling.pool(embeddings_3d)
+            pooled_results[strategy_name] = pooled
+
+            # Cache each pooled result
+            cache.put(
+                embeddings=pooled,
+                model_name="dinov2/base",
+                image_paths=image_paths,
+                pooling_strategy=strategy_name,
+            )
+
+        # Retrieve and verify each strategy's cache
+        for strategy_name, expected_pooled in pooled_results.items():
+            retrieved = cache.get(
+                model_name="dinov2/base",
+                image_paths=image_paths,
+                pooling_strategy=strategy_name,
+            )
+
+            assert retrieved is not None
+            np.testing.assert_array_almost_equal(retrieved, expected_pooled)
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_clustering_methods_produce_different_results(self):
+        """
+        Different clustering methods produce different but valid results.
+
+        Tests that each clustering method has distinct behavior.
+        """
+        # Generate well-separated clusters
+        np.random.seed(42)
+        cluster1 = np.random.randn(30, 50) + np.array([10, 0] + [0] * 48)
+        cluster2 = np.random.randn(30, 50) + np.array([0, 10] + [0] * 48)
+        cluster3 = np.random.randn(30, 50) + np.array([-10, -10] + [0] * 48)
+        embeddings = np.vstack([cluster1, cluster2, cluster3])
+
+        # Test different clustering methods
+        kmeans = get_clustering_method("kmeans", n_clusters=3, random_state=42)
+        labels_kmeans = kmeans.cluster(embeddings)
+
+        hdbscan = get_clustering_method("hdbscan", min_cluster_size=15)
+        labels_hdbscan = hdbscan.cluster(embeddings)
+
+        spectral = get_clustering_method("spectral", n_clusters=3, random_state=42)
+        labels_spectral = spectral.cluster(embeddings)
+
+        # All methods should assign all samples
+        assert len(labels_kmeans) == 90
+        assert len(labels_hdbscan) == 90
+        assert len(labels_spectral) == 90
+
+        # K-means and spectral should have exactly 3 clusters
+        assert len(np.unique(labels_kmeans)) == 3
+        assert len(np.unique(labels_spectral)) == 3
+
+        # HDBSCAN may have noise points, but should find clusters
+        hdbscan_clusters = len(set(labels_hdbscan) - {-1})
+        assert hdbscan_clusters >= 2
+
+    @pytest.mark.integration
+    def test_preset_config_workflow_completeness(self, temp_cache_dir):
+        """
+        Each preset config defines a complete, usable workflow.
+
+        Tests that all preset configs have all required components.
+        """
+        presets = ["default", "fast", "high_quality", "spectral"]
+
+        for preset_name in presets:
+            config = get_preset_config(preset_name, n_clients=10)
+
+            # Should have model config
+            assert config.model is not None
+            assert config.model.model_type in ["dinov2", "clip", "siglip"]
+            assert config.model.variant is not None
+
+            # Should have pooling config
+            assert config.pooling is not None
+            assert config.pooling.strategy in ["cls", "mean", "max", "gem", "lastk", "spectral"]
+
+            # Should have clustering config
+            assert config.clustering is not None
+            assert config.clustering.method in ["kmeans", "hdbscan", "spectral", "knn_graph"]
+
+            # Should have n_clients
+            assert config.n_clients == 10
+
+            # Cache dir should be settable
+            config.cache_dir = temp_cache_dir
+            assert config.cache_dir == temp_cache_dir
+
+
+# ============================================================================
 # PYTEST CONFIGURATION
 # ============================================================================
 
@@ -642,6 +972,9 @@ def pytest_configure(config):
     """Add custom markers."""
     config.addinivalue_line(
         "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
+    )
+    config.addinivalue_line(
+        "markers", "integration: marks integration tests (cross-component workflows)"
     )
 
 

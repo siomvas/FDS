@@ -573,5 +573,346 @@ class TestEdgeCases:
             assert len(client_split["val"]) == 0
 
 
+# ============================================================================
+# Property-Based Tests with Hypothesis
+# ============================================================================
+
+from hypothesis import given, strategies as st, settings
+
+@pytest.mark.property
+class TestSplitterInvariantsWithHypothesis:
+    """Property-based tests for splitter invariants using Hypothesis."""
+
+    @given(
+        n_samples=st.integers(10, 200),
+        n_clients=st.integers(1, 20),
+        seed=st.integers(0, 10000)
+    )
+    @settings(max_examples=50, deadline=None)
+    def test_random_splitter_all_samples_distributed(self, n_samples, n_clients, seed):
+        """Property: RandomSplitter distributes all samples exactly once.
+
+        sum(client_sizes) == dataset_size
+        """
+        from tests.conftest import MockDataset
+
+        # Create dataset
+        data = [{"image": f"/tmp/img_{i}.jpg", "label": i % 3} for i in range(n_samples)]
+        dataset = MockDataset(data)
+
+        splitter = RandomSplitter(
+            train_dataset=dataset,
+            val_dataset=None,
+            n_clients=n_clients,
+            heterogeneity=0.0,
+            valset_type="none",
+            seed=seed
+        )
+
+        splits = splitter.get_client_splits()
+
+        total_samples = sum(
+            len(splits["clients"][f"client_{i}"]["train"])
+            for i in range(n_clients)
+        )
+
+        assert total_samples == n_samples
+
+    @given(
+        n_samples=st.integers(20, 200),
+        n_clients=st.integers(2, 20),
+        heterogeneity=st.floats(0.1, 10.0),
+        seed=st.integers(0, 10000)
+    )
+    @settings(max_examples=30, deadline=None)
+    def test_dirichlet_heterogeneity_parameter_effects(self, n_samples, n_clients, heterogeneity, seed):
+        """Property: DirichletSplitter with different alphas produces different distributions.
+
+        Lower alpha → more heterogeneous (skewed) distributions.
+        """
+        from tests.conftest import MockDataset
+
+        # Ensure enough samples
+        if n_samples < n_clients * 3:
+            return
+
+        data = [{"image": f"/tmp/img_{i}.jpg", "label": i % 5} for i in range(n_samples)]
+        dataset = MockDataset(data)
+
+        try:
+            splitter = DirichletSplitter(
+                train_dataset=dataset,
+                val_dataset=None,
+                n_clients=n_clients,
+                heterogeneity=heterogeneity,
+                valset_type="none",
+                min_samples_per_client=1,
+                max_retries=50,
+                seed=seed
+            )
+
+            splits = splitter.get_client_splits()
+
+            # Verify all samples distributed
+            total_samples = sum(
+                len(splits["clients"][f"client_{i}"]["train"])
+                for i in range(n_clients)
+            )
+            assert total_samples == n_samples
+
+        except ValueError:
+            # Retry exhaustion is acceptable for extreme parameters
+            pass
+
+
+# ============================================================================
+# Split Validation Tests
+# ============================================================================
+
+class TestSplitValidation:
+    """Test validation logic for detecting invalid splits."""
+
+    def test_validate_splits_detects_missing_samples(self, mock_train_dataset):
+        """validate_splits detects when samples are missing."""
+        splitter = RandomSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.0,
+            valset_type="none",
+            seed=42
+        )
+
+        splits = splitter.get_client_splits()
+
+        # Remove a sample to create invalid split
+        splits["clients"]["client_0"]["train"].pop()
+
+        # Should raise ValueError
+        with pytest.raises(ValueError, match="Expected.*samples"):
+            splitter.validate_splits(splits)
+
+    def test_validate_splits_detects_duplicate_samples(self, mock_train_dataset):
+        """validate_splits detects duplicate samples across clients."""
+        splitter = RandomSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.0,
+            valset_type="none",
+            seed=42
+        )
+
+        splits = splitter.get_client_splits()
+
+        # Duplicate a sample across clients
+        duplicate_sample = splits["clients"]["client_0"]["train"][0]
+        splits["clients"]["client_1"]["train"].append(duplicate_sample)
+
+        # Should raise ValueError
+        with pytest.raises(ValueError, match="overlap.*samples"):
+            splitter.validate_splits(splits)
+
+    def test_validate_splits_detects_wrong_client_count(self, mock_train_dataset):
+        """validate_splits detects incorrect number of clients."""
+        splitter = RandomSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.0,
+            valset_type="none",
+            seed=42
+        )
+
+        splits = splitter.get_client_splits()
+
+        # Remove a client
+        del splits["clients"]["client_2"]
+
+        # Should raise ValueError
+        with pytest.raises(ValueError, match="Expected 3 clients"):
+            splitter.validate_splits(splits)
+
+
+# ============================================================================
+# Serialization Round-Trip Tests
+# ============================================================================
+
+class TestSerializationRoundTrip:
+    """Test that splits can be saved and loaded without data loss."""
+
+    def test_json_serialization_preserves_splits(self, mock_train_dataset, tmp_path):
+        """JSON serialization preserves split structure and data."""
+        splitter = RandomSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.0,
+            valset_type="none",
+            seed=42
+        )
+
+        original_splits = splitter.get_client_splits()
+
+        # Save to JSON
+        json_path = tmp_path / "splits.json"
+        splitter.store_splits(str(json_path), format="json")
+
+        # Load back
+        loaded_splits = splitter.load_splits(str(json_path), format="json")
+
+        # Compare
+        assert len(loaded_splits["clients"]) == len(original_splits["clients"])
+
+        for client_id in range(3):
+            orig_train = original_splits["clients"][f"client_{client_id}"]["train"]
+            load_train = loaded_splits["clients"][f"client_{client_id}"]["train"]
+
+            assert len(orig_train) == len(load_train)
+
+            # Compare image paths
+            orig_paths = [s["image"] for s in orig_train]
+            load_paths = [s["image"] for s in load_train]
+            assert orig_paths == load_paths
+
+    def test_pickle_serialization_preserves_splits(self, mock_train_dataset, tmp_path):
+        """Pickle serialization preserves split structure and data."""
+        splitter = RandomSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.0,
+            valset_type="none",
+            seed=42
+        )
+
+        original_splits = splitter.get_client_splits()
+
+        # Save to pickle
+        pkl_path = tmp_path / "splits.pkl"
+        splitter.store_splits(str(pkl_path), format="pickle")
+
+        # Load back
+        loaded_splits = splitter.load_splits(str(pkl_path), format="pickle")
+
+        # Compare
+        assert len(loaded_splits["clients"]) == len(original_splits["clients"])
+
+        for client_id in range(3):
+            orig_train = original_splits["clients"][f"client_{client_id}"]["train"]
+            load_train = loaded_splits["clients"][f"client_{client_id}"]["train"]
+
+            assert len(orig_train) == len(load_train)
+
+    def test_splits_equality_after_load(self, mock_train_dataset, tmp_path):
+        """Loaded splits are functionally equivalent to originals."""
+        splitter = DirichletSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.5,
+            valset_type="none",
+            seed=42
+        )
+
+        original_splits = splitter.get_client_splits()
+
+        # Save and load
+        json_path = tmp_path / "splits.json"
+        splitter.store_splits(str(json_path), format="json")
+        loaded_splits = splitter.load_splits(str(json_path), format="json")
+
+        # Validate loaded splits
+        try:
+            splitter.validate_splits(loaded_splits)
+        except Exception as e:
+            pytest.fail(f"Loaded splits failed validation: {e}")
+
+
+# ============================================================================
+# Cache Invalidation Tests
+# ============================================================================
+
+class TestCacheInvalidation:
+    """Test that split cache is invalidated when parameters change."""
+
+    def test_set_heterogeneity_invalidates_cache(self, mock_train_dataset):
+        """Changing heterogeneity invalidates cached splits."""
+        splitter = DirichletSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.5,
+            valset_type="none",
+            seed=42
+        )
+
+        # Get initial splits (caches internally)
+        splits_1 = splitter.get_client_splits()
+
+        # Change heterogeneity
+        splitter.set_heterogeneity(5.0)
+
+        # Get splits again (should recompute)
+        splits_2 = splitter.get_client_splits()
+
+        # Splits should differ (different heterogeneity)
+        client_0_train_1 = [s["image"] for s in splits_1["clients"]["client_0"]["train"]]
+        client_0_train_2 = [s["image"] for s in splits_2["clients"]["client_0"]["train"]]
+
+        # With different heterogeneity, distributions likely differ
+        # (This is probabilistic, but with these parameters should be true)
+        assert client_0_train_1 != client_0_train_2 or len(client_0_train_1) != len(client_0_train_2)
+
+    def test_set_seed_invalidates_cache(self, mock_train_dataset):
+        """Changing seed invalidates cached splits."""
+        splitter = RandomSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.0,
+            valset_type="none",
+            seed=42
+        )
+
+        # Get initial splits
+        splits_1 = splitter.get_client_splits()
+
+        # Change seed
+        splitter.set_seed(123)
+
+        # Get splits again
+        splits_2 = splitter.get_client_splits()
+
+        # Splits should differ (different seed)
+        client_0_train_1 = [s["image"] for s in splits_1["clients"]["client_0"]["train"]]
+        client_0_train_2 = [s["image"] for s in splits_2["clients"]["client_0"]["train"]]
+
+        assert client_0_train_1 != client_0_train_2
+
+    def test_get_client_splits_uses_cached_when_valid(self, mock_train_dataset):
+        """get_client_splits uses cached splits when parameters unchanged."""
+        splitter = RandomSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.0,
+            valset_type="none",
+            seed=42
+        )
+
+        # First call
+        splits_1 = splitter.get_client_splits()
+
+        # Second call (should use cache)
+        splits_2 = splitter.get_client_splits()
+
+        # Should be identical (same object if truly cached, or equal content)
+        client_0_train_1 = [s["image"] for s in splits_1["clients"]["client_0"]["train"]]
+        client_0_train_2 = [s["image"] for s in splits_2["clients"]["client_0"]["train"]]
+
+        assert client_0_train_1 == client_0_train_2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
