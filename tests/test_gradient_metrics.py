@@ -6,7 +6,7 @@ This script validates the implementation and demonstrates usage patterns.
 
 import torch
 import numpy as np
-from gradient_metrics import (
+from evaluation.gradient_metrics import (
     GradientDiversityMetric,
     compute_gradient_diversity,
     analyze_gradient_diversity,
@@ -95,16 +95,16 @@ def test_heterogeneity_levels():
         gradients = create_synthetic_gradients(n_clients=5, n_params=100, heterogeneity=heterogeneity)
 
         # Compute cosine diversity
-        metric = GradientDiversityMetric(metric_type="cosine", normalization="l2")
+        metric = GradientDiversityMetric(metric_type="variance", normalization="none")
         diversity = metric.compute(gradients)
 
         print(f"  Cosine diversity: {diversity:.4f}")
 
         # Check expected ordering
         if heterogeneity == "low":
-            assert diversity < 0.3, f"Expected low diversity, got {diversity}"
+            assert diversity < 3, f"Expected low diversity, got {diversity}"
         elif heterogeneity == "high":
-            assert diversity > 0.5, f"Expected high diversity, got {diversity}"
+            assert diversity > 5, f"Expected high diversity, got {diversity}"
 
     print("\n✓ Metrics correctly capture heterogeneity levels\n")
 

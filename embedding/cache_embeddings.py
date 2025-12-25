@@ -11,9 +11,9 @@ def main():
     parser.add_argument("--dataset", type=str, required=True, help="Name of the dataset (key for cache)")
     parser.add_argument("--base_path", type=str, required=True, help="Root path of the dataset")
     parser.add_argument("--model", type=str, default="inception_v3", help="Model identifier (e.g., inception_v3, dinov2-base)")
-    parser.add_argument("--cache_dir", type=str, default="./.embedding_cache")
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--proxy", type=str, default=None, help="HTTP/HTTPS proxy for downloads")
+    parser.add_argument("--cache_dir", type=str, default="/path/to/gtai/FDS/embedding_cache", help="Directory to store embeddings cache")
+    parser.add_argument("--batch_size", type=int, default=200)
+    parser.add_argument("--proxy", type=str, default='http://proxy.example.org:3128', help="HTTP/HTTPS proxy for downloads")
     
     args = parser.parse_args()
     

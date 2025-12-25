@@ -7,7 +7,7 @@ Tests that data modules can load splits, create datasets, and provide dataloader
 import sys
 from pathlib import Path
 
-from data_modules.dm import (
+from data_loading.dm import (
     get_datamodule,
     TinyImageNetDataModule,
     Food101DataModule,
@@ -206,7 +206,7 @@ def test_label_map_creation():
     print("Test 4: Label Map Creation")
     print("=" * 80)
 
-    from data_modules.dm import BaseDataModule
+    from data_loading.dm import BaseDataModule
 
     # Mock data module for testing
     class MockDataModule(BaseDataModule):
