@@ -9,7 +9,6 @@ import pytest
 import torch
 import numpy as np
 from evaluation.gradient_metrics import (
-from evaluation.gradient_metrics import (
     GradientDiversityMetric,
     compute_gradient_diversity,
     analyze_gradient_diversity,
