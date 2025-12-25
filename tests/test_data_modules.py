@@ -9,9 +9,19 @@ import pytest
 import json
 import tempfile
 from pathlib import Path
+from PIL import Image
+from unittest.mock import Mock, patch
+import torch
+from torchvision import transforms as T
 
+from data_loading.dataset import (
+    ImageDataset,
+    ClassificationDataset,
+    SegmentationDataset,
+    BaseDataset,
+)
 from data_loading.dm import (
-    get_datamodule,
+    BaseDataModule,
     TinyImageNetDataModule,
     Food101DataModule,
     ADE20KDataModule,
@@ -419,93 +429,18 @@ class TestBaseDataModule:
             split_file=mock_split_file,
             central=True,
             batch_size=2,
-            num_workers=0,
         )
-        train_central, val_central = dm_central.get_client_data(splits)
-        print(f"Central mode: {len(train_central)} train samples")
-        assert len(train_central) == 3, "Central should have 3 training samples (all clients)"
 
-        print("\n✓ Central vs Federated mode test passed!")
+        splits = dm.load_splits()
+        train_data, val_data = dm.get_client_data(splits)
 
-    finally:
-        Path(split_file).unlink()
+        # Should aggregate all clients
+        assert len(train_data) == 4  # 2 + 2 from both clients
+        assert len(val_data) == 2    # Using global_val
 
-
-def test_factory_function():
-    """Test factory function for creating data modules."""
-    print("\n" + "=" * 80)
-    print("Test 3: Factory Function")
-    print("=" * 80)
-
-    import json
-    import tempfile
-
-    mock_splits = {
-        "clients": {
-            "client_0": {
-                "train": [{"image": "/fake/img.jpg", "label": "class_a"}],
-                "val": [],
-            }
-        },
-        "global_val": None,
-    }
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(mock_splits, f)
-        split_file = f.name
-
-    try:
-        # Test creating different dataset modules
-        datasets = ["tiny_imagenet", "food101", "ade20k"]
-
-        for dataset_name in datasets:
-            print(f"\nCreating {dataset_name} data module...")
-            dm = get_datamodule(
-                dataset_name=dataset_name,
-                data_dir="./data",
-                split_file=split_file,
-                client_idx=0,
-                batch_size=2,
-                num_workers=0,
-            )
-            print(f"✓ Created: {dm}")
-
-        print("\n✓ Factory function test passed!")
-
-    finally:
-        Path(split_file).unlink()
-
-
-def test_label_map_creation():
-    """Test label map creation from training data."""
-    print("\n" + "=" * 80)
-    print("Test 4: Label Map Creation")
-    print("=" * 80)
-
-    from data_loading.dm import BaseDataModule
-
-    # Mock data module for testing
-    class MockDataModule(BaseDataModule):
-        def get_train_transform(self):
-            pass
-
-        def get_val_transform(self):
-            pass
-
-    import json
-    import tempfile
-
-    mock_splits = {
-        "clients": {"client_0": {"train": [], "val": []}},
-        "global_val": None,
-    }
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(mock_splits, f)
-        split_file = f.name
-
-    try:
-        dm = MockDataModule(
+    def test_create_label_map(self, mock_split_file):
+        """Test label map creation."""
+        dm = TinyImageNetDataModule(
             data_dir="./data",
             split_file=mock_split_file,
             client_idx=0,
