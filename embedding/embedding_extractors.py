@@ -487,7 +487,6 @@ class EmbeddingExtractor(ABC):
         cache_params = {
             "return_which_tokens": return_which_tokens,
             "k_last": k_last,
-            "extractor_class": self.__class__.__name__,
             **kwargs
         }
 
@@ -618,8 +617,8 @@ class InceptionExtractor(EmbeddingExtractor):
         base_path: Optional[str] = None,
         **kwargs: Any,
     ) -> np.ndarray:
-        
-        cache_params = {"extractor_class": self.__class__.__name__, **kwargs}
+
+        cache_params = {**kwargs}
 
         if use_cache and self.cache_manager:
             cached_data = self.cache_manager.get(
@@ -922,7 +921,6 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
                 image_paths=images,
                 dataset_name=dataset_name,
                 base_path=base_path,
-                extractor_class=self.__class__.__name__,
                 target_size=self.target_size
             )
             if cached_data is not None:
@@ -954,7 +952,6 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
                 image_paths=images,
                 dataset_name=dataset_name,
                 base_path=base_path,
-                extractor_class=self.__class__.__name__,
                 target_size=self.target_size
             )
 
@@ -1039,7 +1036,6 @@ class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
                 image_paths=images,
                 dataset_name=dataset_name,
                 base_path=base_path,
-                extractor_class=self.__class__.__name__,
                 target_size=self.target_size,
                 target_dim=self.target_dim
             )
@@ -1087,7 +1083,6 @@ class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
                 image_paths=images,
                 dataset_name=dataset_name,
                 base_path=base_path,
-                extractor_class=self.__class__.__name__,
                 target_size=self.target_size,
                 target_dim=self.target_dim
             )
@@ -1178,7 +1173,6 @@ class UntrainedAutoEncoderExtractor(EmbeddingExtractor):
                 image_paths=images,
                 dataset_name=dataset_name,
                 base_path=base_path,
-                extractor_class=self.__class__.__name__,
                 input_size=self.input_size
             )
             if cached_data is not None:
@@ -1212,7 +1206,6 @@ class UntrainedAutoEncoderExtractor(EmbeddingExtractor):
                 image_paths=images,
                 dataset_name=dataset_name,
                 base_path=base_path,
-                extractor_class=self.__class__.__name__,
                 input_size=self.input_size
             )
 
@@ -1318,7 +1311,6 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
                 image_paths=images,
                 dataset_name=dataset_name,
                 base_path=base_path,
-                extractor_class=self.__class__.__name__,
                 input_size=self.input_size,
                 J=self.J
             )
@@ -1353,7 +1345,6 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
                 image_paths=images,
                 dataset_name=dataset_name,
                 base_path=base_path,
-                extractor_class=self.__class__.__name__,
                 input_size=self.input_size,
                 J=self.J
             )

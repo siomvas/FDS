@@ -47,6 +47,8 @@ def main():
         extractor.extract_embeddings(
             images=images,
             use_cache=True,
+            dataset_name=args.dataset,
+            base_path=args.base_path,
             return_which_token=args.tokens,
             k_last=args.k_last,
         )

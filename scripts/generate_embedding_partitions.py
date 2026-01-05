@@ -553,6 +553,8 @@ def main():
         valset_type=args.valset_type,
         config=config,
         seed=args.seed,
+        dataset_name=args.dataset,
+        base_path=args.base_path,
     )
 
     # Generate splits

@@ -73,6 +73,12 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         Use :func:`get_preset_config` for convenient presets.
     seed : int, optional
         Random seed for reproducibility. Affects cluster assignment randomization.
+    dataset_name : str, optional
+        Dataset name for efficient cache key computation. Enables dataset-mode caching
+        where embeddings can be reused across different subsets of the same dataset.
+    base_path : str, optional
+        Base path for path normalization in caching. Ensures cache compatibility
+        across different user directories on shared storage (e.g., HPC).
 
     Attributes
     ----------
@@ -156,6 +162,8 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         valset_type: str,
         config: EmbeddingConfig,
         seed: Optional[int] = None,
+        dataset_name: Optional[str] = None,
+        base_path: Optional[str] = None,
     ):
         super().__init__(
             train_dataset=train_dataset,
@@ -167,6 +175,8 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         )
 
         self.config = config
+        self.dataset_name = dataset_name
+        self.base_path = base_path
 
         # Initialize components
         self.extractor: Optional[EmbeddingExtractor] = None
@@ -294,6 +304,8 @@ class EmbeddingSplitter(BaseDatasetSplitter):
 
         cached_embeddings = self.cache_manager.get(
             image_paths=image_paths,
+            dataset_name=self.dataset_name,
+            base_path=self.base_path,
             **cache_key_params,
         )
 
@@ -329,6 +341,8 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         self.cache_manager.put(
             embeddings=embeddings,
             image_paths=image_paths,
+            dataset_name=self.dataset_name,
+            base_path=self.base_path,
             **cache_key_params,
         )
 
