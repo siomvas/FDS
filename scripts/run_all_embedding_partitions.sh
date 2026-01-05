@@ -5,16 +5,14 @@
 # - Pooling strategies
 # - Clustering methods
 
-set -e  # Exit on error
-
 # =============================================================================
 # CONFIGURATION - Edit these variables
 # =============================================================================
 
 # Global settings
-MOCK=false                          # Set to true for quick testing with 1k samples
+MOCK=true                          # Set to true for quick testing with 1k samples
 DATASET="tiny_imagenet"
-BASE_PATH="/path/to/data"           # UPDATE THIS PATH
+BASE_PATH="/path/to/gtai/FDS/"           # UPDATE THIS PATH
 OUTPUT_DIR="./embedding_partitions"
 SEED=42
 VALSET_TYPE="global"                  # global, local, or none
@@ -129,7 +127,7 @@ for extractor in "${EXTRACTORS[@]}"; do
             echo "[$current/$total] Running: $extractor + $pooling + $clustering"
 
             # Build command
-            cmd="python scripts/generate_embedding_partitions.py"
+            cmd="python generate_embedding_partitions.py"
             cmd="$cmd --dataset $DATASET"
             cmd="$cmd --base_path $BASE_PATH"
             cmd="$cmd --extractor $extractor"
