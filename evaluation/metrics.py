@@ -1,3 +1,65 @@
+"""Evaluation metrics for measuring data heterogeneity in federated learning.
+
+This module provides comprehensive metrics to quantify heterogeneity between
+client data distributions in federated learning scenarios. Metrics are divided
+into label-based (statistical) and feature-based (embedding) categories.
+
+Label-Based Metrics
+-------------------
+JS_divergence
+    Jensen-Shannon Divergence between label distributions.
+TV_label_distributions
+    Total Variation distance between label distributions.
+JSD_client_to_global
+    Per-client JSD relative to global distribution.
+
+Feature-Based Metrics
+---------------------
+FID_distance
+    Frechet Inception Distance (uses InceptionV3 features).
+MMD
+    Maximum Mean Discrepancy with RBF kernel.
+energy_distance_features
+    Energy distance in feature space.
+sliced_wasserstein_distance
+    Sliced Wasserstein Distance using random projections.
+KS_multivariate_test
+    Kolmogorov-Smirnov test with optional PCA.
+vendi_score
+    Vendi Score for intra-client diversity.
+intrinsic_dimensionality
+    Estimate intrinsic dimension using TWO-NN or MLE.
+knn_separability
+    k-NN isolation metric for client separability.
+centroid_distance
+    Euclidean distance between client centroids.
+feature_variance
+    Feature variance within each client.
+
+Usage
+-----
+All metrics accept a list of datasets (one per client) and return either
+a single aggregated value or a list of pairwise/per-client values:
+
+    >>> from evaluation.metrics import FID_distance, JS_divergence
+    >>> client_data = [
+    ...     [{"image": "img1.jpg", "label": 0}, ...],  # client 0
+    ...     [{"image": "img2.jpg", "label": 1}, ...],  # client 1
+    ... ]
+    >>> fid = FID_distance(client_data, use_cache=True, dataset_name="tiny_imagenet")
+    >>> jsd = JS_divergence(client_data)
+
+Caching
+-------
+Feature-based metrics support caching via the ``use_cache``, ``dataset_name``,
+and ``base_path`` parameters. Always provide these for efficient repeated
+computation.
+
+See Also
+--------
+docs/RESEARCH_SUMMARY.md : Detailed explanation of metrics and their use cases.
+"""
+
 import numpy as np
 from torchvision import models, transforms
 import torch
@@ -17,29 +79,24 @@ from data_loading.dataset import ImageDataset
 
 _GLOBAL_CACHE: Optional[CacheManager] = None
 
-"""
-List of available metrics
-
-- Label Metrics:
-    - Jensen-Shannon Divergence (JSD) -> across many?
-    - Total Variation (TV)
-    - JSD one-to-many
-
-- Image/Feature/Embedding Metrics:
-    - FID (hardcoded to InceptionV3 features)
-    - MMD w/ RBF kernel
-    - Energy Distance
-    - Sliced Wasserstein Distance
-    - Kolmogorov-Smirnov Multivariate Test (PCA optional)
-    - Vendi Score
-    - Intrinsic Dimensionality using i) MLE ii) TWO-NN
-    - k-NN Separability
-    - Centroid Distance
-    - Feature Variance
-"""
-
 
 def get_global_cache(cache_dir: str = "/path/to/gtai/FDS/embedding_cache") -> CacheManager:
+    """Get or create the global CacheManager instance.
+
+    Uses a singleton pattern to reuse the same cache manager across
+    multiple metric computations.
+
+    Parameters
+    ----------
+    cache_dir : str, optional
+        Directory for cache storage. If different from current cache,
+        creates a new instance.
+
+    Returns
+    -------
+    CacheManager
+        The global cache manager instance.
+    """
     global _GLOBAL_CACHE
     if _GLOBAL_CACHE is not None and str(_GLOBAL_CACHE.cache_dir) != str(cache_dir):
         _GLOBAL_CACHE = None
@@ -60,23 +117,58 @@ def _extract_features(
     proxy: Optional[str] = None,
     **extractor_kwargs: Any,
 ) -> List[np.ndarray]:
-    """
-    Extract features from a list of datasets using any model from ModelRegistry.
+    """Extract features from a list of datasets using any model from ModelRegistry.
 
-    Args:
-        dataset_list: List of datasets, each is [{"image": path, "label": label}, ...]
-        model_name: Model identifier (e.g., "inception_v3", "dino-base", "clip-base-patch16")
-        device: Device for computation ("cuda", "cpu", or None for auto-detect)
-        batch_size: Batch size for feature extraction
-        use_cache: Whether to use caching
-        cache_dir: Directory for cache storage
-        dataset_name: Dataset identifier for cache lookup
-        base_path: Base path for relative path computation in cache
-        proxy: HTTP proxy for model downloads
-        **extractor_kwargs: Additional arguments passed to extractor (e.g., return_which_tokens)
+    This is the shared feature extraction function used by all feature-based
+    metrics. It handles model creation, caching, and batched inference.
 
-    Returns:
-        List of feature arrays, one per dataset
+    Parameters
+    ----------
+    dataset_list : List[List[Dict[str, Any]]]
+        List of datasets, one per client. Each dataset is a list of dicts
+        with "image" (path) and "label" keys.
+    model_name : str, optional
+        Model identifier for embedding extraction. Supports:
+
+        - "inception_v3": InceptionV3 (2048-dim, for FID)
+        - "dinov2-small/base/large/giant": DINOv2 (384-1536-dim)
+        - "clip-base-patch16/base-patch32/large-patch14": CLIP (768-1024-dim)
+        - "siglip-base-patch16-224/384": SigLIP (768-dim)
+        - "mae-base/large/huge": MAE (768-1280-dim)
+
+        Default: "inception_v3".
+    device : str, optional
+        Device for computation ("cuda", "cpu"). If None, auto-detects.
+    batch_size : int, optional
+        Batch size for feature extraction. Default: 200.
+    use_cache : bool, optional
+        Whether to cache extracted features. Default: True.
+    cache_dir : str, optional
+        Directory for cache storage.
+    dataset_name : str, optional
+        Dataset identifier for cache lookup. Required for effective caching.
+    base_path : str, optional
+        Base path for relative path computation in cache keys.
+    proxy : str, optional
+        HTTP proxy URL for model downloads (e.g., "http://proxy:3128").
+    **extractor_kwargs
+        Additional arguments passed to the extractor (e.g., return_which_tokens).
+
+    Returns
+    -------
+    List[np.ndarray]
+        List of feature arrays, one per dataset. Each array has shape
+        (n_samples, embed_dim).
+
+    Raises
+    ------
+    ValueError
+        If the model_name is not supported by ModelRegistry.
+
+    Notes
+    -----
+    Always provide ``dataset_name`` and ``base_path`` for efficient caching.
+    Without these, embeddings are recomputed on every call.
     """
     # Get or create cache manager
     cache_manager = get_global_cache(cache_dir) if use_cache else None
@@ -119,21 +211,31 @@ def _extract_features(
 
     return features_list
 
-"""
-Concept: Compare datasets D1 and D2 by computing pairwise metrics.
-Compare -> 
-are D1 and D2 the same distribution? <- KS-test
-How "far" are D1 and D2? <- FID, MMD, SWD, Energy Distance
-Other aspects of diversity <- Vendi Score, Intrinsic Dimensionality
-
-So then if we have datasets = [D1, D2, D3, ..., Dn], we can compute pairwise metrics
-and if return_all = False, return the mean across all pairs.
-This way we can compare with a single number how heterogeneous two entire partitionings are.
-"""
-
-
 def _compute_pairwise(items, metric_fn, return_all=False):
-    """Compute pairwise metrics. Returns mean or list of all pairs."""
+    """Compute pairwise metrics across all pairs of items.
+
+    For n items, computes n*(n-1)/2 pairwise comparisons.
+
+    Parameters
+    ----------
+    items : list
+        List of items to compare pairwise.
+    metric_fn : callable
+        Function that takes two items and returns a metric value.
+    return_all : bool, optional
+        If True, return list of all pairwise values. If False, return mean.
+        Default: False.
+
+    Returns
+    -------
+    float or list
+        Mean of pairwise metrics, or list of all pairwise values.
+
+    Raises
+    ------
+    ValueError
+        If fewer than 2 items are provided.
+    """
     n = len(items)
     if n < 2:
         raise ValueError("At least two items required for pairwise comparison.")
@@ -282,19 +384,49 @@ def JSD_client_to_global(dataset_list, num_classes=None, return_all=False):
 
 
 def FID_distance(dataset_list, return_all=False, **kwargs):
-    """
-    Compute Fréchet Inception Distance (FID) between datasets.
+    """Compute Frechet Inception Distance (FID) between datasets.
 
-    Note: FID is specifically designed for InceptionV3 features.
-    This function forces model_name='inception_v3'.
+    FID measures the distance between two multivariate Gaussians fitted to
+    InceptionV3 features. Lower FID indicates more similar distributions.
 
-    Args:
-        dataset_list: List of datasets
-        return_all: Return all pairwise FID scores or mean
-        **kwargs: Passed to _extract_features (overridden: model_name='inception_v3')
+    Parameters
+    ----------
+    dataset_list : List[List[Dict]]
+        List of datasets, each containing dicts with 'image' key.
+    return_all : bool, optional
+        If True, return list of pairwise FID values; if False, return mean.
+        Default: False.
+    **kwargs
+        Passed to _extract_features. Note: model_name is forced to 'inception_v3'.
 
-    Returns:
-        Mean FID or list of pairwise FID scores
+        Common kwargs:
+
+        - use_cache : bool - Enable caching (default: True)
+        - dataset_name : str - Dataset identifier for cache
+        - base_path : str - Base path for cache
+        - batch_size : int - Batch size for extraction
+
+    Returns
+    -------
+    float or list
+        Mean FID across all client pairs, or list of pairwise FID values.
+
+    Raises
+    ------
+    ValueError
+        If fewer than 2 datasets are provided.
+
+    Notes
+    -----
+    - FID is only meaningful with InceptionV3 features (hardcoded)
+    - Lower FID = more similar distributions
+    - FID = 0 if and only if distributions are identical
+    - Sensitive to sample size (may underestimate with small samples)
+
+    References
+    ----------
+    Heusel et al., "GANs Trained by a Two Time-Scale Update Rule Converge
+    to a Local Nash Equilibrium" (2017)
     """
     if len(dataset_list) < 2:
         raise ValueError("At least two datasets are required.")
@@ -470,19 +602,45 @@ def KS_multivariate_test(
     return_all: bool = False,
     **kwargs
 ):
-    """
-    Multivariate Kolmogorov-Smirnov test with optional PCA preprocessing.
+    """Multivariate Kolmogorov-Smirnov test with optional PCA preprocessing.
 
-    Args:
-        dataset_list: List of datasets
-        alpha: Significance level for Bonferroni correction
-        pca_components: If provided, reduce to this many PCA components before test
-        pca_variance: If provided, reduce to components explaining this variance (e.g., 0.95)
-        return_all: Return all pairwise results or aggregate
-        **kwargs: Passed to _extract_features (model_name, etc.)
+    Tests whether client feature distributions are statistically different
+    using per-dimension KS tests with Bonferroni correction for multiple
+    comparisons.
 
-    Returns:
-        Dictionary with test results or list of pairwise results
+    Parameters
+    ----------
+    dataset_list : List[List[Dict]]
+        List of datasets, each containing dicts with 'image' key.
+    alpha : float, optional
+        Significance level for the hypothesis test. Bonferroni correction
+        is applied (alpha / n_dimensions). Default: 0.05.
+    pca_components : int, optional
+        If provided, reduce to this many PCA components before testing.
+    pca_variance : float, optional
+        If provided, reduce to components explaining this variance
+        (e.g., 0.95 for 95%). Overrides pca_components.
+    return_all : bool, optional
+        If True, return list of pairwise test results. Default: False.
+    **kwargs
+        Passed to _extract_features (model_name, use_cache, etc.).
+
+    Returns
+    -------
+    dict or list
+        If return_all=False, returns aggregate result:
+
+        - "reject_null": True if any pair rejects H0 (distributions differ)
+        - "min_pvalue": Minimum p-value across all pairs and dimensions
+        - "significant_dims": Mean number of dimensions rejecting H0
+
+        If return_all=True, returns list of per-pair dicts.
+
+    Notes
+    -----
+    - Uses Bonferroni correction for multiple testing
+    - High-dimensional tests benefit from PCA dimensionality reduction
+    - Null hypothesis: distributions are identical
     """
     features = _extract_features(dataset_list, **kwargs)
 
@@ -582,25 +740,54 @@ def intrinsic_dimensionality(
     return_all: bool = False,
     **kwargs
 ) -> Union[List[float], float]:
-    """
-    Estimate intrinsic dimensionality of feature distributions.
+    """Estimate intrinsic dimensionality of feature distributions.
 
-    Args:
-        dataset_list: List of datasets
-        method: Estimation method ("two_nn" or "mle")
-        k: Number of neighbors for MLE method
-        use_faiss: Use FAISS
-        return_all: Return list of per-dataset estimates or mean
-        **kwargs: Passed to _extract_features
+    Intrinsic dimensionality measures the true "complexity" of data,
+    which is often much lower than the ambient dimension. Different
+    clients may have different intrinsic dimensions if their data
+    varies in complexity.
 
-    Returns:
-        Intrinsic dimensionality estimate(s)
+    Parameters
+    ----------
+    dataset_list : List[List[Dict]]
+        List of datasets, each containing dicts with 'image' key.
+    method : str, optional
+        Estimation method:
 
-    References:
-        - TWO-NN: Facco et al., "Estimating the intrinsic dimension of datasets
-          by a minimal neighborhood information" (2017)
-        - MLE: Levina & Bickel, "Maximum Likelihood Estimation of Intrinsic
-          Dimension" (2004)
+        - "two_nn": TWO-NN estimator (fast, robust)
+        - "mle": Maximum Likelihood Estimator (more accurate, uses k neighbors)
+
+        Default: "two_nn".
+    k : int, optional
+        Number of neighbors for MLE method. Default: 10.
+    use_faiss : bool, optional
+        Whether to use FAISS for fast nearest neighbor search.
+        Falls back to sklearn if FAISS not available. Default: True.
+    return_all : bool, optional
+        If True, return list of per-dataset estimates; if False, return mean.
+        Default: False.
+    **kwargs
+        Passed to _extract_features (model_name, use_cache, etc.).
+
+    Returns
+    -------
+    float or List[float]
+        Mean intrinsic dimensionality across datasets, or list of
+        per-dataset estimates.
+
+    Notes
+    -----
+    - TWO-NN uses only 2 nearest neighbors (very efficient)
+    - MLE is more accurate but sensitive to k
+    - Lower ID may indicate more structured/homogeneous client data
+    - NaN returned for datasets where estimation fails
+
+    References
+    ----------
+    - TWO-NN: Facco et al., "Estimating the intrinsic dimension of datasets
+      by a minimal neighborhood information" (2017)
+    - MLE: Levina & Bickel, "Maximum Likelihood Estimation of Intrinsic
+      Dimension" (2004)
     """
     features = _extract_features(dataset_list, **kwargs)
 
@@ -845,7 +1032,30 @@ def feature_variance(dataset_list, return_all=False, **kwargs):
 
 
 def MMD_rbf_kernel(X, Y, sigma=None):
-    """Calculate MMD^2 using RBF kernel."""
+    """Calculate squared Maximum Mean Discrepancy using RBF kernel.
+
+    This is the core MMD computation used by the :func:`MMD` metric.
+    Uses unbiased estimator with proper diagonal handling.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        First set of samples, shape (m, d).
+    Y : np.ndarray
+        Second set of samples, shape (n, d).
+    sigma : float, optional
+        RBF kernel bandwidth. If None, uses median heuristic
+        (median of non-zero pairwise distances).
+
+    Returns
+    -------
+    float
+        Squared MMD value (non-negative).
+
+    Notes
+    -----
+    Uses unbiased estimator: excludes self-comparisons from kernel matrices.
+    """
     X, Y = np.atleast_2d(X), np.atleast_2d(Y)
     m, n = X.shape[0], Y.shape[0]
 

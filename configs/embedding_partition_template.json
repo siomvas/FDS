@@ -1,0 +1,25 @@
+{
+  "model": {
+    "model_type": "dinov2",
+    "variant": "base",
+    "device": null,
+    "batch_size": 32,
+    "num_workers": 4,
+    "proxy": null
+  },
+  "pooling": {
+    "strategy": "cls",
+    "params": {}
+  },
+  "clustering": {
+    "method": "hdbscan",
+    "params": {
+      "min_cluster_size": 15
+    }
+  },
+  "n_clients": 10,
+  "cache_dir": "./.embedding_cache",
+  "cache_enabled": true,
+  "assignment_strategy": "round_robin",
+  "handle_noise": "distribute"
+}

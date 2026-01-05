@@ -1,8 +1,42 @@
-"""
-Pooling strategies for aggregating token embeddings.
+"""Pooling strategies for aggregating token embeddings.
 
-Provides various methods to aggregate token-level embeddings into
-sample-level representations.
+This module provides various pooling strategies to aggregate token-level
+embeddings (from Vision Transformers) into fixed-size sample-level
+representations suitable for clustering and downstream tasks.
+
+Available Strategies
+--------------------
+CLSPooling
+    Extract the CLS token (first token) from transformer outputs.
+MeanPooling
+    Average all token embeddings (spatial mean pooling).
+MaxPooling
+    Element-wise maximum across all tokens.
+GeMLPooling
+    Generalized Mean pooling with configurable power parameter.
+LastKLayerPooling
+    Aggregate embeddings from multiple transformer layers.
+SpectralSharpeningPooling
+    Project embeddings onto graph Laplacian eigenvectors for sharpening.
+
+Usage
+-----
+Use the factory function for easy instantiation:
+
+    >>> from partitioning.embedding_utils.pooling_strategies import get_pooling_strategy
+    >>> pooling = get_pooling_strategy("gem", p=3.0)
+    >>> pooled = pooling.pool(token_embeddings)
+
+Or instantiate directly:
+
+    >>> from partitioning.embedding_utils.pooling_strategies import GeMLPooling
+    >>> pooling = GeMLPooling(p=3.0)
+    >>> pooled = pooling.pool(token_embeddings)
+
+See Also
+--------
+EmbeddingSplitter : Uses pooling strategies for embedding-based partitioning.
+EmbeddingConfig : Configuration for selecting pooling strategies.
 """
 
 from abc import ABC, abstractmethod
@@ -14,20 +48,28 @@ from scipy.sparse import csr_matrix
 
 
 class PoolingStrategy(ABC):
-    """Abstract base class for pooling strategies."""
+    """Abstract base class for pooling strategies.
+
+    All pooling strategies must implement the :meth:`pool` method that
+    transforms token-level embeddings into sample-level embeddings.
+    """
 
     @abstractmethod
     def pool(self, embeddings: np.ndarray) -> np.ndarray:
-        """
-        Pool token embeddings to sample-level embeddings.
+        """Pool token embeddings to sample-level embeddings.
 
-        Args:
-            embeddings: Token embeddings of shape:
-                - (n_samples, embed_dim) for single token per sample
-                - (n_samples, n_tokens, embed_dim) for multiple tokens
+        Parameters
+        ----------
+        embeddings : np.ndarray
+            Token embeddings with shape:
 
-        Returns:
-            Pooled embeddings of shape (n_samples, embed_dim)
+            - (n_samples, embed_dim) for single token per sample
+            - (n_samples, n_tokens, embed_dim) for multiple tokens per sample
+
+        Returns
+        -------
+        np.ndarray
+            Pooled embeddings of shape (n_samples, embed_dim).
         """
         pass
 
@@ -36,7 +78,17 @@ class PoolingStrategy(ABC):
 
 
 class CLSPooling(PoolingStrategy):
-    """Extract CLS token only (first token)."""
+    """Extract CLS token only (first token).
+
+    The CLS token is a special token in transformer models that aggregates
+    global information. It is commonly used as the sequence representation.
+
+    Notes
+    -----
+    - Default pooling for most transformer models
+    - Fast and simple (no computation needed)
+    - Works well when CLS token is meaningful (e.g., DINOv2, CLIP)
+    """
 
     def pool(self, embeddings: np.ndarray) -> np.ndarray:
         """Extract CLS token (first token) from token embeddings."""
@@ -54,7 +106,17 @@ class CLSPooling(PoolingStrategy):
 
 
 class MeanPooling(PoolingStrategy):
-    """Average all token embeddings."""
+    """Average all token embeddings.
+
+    Computes element-wise mean across all spatial tokens, providing a
+    representation that considers all image regions equally.
+
+    Notes
+    -----
+    - Good for models without meaningful CLS token
+    - Captures global context from all spatial locations
+    - More robust to local variations than CLS pooling
+    """
 
     def pool(self, embeddings: np.ndarray) -> np.ndarray:
         """Average over token dimension."""
@@ -72,7 +134,17 @@ class MeanPooling(PoolingStrategy):
 
 
 class MaxPooling(PoolingStrategy):
-    """Max pooling over token embeddings."""
+    """Max pooling over token embeddings.
+
+    Computes element-wise maximum across all spatial tokens, retaining
+    only the strongest activations from any spatial location.
+
+    Notes
+    -----
+    - Emphasizes the most salient features
+    - More sensitive to discriminative local features
+    - Can be less robust to noise than mean pooling
+    """
 
     def pool(self, embeddings: np.ndarray) -> np.ndarray:
         """Max pooling over token dimension."""
@@ -88,21 +160,36 @@ class MaxPooling(PoolingStrategy):
 
 
 class GeMLPooling(PoolingStrategy):
-    """
-    Generalized Mean (GeM) Pooling.
+    """Generalized Mean (GeM) Pooling.
 
-    GeM pooling: (mean(x^p))^(1/p)
-    - p=1: arithmetic mean
-    - p=2: quadratic mean (RMS)
-    - p→∞: max pooling
+    Computes generalized mean pooling: ``(mean(|x|^p))^(1/p)``.
+    Interpolates between different pooling behaviors based on p:
+
+    - p=1: Arithmetic mean (equivalent to MeanPooling)
+    - p=2: Quadratic mean (RMS)
+    - p>1: Emphasizes larger activations more than mean pooling
+    - p->inf: Approaches max pooling
+
+    Parameters
+    ----------
+    p : float, optional
+        GeM pooling exponent. Typical values: 3.0-4.0. Default: 3.0.
+    eps : float, optional
+        Small constant for numerical stability. Default: 1e-6.
+
+    Notes
+    -----
+    - Recommended for image retrieval and fine-grained recognition
+    - Often outperforms simple mean pooling for similarity tasks
+    - Handles signed values using sign-preserving power computation
+
+    References
+    ----------
+    Radenovic et al., "Fine-tuning CNN Image Retrieval with No Human
+    Annotation" (2018)
     """
 
     def __init__(self, p: float = 3.0, eps: float = 1e-6):
-        """
-        Args:
-            p: GeM pooling parameter (typically 3.0-4.0)
-            eps: Small constant for numerical stability
-        """
         self.p = p
         self.eps = eps
 
@@ -136,18 +223,40 @@ class GeMLPooling(PoolingStrategy):
 
 
 class LastKLayerPooling(PoolingStrategy):
-    """
-    Aggregate embeddings from last K layers.
+    """Aggregate embeddings from last K transformer layers.
 
-    Can use mean, concatenation, or weighted average.
+    Combines information from multiple layers of a transformer, which can
+    capture different levels of semantic abstraction.
+
+    Parameters
+    ----------
+    k : int, optional
+        Number of last layers to aggregate. Default: 4.
+    aggregation : str, optional
+        Aggregation method:
+
+        - "mean": Average across layers (preserves dimension)
+        - "concat": Concatenate layers (output dim = k * embed_dim)
+        - "weighted": Weighted average (later layers weighted higher)
+
+        Default: "mean".
+
+    Notes
+    -----
+    - Requires transformer models that output hidden states
+    - "concat" increases embedding dimension by factor k
+    - "weighted" assigns linearly increasing weights to later layers
+    - Earlier layers capture low-level features, later layers capture semantics
+
+    Raises
+    ------
+    ValueError
+        If aggregation method is not recognized.
+    TypeError
+        If input is not a dictionary of layer embeddings.
     """
 
     def __init__(self, k: int = 4, aggregation: str = "mean"):
-        """
-        Args:
-            k: Number of last layers to aggregate
-            aggregation: How to aggregate ("mean", "concat", "weighted")
-        """
         self.k = k
         self.aggregation = aggregation
 
@@ -196,13 +305,46 @@ class LastKLayerPooling(PoolingStrategy):
 
 
 class SpectralSharpeningPooling(PoolingStrategy):
-    """
-    Spectral sharpening via Laplacian eigenvectors.
+    """Spectral sharpening via Laplacian eigenvectors.
 
-    Projects embeddings onto top-K eigenvectors of the graph Laplacian
-    to sharpen the representation by emphasizing dominant structures.
+    Projects embeddings onto the top-K eigenvectors of the sample similarity
+    graph's Laplacian. This "sharpens" the representation by emphasizing the
+    dominant cluster structure in the data.
 
+    The process:
+    1. Build a similarity graph using RBF kernel
+    2. Compute the graph Laplacian
+    3. Extract top-K eigenvectors (smallest eigenvalues)
+    4. Use eigenvector coordinates as new representation
+
+    Parameters
+    ----------
+    k : int, optional
+        Number of top eigenvectors to project onto. This determines the
+        output dimension. Default: 50.
+    sigma : float, optional
+        RBF kernel bandwidth. If None, uses median heuristic (median of
+        non-zero pairwise distances). Default: None.
+    use_normalized_laplacian : bool, optional
+        Whether to use normalized Laplacian (recommended for better
+        numerical stability). Default: True.
+
+    Attributes
+    ----------
+    sigma : float
+        The kernel bandwidth used (computed or provided).
+
+    Notes
+    -----
+    - Output dimension is k (not embed_dim)
+    - Requires at least k samples to compute
+    - Computationally expensive for large datasets
+    - Most effective for data with clear cluster structure
+
+    References
+    ----------
     Based on spectral clustering theory and graph signal processing.
+    See: von Luxburg, "A Tutorial on Spectral Clustering" (2007)
     """
 
     def __init__(
@@ -211,12 +353,6 @@ class SpectralSharpeningPooling(PoolingStrategy):
         sigma: Optional[float] = None,
         use_normalized_laplacian: bool = True,
     ):
-        """
-        Args:
-            k: Number of top eigenvectors to project onto
-            sigma: RBF kernel bandwidth (if None, uses median heuristic)
-            use_normalized_laplacian: Use normalized Laplacian (recommended)
-        """
         self.k = k
         self.sigma = sigma
         self.use_normalized_laplacian = use_normalized_laplacian
@@ -293,19 +429,38 @@ class SpectralSharpeningPooling(PoolingStrategy):
 
 # Factory function for easy instantiation
 def get_pooling_strategy(name: str, **kwargs) -> PoolingStrategy:
-    """
-    Factory function to get pooling strategy by name.
+    """Factory function to get pooling strategy by name.
 
-    Args:
-        name: Strategy name (cls/mean/max/gem/lastk/spectral)
-        **kwargs: Strategy-specific parameters
+    Parameters
+    ----------
+    name : str
+        Strategy name. One of:
 
-    Returns:
-        PoolingStrategy instance
+        - "cls": CLS token pooling
+        - "mean": Mean pooling
+        - "max": Max pooling
+        - "gem": Generalized mean pooling (use p=... kwarg)
+        - "lastk": Last K layers (use k=..., aggregation=... kwargs)
+        - "spectral": Spectral sharpening (use k=..., sigma=... kwargs)
 
-    Example:
-        >>> pooling = get_pooling_strategy("gem", p=3.0)
-        >>> pooling = get_pooling_strategy("lastk", k=4, aggregation="mean")
+    **kwargs
+        Strategy-specific parameters passed to the constructor.
+
+    Returns
+    -------
+    PoolingStrategy
+        Initialized pooling strategy instance.
+
+    Raises
+    ------
+    ValueError
+        If the strategy name is not recognized.
+
+    Examples
+    --------
+    >>> pooling = get_pooling_strategy("gem", p=3.0)
+    >>> pooling = get_pooling_strategy("lastk", k=4, aggregation="mean")
+    >>> pooling = get_pooling_strategy("spectral", k=50)
     """
     strategies = {
         "cls": CLSPooling,

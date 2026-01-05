@@ -1,8 +1,38 @@
-"""
-Clustering methods for embedding-based partitioning.
+"""Clustering methods for embedding-based partitioning.
 
-Provides various clustering algorithms to group embeddings into
-semantically meaningful clusters.
+This module provides various clustering algorithms to group image embeddings
+into semantically meaningful clusters for federated learning data partitioning.
+
+Available Methods
+-----------------
+HDBSCANMethod
+    Density-based clustering with automatic cluster detection.
+KMeansMethod
+    Simple k-means clustering with fixed number of clusters.
+KNNGraphMethod
+    k-NN graph-based clustering using connected components.
+SpectralMethod
+    Spectral clustering using graph Laplacian eigenvectors.
+
+Usage
+-----
+Use the factory function for easy instantiation:
+
+    >>> from partitioning.embedding_utils.clustering_methods import get_clustering_method
+    >>> clustering = get_clustering_method("hdbscan", min_cluster_size=15)
+    >>> labels = clustering.cluster(embeddings)
+    >>> info = clustering.get_cluster_info()
+
+Or instantiate directly:
+
+    >>> from partitioning.embedding_utils.clustering_methods import HDBSCANMethod
+    >>> clustering = HDBSCANMethod(min_cluster_size=15, min_samples=5)
+    >>> labels = clustering.cluster(embeddings)
+
+See Also
+--------
+EmbeddingSplitter : Uses clustering methods for embedding-based partitioning.
+EmbeddingConfig : Configuration for selecting clustering methods.
 """
 
 from abc import ABC, abstractmethod
@@ -15,29 +45,42 @@ import hdbscan
 
 
 class ClusteringMethod(ABC):
-    """Abstract base class for clustering methods."""
+    """Abstract base class for clustering methods.
+
+    All clustering methods must implement :meth:`cluster` to assign samples
+    to groups and :meth:`get_cluster_info` to report clustering statistics.
+    """
 
     @abstractmethod
     def cluster(self, embeddings: np.ndarray) -> np.ndarray:
-        """
-        Cluster embeddings into groups.
+        """Cluster embeddings into groups.
 
-        Args:
-            embeddings: Embeddings to cluster, shape (n_samples, embed_dim)
+        Parameters
+        ----------
+        embeddings : np.ndarray
+            Embeddings to cluster, shape (n_samples, embed_dim).
 
-        Returns:
-            Cluster labels, shape (n_samples,)
-            Labels are integers >= 0, or -1 for noise/outliers
+        Returns
+        -------
+        np.ndarray
+            Cluster labels, shape (n_samples,). Labels are integers >= 0,
+            or -1 for noise/outliers (HDBSCAN only).
         """
         pass
 
     @abstractmethod
     def get_cluster_info(self) -> Dict:
-        """
-        Get information about the clustering result.
+        """Get information about the clustering result.
 
-        Returns:
-            Dictionary with clustering metadata (num_clusters, noise_count, etc.)
+        Returns
+        -------
+        dict
+            Dictionary with clustering metadata including:
+
+            - "method": Name of the clustering method
+            - "num_clusters": Number of clusters found
+            - "cluster_sizes": Dict mapping cluster ID to sample count
+            - Additional method-specific information
         """
         pass
 
@@ -46,11 +89,45 @@ class ClusteringMethod(ABC):
 
 
 class HDBSCANMethod(ClusteringMethod):
-    """
-    HDBSCAN (Hierarchical Density-Based Spatial Clustering).
+    """HDBSCAN (Hierarchical Density-Based Spatial Clustering).
 
-    Automatically determines the number of clusters based on density.
-    Can handle noise and outliers (labeled as -1).
+    Automatically determines the number of clusters based on local density.
+    Unlike k-means, does not require specifying the number of clusters.
+    Can identify noise/outliers (labeled as -1).
+
+    Parameters
+    ----------
+    min_cluster_size : int, optional
+        Minimum number of samples in a cluster. Smaller values create more
+        clusters. Default: 15.
+    min_samples : int, optional
+        Minimum samples in a neighborhood for core points. If None, defaults
+        to min_cluster_size. Smaller values are less conservative.
+    metric : str, optional
+        Distance metric. Default: "euclidean".
+    cluster_selection_epsilon : float, optional
+        Distance threshold for cluster merging. Larger values merge more
+        clusters. Default: 0.0 (no merging based on distance).
+    cluster_selection_method : str, optional
+        Method for extracting clusters from hierarchy:
+
+        - "eom": Excess of Mass (default, better for varying densities)
+        - "leaf": Leaf nodes (produces more fine-grained clusters)
+
+    Attributes
+    ----------
+    labels_ : np.ndarray
+        Cluster labels after clustering (-1 indicates noise).
+    probabilities_ : np.ndarray
+        Cluster membership probabilities.
+    clusterer : hdbscan.HDBSCAN
+        The underlying HDBSCAN clusterer.
+
+    Notes
+    -----
+    - Recommended default for embedding-based partitioning
+    - Robust to varying cluster densities and shapes
+    - Noise samples require special handling (see EmbeddingSplitter.handle_noise)
     """
 
     def __init__(
@@ -61,14 +138,6 @@ class HDBSCANMethod(ClusteringMethod):
         cluster_selection_epsilon: float = 0.0,
         cluster_selection_method: str = "eom",
     ):
-        """
-        Args:
-            min_cluster_size: Minimum cluster size
-            min_samples: Minimum samples in neighborhood (defaults to min_cluster_size)
-            metric: Distance metric to use
-            cluster_selection_epsilon: Distance threshold for cluster selection
-            cluster_selection_method: Method for selecting clusters ('eom' or 'leaf')
-        """
         self.min_cluster_size = min_cluster_size
         self.min_samples = min_samples or min_cluster_size
         self.metric = metric
@@ -125,10 +194,38 @@ class HDBSCANMethod(ClusteringMethod):
 
 
 class KMeansMethod(ClusteringMethod):
-    """
-    K-Means clustering.
+    """K-Means clustering.
 
-    Simple baseline that requires specifying the number of clusters.
+    Classic centroid-based clustering. Simple and fast, but requires
+    specifying the number of clusters in advance.
+
+    Parameters
+    ----------
+    n_clusters : int
+        Number of clusters to form. Required parameter.
+    random_state : int, optional
+        Random seed for reproducibility. Default: 42.
+    n_init : int, optional
+        Number of different centroid initializations to try. The best
+        result is kept. Default: 10.
+    max_iter : int, optional
+        Maximum number of iterations per run. Default: 300.
+
+    Attributes
+    ----------
+    labels_ : np.ndarray
+        Cluster labels after clustering.
+    inertia_ : float
+        Sum of squared distances to cluster centers.
+    clusterer : sklearn.cluster.KMeans
+        The underlying k-means clusterer.
+
+    Notes
+    -----
+    - Fastest clustering method
+    - Assumes spherical, equally-sized clusters
+    - Good baseline for comparison with other methods
+    - No noise detection (all samples assigned to clusters)
     """
 
     def __init__(
@@ -138,13 +235,6 @@ class KMeansMethod(ClusteringMethod):
         n_init: int = 10,
         max_iter: int = 300,
     ):
-        """
-        Args:
-            n_clusters: Number of clusters to form
-            random_state: Random seed for reproducibility
-            n_init: Number of initializations
-            max_iter: Maximum iterations
-        """
         self.n_clusters = n_clusters
         self.random_state = random_state
         self.n_init = n_init
@@ -189,10 +279,40 @@ class KMeansMethod(ClusteringMethod):
 
 
 class KNNGraphMethod(ClusteringMethod):
-    """
-    K-Nearest Neighbors graph clustering.
+    """K-Nearest Neighbors graph clustering.
 
     Builds a k-NN graph and extracts connected components as clusters.
+    Simple and parameter-free (aside from k), but number of clusters
+    depends on the graph connectivity.
+
+    Parameters
+    ----------
+    n_neighbors : int, optional
+        Number of nearest neighbors for each sample. Larger values
+        create more connected graphs (fewer clusters). Default: 15.
+    metric : str, optional
+        Distance metric for k-NN computation. Default: "cosine".
+    mode : str, optional
+        Type of graph weights:
+
+        - "connectivity": Binary edges (0 or 1)
+        - "distance": Edge weights = distances
+
+        Default: "connectivity".
+
+    Attributes
+    ----------
+    labels_ : np.ndarray
+        Cluster labels after clustering.
+    graph_ : sparse matrix
+        The k-NN graph (symmetric).
+
+    Notes
+    -----
+    - Number of clusters depends on graph structure
+    - Sensitive to n_neighbors parameter
+    - No noise detection (all samples in some cluster)
+    - Graph is made symmetric (undirected)
     """
 
     def __init__(
@@ -201,12 +321,6 @@ class KNNGraphMethod(ClusteringMethod):
         metric: str = "cosine",
         mode: str = "connectivity",
     ):
-        """
-        Args:
-            n_neighbors: Number of nearest neighbors
-            metric: Distance metric for k-NN graph
-            mode: Type of graph ('connectivity' or 'distance')
-        """
         self.n_neighbors = n_neighbors
         self.metric = metric
         self.mode = mode
@@ -261,11 +375,43 @@ class KNNGraphMethod(ClusteringMethod):
 
 
 class SpectralMethod(ClusteringMethod):
-    """
-    Spectral clustering using graph Laplacian eigenvectors.
+    """Spectral clustering using graph Laplacian eigenvectors.
 
-    Projects data onto top eigenvectors of the similarity graph,
-    then applies k-means in the spectral space.
+    Projects data onto the top eigenvectors of a similarity graph's
+    Laplacian, then applies k-means in this spectral embedding space.
+    Effective for non-convex cluster shapes.
+
+    Parameters
+    ----------
+    n_clusters : int
+        Number of clusters to form. Required parameter.
+    affinity : str, optional
+        How to construct the affinity matrix:
+
+        - "rbf": RBF (Gaussian) kernel
+        - "nearest_neighbors": k-NN graph
+
+        Default: "rbf".
+    gamma : float, optional
+        Kernel coefficient for RBF. If None, uses 1/n_features.
+    n_neighbors : int, optional
+        Number of neighbors for "nearest_neighbors" affinity. Default: 10.
+    random_state : int, optional
+        Random seed for reproducibility. Default: 42.
+
+    Attributes
+    ----------
+    labels_ : np.ndarray
+        Cluster labels after clustering.
+    clusterer : sklearn.cluster.SpectralClustering
+        The underlying spectral clusterer.
+
+    Notes
+    -----
+    - Good for complex, non-convex cluster shapes
+    - More expensive than k-means (O(n^3) for eigendecomposition)
+    - No noise detection (all samples assigned to clusters)
+    - Consider using "nearest_neighbors" for sparse similarity graphs
     """
 
     def __init__(
@@ -276,14 +422,6 @@ class SpectralMethod(ClusteringMethod):
         n_neighbors: int = 10,
         random_state: int = 42,
     ):
-        """
-        Args:
-            n_clusters: Number of clusters to form
-            affinity: How to construct affinity matrix ('rbf', 'nearest_neighbors')
-            gamma: Kernel coefficient for RBF (if None, uses 1/n_features)
-            n_neighbors: Number of neighbors for nearest_neighbors affinity
-            random_state: Random seed
-        """
         self.n_clusters = n_clusters
         self.affinity = affinity
         self.gamma = gamma
@@ -332,20 +470,37 @@ class SpectralMethod(ClusteringMethod):
 
 # Factory function for easy instantiation
 def get_clustering_method(name: str, **kwargs) -> ClusteringMethod:
-    """
-    Factory function to get clustering method by name.
+    """Factory function to get clustering method by name.
 
-    Args:
-        name: Method name (hdbscan/kmeans/knn/spectral)
-        **kwargs: Method-specific parameters
+    Parameters
+    ----------
+    name : str
+        Method name. One of:
 
-    Returns:
-        ClusteringMethod instance
+        - "hdbscan": HDBSCAN (use min_cluster_size=..., min_samples=...)
+        - "kmeans": K-Means (use n_clusters=...)
+        - "knn": k-NN Graph (use n_neighbors=...)
+        - "spectral": Spectral (use n_clusters=..., affinity=...)
 
-    Example:
-        >>> clustering = get_clustering_method("hdbscan", min_cluster_size=15)
-        >>> clustering = get_clustering_method("kmeans", n_clusters=10)
-        >>> clustering = get_clustering_method("knn", n_neighbors=15)
+    **kwargs
+        Method-specific parameters passed to the constructor.
+
+    Returns
+    -------
+    ClusteringMethod
+        Initialized clustering method instance.
+
+    Raises
+    ------
+    ValueError
+        If the method name is not recognized.
+
+    Examples
+    --------
+    >>> clustering = get_clustering_method("hdbscan", min_cluster_size=15)
+    >>> clustering = get_clustering_method("kmeans", n_clusters=10)
+    >>> clustering = get_clustering_method("knn", n_neighbors=15)
+    >>> clustering = get_clustering_method("spectral", n_clusters=10, affinity="rbf")
     """
     methods = {
         "hdbscan": HDBSCANMethod,

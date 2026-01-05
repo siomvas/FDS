@@ -562,6 +562,30 @@ class EmbeddingExtractor(ABC):
 
 @ModelRegistry.register("inception_v3")
 class InceptionExtractor(EmbeddingExtractor):
+    """InceptionV3 feature extractor for FID-compatible embeddings.
+
+    Extracts 2048-dimensional features from the penultimate layer of
+    InceptionV3, commonly used for Frechet Inception Distance (FID) computation.
+
+    Parameters
+    ----------
+    variant : str, optional
+        Variant identifier (unused, InceptionV3 has only one variant).
+    **kwargs
+        Passed to :class:`EmbeddingExtractor` (device, batch_size, etc.).
+
+    Attributes
+    ----------
+    model : nn.Module
+        InceptionV3 model with final FC layer replaced by Identity.
+
+    Notes
+    -----
+    - Output dimension: 2048
+    - Uses ImageNet normalization
+    - Input size: 299x299 (auto-resized)
+    """
+
     def __init__(self, variant: str = "default", **kwargs):
         super().__init__(model_name="inception_v3", **kwargs)
 
@@ -641,6 +665,32 @@ class InceptionExtractor(EmbeddingExtractor):
 
 @ModelRegistry.register("mae")
 class MAEExtractor(EmbeddingExtractor):
+    """Masked Autoencoder (MAE) feature extractor.
+
+    Extracts features from the ViT-MAE model encoder. MAE is trained via
+    masked image modeling, learning rich visual representations.
+
+    Parameters
+    ----------
+    variant : str, optional
+        Model size variant. One of "base", "large", "huge". Default: "base".
+    **kwargs
+        Passed to :class:`EmbeddingExtractor` (device, batch_size, etc.).
+
+    Attributes
+    ----------
+    VARIANTS : dict
+        Mapping of variant names to HuggingFace model paths.
+    hf_model_path : str
+        The resolved HuggingFace model path for the selected variant.
+
+    Notes
+    -----
+    - Output dimensions: base=768, large=1024, huge=1280
+    - Uses HuggingFace transformers library
+    - Supports CLS token or all-tokens extraction
+    """
+
     VARIANTS = {
         "base": "facebook/vit-mae-base",
         "large": "facebook/vit-mae-large",
@@ -666,7 +716,33 @@ class MAEExtractor(EmbeddingExtractor):
 
 @ModelRegistry.register("dinov2")
 class DINOv2Extractor(EmbeddingExtractor):
+    """DINOv2 self-supervised Vision Transformer feature extractor.
+
+    Extracts rich semantic features from Meta's DINOv2 model, trained with
+    self-distillation on large-scale unlabeled image data.
+
+    Parameters
+    ----------
+    variant : str, optional
+        Model size variant. One of "small", "base", "large", "giant".
+        Default: "base".
+    **kwargs
+        Passed to :class:`EmbeddingExtractor` (device, batch_size, etc.).
+
+    Attributes
+    ----------
+    VARIANTS : dict
+        Mapping of variant names to HuggingFace model paths.
+
+    Notes
+    -----
+    - Output dimensions: small=384, base=768, large=1024, giant=1536
+    - Excellent for semantic similarity and clustering tasks
+    - Recommended default for embedding-based partitioning
+    """
+
     VARIANTS = {"small": "facebook/dinov2-small", "base": "facebook/dinov2-base", "large": "facebook/dinov2-large", "giant": "facebook/dinov2-giant"}
+
     def __init__(self, variant: str = "base", **kwargs):
         if variant not in self.VARIANTS:
             raise ValueError(f"Unknown DINOv2 variant '{variant}'. Options: {list(self.VARIANTS.keys())}")
@@ -685,6 +761,31 @@ class DINOv2Extractor(EmbeddingExtractor):
 
 @ModelRegistry.register("clip")
 class CLIPExtractor(EmbeddingExtractor):
+    """CLIP (Contrastive Language-Image Pre-training) vision encoder.
+
+    Extracts visual features from OpenAI's CLIP model, trained to align
+    image and text representations in a shared embedding space.
+
+    Parameters
+    ----------
+    variant : str, optional
+        Model variant. One of "base-patch32", "base-patch16", "large-patch14".
+        Default: "base-patch16".
+    **kwargs
+        Passed to :class:`EmbeddingExtractor` (device, batch_size, etc.).
+
+    Attributes
+    ----------
+    VARIANTS : dict
+        Mapping of variant names to HuggingFace model paths.
+
+    Notes
+    -----
+    - Output dimensions: base variants=768, large=1024
+    - Good for cross-modal tasks and semantic understanding
+    - Vision-only encoder (text encoder not used here)
+    """
+
     VARIANTS = {
         "base-patch32": "openai/clip-vit-base-patch32",
         "base-patch16": "openai/clip-vit-base-patch16",
@@ -710,6 +811,31 @@ class CLIPExtractor(EmbeddingExtractor):
 
 @ModelRegistry.register("siglip")
 class SigLIPExtractor(EmbeddingExtractor):
+    """SigLIP (Sigmoid Loss for Language-Image Pre-training) vision encoder.
+
+    Extracts visual features from Google's SigLIP model, an improved CLIP
+    variant using sigmoid loss instead of softmax for better efficiency.
+
+    Parameters
+    ----------
+    variant : str, optional
+        Model variant. One of "base-patch16-224", "base-patch16-384",
+        "large-patch16-256". Default: "base-patch16-224".
+    **kwargs
+        Passed to :class:`EmbeddingExtractor` (device, batch_size, etc.).
+
+    Attributes
+    ----------
+    VARIANTS : dict
+        Mapping of variant names to HuggingFace model paths.
+
+    Notes
+    -----
+    - Output dimensions: base=768, large=1024
+    - Often outperforms CLIP on retrieval tasks
+    - Different input resolutions available (224, 256, 384)
+    """
+
     VARIANTS = {
         "base-patch16-224": "google/siglip-base-patch16-224",
         "base-patch16-384": "google/siglip-base-patch16-384",
@@ -735,6 +861,31 @@ class SigLIPExtractor(EmbeddingExtractor):
 
 @ModelRegistry.register("raw_pixel_resizer")
 class RawPixelResizerExtractor(EmbeddingExtractor):
+    """Raw pixel feature extractor (no learned features).
+
+    Resizes images and flattens them into vectors. Provides a simple baseline
+    that uses no learned representations - just raw pixel values.
+
+    Parameters
+    ----------
+    variant : str, optional
+        Target image size (e.g., "64" for 64x64). Default: "64".
+    **kwargs
+        Passed to :class:`EmbeddingExtractor` (device, batch_size, etc.).
+
+    Attributes
+    ----------
+    target_size : int
+        The target height and width for resizing.
+
+    Notes
+    -----
+    - Output dimension: target_size * target_size * 3 (RGB channels)
+    - No neural network inference required
+    - Useful as a baseline for comparing learned features
+    - Example: 64x64 produces 12,288-dimensional vectors
+    """
+
     def __init__(self, variant: str = "64", **kwargs):
         super().__init__(model_name="raw_pixel_resizer", **kwargs)
         try:
@@ -812,6 +963,37 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
 
 @ModelRegistry.register("sparse_random_projection_resizer")
 class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
+    """Sparse random projection feature extractor (no learned features).
+
+    Resizes images, flattens them, and projects to lower dimensions using
+    sparse random projections. Based on Johnson-Lindenstrauss lemma for
+    dimensionality reduction while approximately preserving distances.
+
+    Parameters
+    ----------
+    variant : str, optional
+        Format: "<size>-<target_dim>" (e.g., "64-1000" for 64x64 images
+        projected to 1000 dimensions). Default: "64-1000".
+    **kwargs
+        Passed to :class:`EmbeddingExtractor` (device, batch_size, etc.).
+
+    Attributes
+    ----------
+    target_size : int
+        The target height and width for resizing.
+    target_dim : int
+        The output embedding dimension after projection.
+    transformer : SparseRandomProjection
+        The sklearn sparse random projection transformer.
+
+    Notes
+    -----
+    - Uses sklearn's SparseRandomProjection with random_state=42
+    - Projection matrix is fit on the first batch
+    - Useful as a baseline or when computational resources are limited
+    - Approximately preserves pairwise distances (JL lemma)
+    """
+
     def __init__(self, variant: str = "64-1000", **kwargs):
         if variant == "default":
             variant = "64-1000"
@@ -915,6 +1097,36 @@ class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
 
 @ModelRegistry.register("UAE")
 class UntrainedAutoEncoderExtractor(EmbeddingExtractor):
+    """Untrained AutoEncoder feature extractor (random initialization).
+
+    Extracts features using a randomly initialized convolutional autoencoder
+    encoder. The network is never trained - it uses random weights to produce
+    deterministic but arbitrary features.
+
+    Parameters
+    ----------
+    variant : str, optional
+        Must be "default". Only one variant is supported.
+    input_size : int, optional
+        Input image size (square). Default: 64.
+    **kwargs
+        Passed to :class:`EmbeddingExtractor` (device, batch_size, etc.).
+
+    Attributes
+    ----------
+    input_size : int
+        The input image size used.
+    autoencoder : nn.Module
+        The randomly initialized convolutional encoder.
+
+    Notes
+    -----
+    - Output dimension: 16 * (input_size // 8)^2
+    - Example: input_size=64 produces 1024-dimensional vectors
+    - Useful as a baseline to compare against trained embeddings
+    - Architecture: 3 conv layers with max pooling
+    """
+
     def __init__(self, variant: str = "default", input_size: int = 64, **kwargs):
         if variant != "default":
             raise ValueError(f"Unknown variant '{variant}' for UntrainedAutoEncoderExtractor. Only 'default' is supported.")
@@ -1009,6 +1221,41 @@ class UntrainedAutoEncoderExtractor(EmbeddingExtractor):
 
 @ModelRegistry.register("wavelet_scattering")
 class WaveletScatteringExtractor(EmbeddingExtractor):
+    """Wavelet scattering transform feature extractor (no learned features).
+
+    Computes wavelet scattering coefficients using the kymatio library.
+    Scattering transforms provide stable, invariant representations without
+    any training, based on cascaded wavelet convolutions.
+
+    Parameters
+    ----------
+    variant : str, optional
+        Format: "<size>-<J>" where size is input resolution and J is the
+        number of scattering scales. Default: "224-3".
+    **kwargs
+        Passed to :class:`EmbeddingExtractor` (device, batch_size, etc.).
+
+    Attributes
+    ----------
+    input_size : int
+        The input image size used.
+    J : int
+        Number of wavelet scales (larger J = more invariance).
+    scattering : kymatio.torch.Scattering2D
+        The scattering transform module.
+
+    Notes
+    -----
+    - Requires kymatio package: ``pip install kymatio``
+    - Output dimension depends on input_size and J
+    - Provides translation and deformation invariance
+    - No training required - purely mathematical transform
+
+    References
+    ----------
+    Mallat, S. "Group Invariant Scattering" (2012)
+    """
+
     def __init__(self, variant: str = "224-3", **kwargs):
         if variant == "default":
             variant = "224-3"

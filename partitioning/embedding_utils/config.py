@@ -468,37 +468,55 @@ def create_custom_config(
     This is a convenience function for users who want to customize a few
     parameters without specifying all nested dataclasses.
 
-    Args:
-        n_clients: Number of clients
-        model_type: Model family (default: "dinov2")
-        variant: Model variant (default: "base")
-        clustering_method: Clustering algorithm (default: "hdbscan")
-        **kwargs: Additional parameters to override
-            - batch_size: Model batch size
-            - pooling_strategy: Pooling method
-            - cache_dir: Cache directory
-            - cache_enabled: Enable/disable caching
+    Parameters
+    ----------
+    n_clients : int
+        Number of federated learning clients.
+    model_type : str, optional
+        Model family. One of "dinov2", "clip", "siglip". Default: "dinov2".
+    variant : str, optional
+        Model variant (e.g., "base", "large", "small"). Default: "base".
+    clustering_method : str, optional
+        Clustering algorithm. One of "hdbscan", "kmeans", "knn", "spectral".
+        Default: "hdbscan".
+    **kwargs
+        Additional parameters to override:
 
-    Returns:
-        EmbeddingConfig instance
+        - batch_size : int - Model batch size (default: 32)
+        - pooling_strategy : str - Pooling method (default: "cls")
+        - cache_dir : str - Cache directory (default: "./.embedding_cache")
+        - cache_enabled : bool - Enable/disable caching (default: True)
 
-    Examples:
-        >>> # Simple custom config
-        >>> config = create_custom_config(
-        ...     n_clients=10,
-        ...     model_type="clip",
-        ...     variant="base-patch16"
-        ... )
+    Returns
+    -------
+    EmbeddingConfig
+        Configured embedding pipeline settings.
 
-        >>> # With additional customization
-        >>> config = create_custom_config(
-        ...     n_clients=20,
-        ...     model_type="dinov2",
-        ...     variant="large",
-        ...     batch_size=64,
-        ...     pooling_strategy="gem",
-        ...     cache_dir="/scratch/cache"
-        ... )
+    See Also
+    --------
+    get_preset_config : Get pre-configured presets for common use cases.
+    EmbeddingConfig : Full configuration class with all options.
+
+    Examples
+    --------
+    Simple custom config:
+
+    >>> config = create_custom_config(
+    ...     n_clients=10,
+    ...     model_type="clip",
+    ...     variant="base-patch16"
+    ... )
+
+    With additional customization:
+
+    >>> config = create_custom_config(
+    ...     n_clients=20,
+    ...     model_type="dinov2",
+    ...     variant="large",
+    ...     batch_size=64,
+    ...     pooling_strategy="gem",
+    ...     cache_dir="/scratch/cache"
+    ... )
     """
 
     # Extract kwargs

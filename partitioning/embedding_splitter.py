@@ -37,11 +37,114 @@ from .embedding_utils.config import EmbeddingConfig
 
 
 class EmbeddingSplitter(BaseDatasetSplitter):
-    """
-    Splits datasets using embedding-based clustering.
+    """Splits datasets using embedding-based clustering for federated learning.
 
-    Extracts embeddings from images using foundation models, applies
-    pooling strategies, clusters embeddings, and assigns clusters to clients.
+    This splitter creates semantically-meaningful heterogeneous partitions by:
+
+    1. Extracting image embeddings using foundation models (DINOv2, CLIP, SigLIP)
+    2. Applying pooling strategies to aggregate spatial features into vectors
+    3. Clustering embeddings to group semantically similar samples
+    4. Assigning clusters to clients based on the chosen strategy
+
+    The resulting partitions mimic real-world federated scenarios where different
+    clients have different types of data with similar visual characteristics.
+
+    Parameters
+    ----------
+    train_dataset : BaseDataset
+        Training dataset containing image paths and labels.
+    val_dataset : BaseDataset or None
+        Validation dataset. If None, no validation split is created.
+    n_clients : int
+        Number of federated learning clients to partition data across.
+    heterogeneity : float
+        Degree of heterogeneity in [0.0, 1.0]. Controls clustering granularity:
+
+        - 0.0: Larger clusters, more IID-like distribution
+        - 1.0: Smaller clusters, high non-IID (each client gets distinct data)
+    valset_type : str
+        How to handle validation data:
+
+        - "global": All clients share the same validation set
+        - "local": Split validation proportionally across clients
+        - "none": No validation set for clients
+    config : EmbeddingConfig
+        Configuration object specifying model, pooling, clustering, and cache settings.
+        Use :func:`get_preset_config` for convenient presets.
+    seed : int, optional
+        Random seed for reproducibility. Affects cluster assignment randomization.
+
+    Attributes
+    ----------
+    config : EmbeddingConfig
+        The configuration used for this splitter.
+    embeddings : np.ndarray or None
+        Extracted embeddings after :meth:`get_client_splits` is called.
+    cluster_labels : np.ndarray or None
+        Cluster assignments after :meth:`get_client_splits` is called.
+    cluster_info : dict or None
+        Clustering metadata (num_clusters, sizes, etc.) after splitting.
+
+    Examples
+    --------
+    Basic usage with a preset configuration:
+
+    >>> from partitioning.embedding_splitter import EmbeddingSplitter
+    >>> from partitioning.embedding_utils.config import get_preset_config
+    >>> from data_loading.dataset import BaseDataset
+    >>>
+    >>> train_dataset = BaseDataset("tiny_imagenet", "/path/to/data", "train")
+    >>> val_dataset = BaseDataset("tiny_imagenet", "/path/to/data", "val")
+    >>>
+    >>> config = get_preset_config("default", n_clients=10)
+    >>> splitter = EmbeddingSplitter(
+    ...     train_dataset=train_dataset,
+    ...     val_dataset=val_dataset,
+    ...     n_clients=10,
+    ...     heterogeneity=0.5,
+    ...     valset_type="global",
+    ...     config=config,
+    ...     seed=42,
+    ... )
+    >>> splits = splitter.get_client_splits()
+    >>> splitter.store_client_splits("embedding_splits.json")
+
+    Custom configuration for high-quality partitioning:
+
+    >>> from partitioning.embedding_utils.config import (
+    ...     EmbeddingConfig, ModelConfig, PoolingConfig, ClusteringConfig
+    ... )
+    >>>
+    >>> config = EmbeddingConfig(
+    ...     model=ModelConfig(model_type="dinov2", variant="large"),
+    ...     pooling=PoolingConfig(strategy="gem", params={"p": 3.0}),
+    ...     clustering=ClusteringConfig(method="hdbscan", params={"min_cluster_size": 10}),
+    ...     n_clients=20,
+    ...     cache_enabled=True,
+    ... )
+    >>> splitter = EmbeddingSplitter(
+    ...     train_dataset=train_dataset,
+    ...     val_dataset=None,
+    ...     n_clients=20,
+    ...     heterogeneity=0.8,
+    ...     valset_type="none",
+    ...     config=config,
+    ... )
+
+    See Also
+    --------
+    get_preset_config : Get pre-configured embedding pipeline setups.
+    EmbeddingConfig : Complete configuration class for the pipeline.
+    DirichletSplitter : Alternative label-based non-IID splitting.
+    MultivariateDirichletSplitter : VLM-based semantic splitting.
+
+    Notes
+    -----
+    - Embeddings are automatically cached for re-use across runs.
+    - The heterogeneity parameter affects HDBSCAN's min_cluster_size when not
+      explicitly set in the config.
+    - Noise samples from HDBSCAN (label=-1) are handled according to
+      ``config.handle_noise`` setting.
     """
 
     def __init__(
@@ -54,16 +157,6 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         config: EmbeddingConfig,
         seed: Optional[int] = None,
     ):
-        """
-        Args:
-            train_dataset: Training dataset
-            val_dataset: Validation dataset
-            n_clients: Number of clients
-            heterogeneity: Degree of heterogeneity (controls clustering granularity)
-            valset_type: "local", "global", or "none"
-            config: EmbeddingConfig with model, pooling, clustering settings
-            seed: Random seed
-        """
         super().__init__(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
@@ -90,7 +183,21 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         self.cluster_info: Optional[Dict] = None
 
     def _initialize_extractor(self) -> EmbeddingExtractor:
-        """Initialize the embedding extractor."""
+        """Initialize the embedding extractor based on config.
+
+        Creates the appropriate extractor class (DINOv2, CLIP, or SigLIP)
+        based on the model configuration.
+
+        Returns
+        -------
+        EmbeddingExtractor
+            Initialized extractor ready for embedding extraction.
+
+        Raises
+        ------
+        ValueError
+            If the model_type in config is not recognized.
+        """
         model_cfg = self.config.model
 
         if model_cfg.model_type.lower() == "dinov2":
@@ -119,14 +226,29 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             raise ValueError(f"Unknown model type: {model_cfg.model_type}")
 
     def _initialize_pooling(self) -> PoolingStrategy:
-        """Initialize the pooling strategy."""
+        """Initialize the pooling strategy based on config.
+
+        Returns
+        -------
+        PoolingStrategy
+            Initialized pooling strategy (CLS, Mean, Max, GeM, etc.).
+        """
         return get_pooling_strategy(
             self.config.pooling.strategy,
             **self.config.pooling.params,
         )
 
     def _initialize_clustering(self) -> ClusteringMethod:
-        """Initialize the clustering method."""
+        """Initialize the clustering method based on config.
+
+        For HDBSCAN, automatically computes min_cluster_size based on
+        heterogeneity if not explicitly set in config.
+
+        Returns
+        -------
+        ClusteringMethod
+            Initialized clustering method (HDBSCAN, KMeans, KNN, Spectral).
+        """
         # Adjust clustering parameters based on heterogeneity
         params = self.config.clustering.params.copy()
 
@@ -145,7 +267,17 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         )
 
     def _extract_embeddings(self) -> np.ndarray:
-        """Extract embeddings from training images."""
+        """Extract embeddings from training images using the configured model.
+
+        Checks the cache first and returns cached embeddings if available.
+        Otherwise, extracts fresh embeddings, applies pooling, and caches
+        the results.
+
+        Returns
+        -------
+        np.ndarray
+            Pooled embeddings of shape (n_samples, embed_dim).
+        """
         # Get image paths from dataset
         image_paths = [str(self.train_dataset[i][0]) for i in range(len(self.train_dataset))]
 
@@ -204,7 +336,19 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         return embeddings
 
     def _cluster_embeddings(self, embeddings: np.ndarray) -> np.ndarray:
-        """Cluster the embeddings."""
+        """Cluster the embeddings using the configured clustering method.
+
+        Parameters
+        ----------
+        embeddings : np.ndarray
+            Pooled embeddings of shape (n_samples, embed_dim).
+
+        Returns
+        -------
+        np.ndarray
+            Cluster labels of shape (n_samples,). Labels are integers >= 0,
+            or -1 for noise/outliers (HDBSCAN only).
+        """
         if self.clustering is None:
             self.clustering = self._initialize_clustering()
 
@@ -222,14 +366,27 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         self,
         cluster_labels: np.ndarray,
     ) -> Dict[str, List[int]]:
-        """
-        Assign cluster members to clients.
+        """Assign cluster members to clients using the configured strategy.
 
-        Args:
-            cluster_labels: Cluster assignment for each sample
+        Distributes clusters to clients based on ``config.assignment_strategy``:
 
-        Returns:
-            Dictionary mapping client_id to list of sample indices
+        - "round_robin": Assign clusters cyclically to clients
+        - "random": Randomly assign clusters to clients
+        - "size_balanced": Assign to minimize client size variance
+
+        Noise samples (label=-1 from HDBSCAN) are handled according to
+        ``config.handle_noise``: "distribute", "ignore", or "separate_client".
+
+        Parameters
+        ----------
+        cluster_labels : np.ndarray
+            Cluster assignment for each sample, shape (n_samples,).
+
+        Returns
+        -------
+        Dict[str, List[int]]
+            Dictionary mapping client_id (e.g., "client_0") to list of
+            sample indices belonging to that client.
         """
         # Get unique clusters (excluding noise if present)
         unique_clusters = sorted(set(cluster_labels))
@@ -303,11 +460,28 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         return client_indices
 
     def _compute_client_splits(self) -> DatasetSplits:
-        """
-        Compute client splits using embedding clustering.
+        """Compute client splits using embedding clustering.
 
-        Returns:
-            DatasetSplits with client train/val data and optional global val
+        This is the main method that orchestrates the embedding-based
+        partitioning pipeline:
+
+        1. Extract embeddings from training images
+        2. Cluster embeddings into groups
+        3. Assign clusters to clients
+        4. Build the final splits structure with train/val data
+
+        Returns
+        -------
+        DatasetSplits
+            Dictionary with structure::
+
+                {
+                    "clients": {
+                        "client_0": {"train": [...], "val": [...]},
+                        ...
+                    },
+                    "global_val": [...] or None
+                }
         """
         # Extract embeddings and cluster
         self.embeddings = self._extract_embeddings()
@@ -368,11 +542,26 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         return splits
 
     def save_cluster_metadata(self, filepath: str) -> None:
-        """
-        Save clustering metadata to JSON file.
+        """Save clustering metadata to JSON file.
 
-        Args:
-            filepath: Path to save metadata
+        Saves configuration, cluster information, and partitioning parameters
+        for reproducibility and analysis.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to save the JSON metadata file.
+
+        Raises
+        ------
+        ValueError
+            If called before :meth:`get_client_splits` has been run.
+
+        Examples
+        --------
+        >>> splitter = EmbeddingSplitter(...)
+        >>> splits = splitter.get_client_splits()
+        >>> splitter.save_cluster_metadata("cluster_info.json")
         """
         if self.cluster_info is None:
             raise ValueError("No clustering info available. Run get_client_splits() first.")
@@ -389,11 +578,31 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             json.dump(metadata, f, indent=2)
 
     def save_embeddings(self, filepath: str) -> None:
-        """
-        Save extracted embeddings to npz file.
+        """Save extracted embeddings and cluster labels to NPZ file.
 
-        Args:
-            filepath: Path to save embeddings
+        Saves embeddings for visualization, debugging, or transfer to other
+        pipelines without re-extraction.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to save the compressed NPZ file.
+
+        Raises
+        ------
+        ValueError
+            If called before :meth:`get_client_splits` has been run.
+
+        Examples
+        --------
+        >>> splitter = EmbeddingSplitter(...)
+        >>> splits = splitter.get_client_splits()
+        >>> splitter.save_embeddings("embeddings.npz")
+        >>>
+        >>> # Later, load for visualization
+        >>> data = np.load("embeddings.npz")
+        >>> embeddings = data["embeddings"]
+        >>> cluster_labels = data["cluster_labels"]
         """
         if self.embeddings is None:
             raise ValueError("No embeddings available. Run get_client_splits() first.")
