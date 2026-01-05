@@ -6,8 +6,6 @@ representations suitable for clustering and downstream tasks.
 
 Available Strategies
 --------------------
-CLSPooling
-    Extract the CLS token (first token) from transformer outputs.
 MeanPooling
     Average all token embeddings (spatial mean pooling).
 MaxPooling
@@ -18,6 +16,11 @@ LastKLayerPooling
     Aggregate embeddings from multiple transformer layers.
 SpectralSharpeningPooling
     Project embeddings onto graph Laplacian eigenvectors for sharpening.
+
+Note
+----
+CLSPooling has been removed as it is vacuous. To use CLS token, simply specify
+`return_which_tokens="cls"` when calling the extractor's `extract_embeddings()` method.
 
 Usage
 -----
@@ -75,34 +78,6 @@ class PoolingStrategy(ABC):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"
-
-
-class CLSPooling(PoolingStrategy):
-    """Extract CLS token only (first token).
-
-    The CLS token is a special token in transformer models that aggregates
-    global information. It is commonly used as the sequence representation.
-
-    Notes
-    -----
-    - Default pooling for most transformer models
-    - Fast and simple (no computation needed)
-    - Works well when CLS token is meaningful (e.g., DINOv2, CLIP)
-    """
-
-    def pool(self, embeddings: np.ndarray) -> np.ndarray:
-        """Extract CLS token (first token) from token embeddings."""
-        if embeddings.ndim == 2:
-            # Already single token per sample
-            return embeddings
-        elif embeddings.ndim == 3:
-            # Extract first token (CLS)
-            return embeddings[:, 0, :]
-        else:
-            raise ValueError(f"Expected 2D or 3D embeddings, got shape {embeddings.shape}")
-
-    def __repr__(self) -> str:
-        return "CLSPooling()"
 
 
 class MeanPooling(PoolingStrategy):
@@ -436,7 +411,6 @@ def get_pooling_strategy(name: str, **kwargs) -> PoolingStrategy:
     name : str
         Strategy name. One of:
 
-        - "cls": CLS token pooling
         - "mean": Mean pooling
         - "max": Max pooling
         - "gem": Generalized mean pooling (use p=... kwarg)
@@ -456,6 +430,11 @@ def get_pooling_strategy(name: str, **kwargs) -> PoolingStrategy:
     ValueError
         If the strategy name is not recognized.
 
+    Notes
+    -----
+    For CLS token pooling, do not use this factory. Instead, call the
+    extractor's `extract_embeddings()` with `return_which_tokens="cls"`.
+
     Examples
     --------
     >>> pooling = get_pooling_strategy("gem", p=3.0)
@@ -463,7 +442,6 @@ def get_pooling_strategy(name: str, **kwargs) -> PoolingStrategy:
     >>> pooling = get_pooling_strategy("spectral", k=50)
     """
     strategies = {
-        "cls": CLSPooling,
         "mean": MeanPooling,
         "max": MaxPooling,
         "gem": GeMLPooling,
