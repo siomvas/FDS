@@ -394,7 +394,6 @@ class BaseDatasetSplitter(ABC):
             extra = all_train_paths - expected_train_paths
             raise ValueError(f"Training data splits do not cover the entire dataset. Missing: {missing}, Extra: {extra}")
         
-        
         all_val_paths = set()
         if self.valset_type == "global" and splits["global_val"] is not None and self.val_dataset is not None:
             all_val_paths = {sample["image"] for sample in splits["global_val"]}

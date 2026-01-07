@@ -521,10 +521,10 @@ class EmbeddingExtractor(ABC):
                     if return_which_tokens == "k_last_cls":
                         selected_states = outputs.hidden_states[-k_last:]
                         cls_embeddings = [state[:, 0, :] for state in selected_states]
-                        emb = torch.cat(cls_embeddings, dim=1)
+                        emb = torch.stack(cls_embeddings, dim=1).unsqueeze(2)
                     elif return_which_tokens == "k_last_all":
                         selected_states = outputs.hidden_states[-k_last:]
-                        emb = torch.cat(selected_states, dim=2)
+                        emb = torch.stack(selected_states, dim=1)
                     else:
                         raise ValueError(f"Invalid return_which_tokens '{return_which_tokens}'")
                 else:
@@ -799,8 +799,8 @@ class CLIPExtractor(EmbeddingExtractor):
         self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
         print(f"Loading CLIP {self.variant}...")
-        self.processor = self._download_model_with_proxy(CLIPImageProcessor.from_pretrained, self.hf_model_path)
-        self.model = self._download_model_with_proxy(CLIPVisionModel.from_pretrained, self.hf_model_path)
+        self.processor = self._download_model_with_proxy(CLIPImageProcessor.from_pretrained, self.hf_model_path, use_safetensors=True)
+        self.model = self._download_model_with_proxy(CLIPVisionModel.from_pretrained, self.hf_model_path, use_safetensors=True)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()

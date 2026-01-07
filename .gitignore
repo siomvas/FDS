@@ -45,3 +45,6 @@ docs/source/
 
 # Tests
 tests/.hypothesis/
+
+# Logs and partition jsons
+scripts/embedding_partitions

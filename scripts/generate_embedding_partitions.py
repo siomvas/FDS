@@ -4,8 +4,9 @@
 This script creates semantically-meaningful heterogeneous partitions by:
 1. Extracting embeddings using foundation models (via ModelRegistry)
 2. Optionally applying pooling strategies
-3. Clustering embeddings
-4. Directly mapping clusters to clients (1 cluster = 1 client)
+3. Optional dimensionality reduction and normalization of the embeddings
+4. Clustering embeddings
+5. Directly mapping clusters to clients (1 cluster = 1 client)
 
 For HDBSCAN/KNN: Number of clients determined automatically by clustering
 For KMeans/Spectral: User specifies n_clusters (becomes n_clients)
@@ -19,7 +20,7 @@ HDBSCAN with DINOv2 (auto-determines n_clients):
         --extractor dinov2-base \\
         --clustering hdbscan \\
         --min_cluster_size 100 \\
-        --pooling cls \\
+        --tokens cls \\
         --output hdbscan_splits.json
 
 KMeans with CLIP (fixed 10 clients):
@@ -29,7 +30,10 @@ KMeans with CLIP (fixed 10 clients):
         --extractor clip-base-patch16 \\
         --clustering kmeans \\
         --n_clusters 10 \\
-        --pooling mean \\
+        --tokens k_last_cls \\
+        --lastk_k 4 \\
+        --layer_aggregation concat \\
+        --pooling max \\
         --output kmeans_10_splits.json
 
 With GeM pooling:
@@ -38,10 +42,15 @@ With GeM pooling:
         --base_path /path/to/data \\
         --extractor dinov2-large \\
         --clustering hdbscan \\
+        --tokens all_last \\
         --pooling gem \\
-        --gem_p 3.5 \\
+        --gem_p 2 \\
         --output gem_pooling_splits.json
 """
+
+import faulthandler
+import signal
+faulthandler.register(signal.SIGUSR1)
 
 import argparse
 import sys
@@ -68,7 +77,7 @@ def parse_args():
         "--dataset",
         type=str,
         required=True,
-        help="Dataset name (e.g., tiny_imagenet, cifar10, food101)",
+        help="Dataset name (e.g., tiny_imagenet, food101, ADE20K, etc.)",
     )
     dataset_group.add_argument(
         "--base_path",
@@ -95,7 +104,7 @@ def parse_args():
         "--extractor",
         type=str,
         required=True,
-        help="Extractor name from ModelRegistry (e.g., dinov2-base, clip-large-patch14, inception_v3, mae-base)",
+        help="Extractor name from ModelRegistry (e.g., dinov2-base, clip-large-patch14, mae-base)",
     )
     model_group.add_argument(
         "--device",
@@ -106,37 +115,54 @@ def parse_args():
     model_group.add_argument(
         "--batch_size",
         type=int,
-        default=32,
-        help="Batch size for embedding extraction (default: 32)",
+        default=100,
+        help="Batch size for embedding extraction (default: 100)",
     )
+    model_group.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of DataLoader worker processes (default: 4). Set to 0 for single-threaded loading.",
+    )
+    
+    # Token extraction arguments
+    token_group = parser.add_argument_group("Token Extraction")
+    token_group.add_argument(
+        "--tokens",
+        type=str,
+        default="cls",
+        choices=["cls", "all_last", "k_last_cls", "k_last_all"],
+        help="Token extraction strategy: cls (CLS token), all_last (all tokens from last layer), k_last_cls (CLS tokens from last K layers), k_last_all (all tokens from last K layers) (default: cls)",
+    )
+    token_group.add_argument(
+        "--lastk_k",
+        type=int,
+        default=None,
+        help="Number of last layers to use for k_last_cls or k_last_all token extraction (required if using these strategies)",
+    )
+    token_group.add_argument(
+        "--layer_aggregation",
+        type=str,
+        default=None,
+        choices=["mean", "concat", "weighted"],
+        help="Layer aggregation method for k_last_cls or k_last_all (required if using these strategies)",
+    )
+
 
     # Pooling arguments
     pooling_group = parser.add_argument_group("Pooling")
     pooling_group.add_argument(
         "--pooling",
         type=str,
-        default="cls",
-        choices=["cls", "mean", "max", "gem", "lastk", "spectral"],
-        help="Pooling strategy for aggregating embeddings (default: cls)",
+        default=None,
+        choices=["mean", "max", "gem", "lastk", "spectral"],
+        help="Pooling strategy for aggregating embeddings (required when not using CLS tokens directly)",
     )
     pooling_group.add_argument(
         "--gem_p",
         type=float,
-        default=3.0,
-        help="Power parameter for GeM pooling (default: 3.0)",
-    )
-    pooling_group.add_argument(
-        "--lastk_k",
-        type=int,
-        default=4,
-        help="Number of last layers for lastk pooling (default: 4)",
-    )
-    pooling_group.add_argument(
-        "--lastk_aggregation",
-        type=str,
-        default="mean",
-        choices=["mean", "concat", "weighted"],
-        help="Aggregation method for lastk pooling (default: mean)",
+        default=None,
+        help="Power parameter for GeM pooling (required if using GeM pooling)",
     )
     pooling_group.add_argument(
         "--spectral_k",
@@ -149,6 +175,52 @@ def parse_args():
         type=float,
         default=None,
         help="RBF bandwidth for spectral pooling (default: auto via median heuristic)",
+    )
+    pooling_group.add_argument(
+        "--lastk_pooling",
+        type=str,
+        default=None,
+        choices=["mean", "max", "gem", "spectral"],
+        help="Token aggregation method for lastk pooling (required if using lastk pooling)",
+    )
+
+    # Preprocessing arguments
+    preprocessing_group = parser.add_argument_group("Preprocessing")
+    preprocessing_group.add_argument(
+        "--normalize",
+        action="store_true",
+        help="L2 normalize embeddings before clustering",
+    )
+    preprocessing_group.add_argument(
+        "--dim_reduction",
+        type=str,
+        default=None,
+        choices=["pca", "umap"], # pca not yet implemented
+        help="Dimensionality reduction method before clustering",
+    )
+    preprocessing_group.add_argument(
+        "--dr_dims",
+        type=int,
+        default=50,
+        help="Number of dimensions after dimensionality reduction (default: 50)",
+    )
+    preprocessing_group.add_argument(
+        "--umap_neighbors",
+        type=int,
+        default=15,
+        help="Number of neighbors for UMAP dimensionality reduction (default: 15)",
+    )
+    preprocessing_group.add_argument(
+        "--umap_min_dist",
+        type=float,
+        default=0.0,
+        help="Minimum distance parameter for UMAP (default: 0.0)",
+    )
+    preprocessing_group.add_argument(
+        "--umap_metric",
+        type=str,
+        default="euclidean",
+        help="Distance metric for UMAP (default: euclidean)",
     )
 
     # Clustering arguments
@@ -165,7 +237,7 @@ def parse_args():
     clustering_group.add_argument(
         "--min_cluster_size",
         type=int,
-        default=15,
+        default=100,
         help="Minimum cluster size for HDBSCAN (default: 15)",
     )
     clustering_group.add_argument(
@@ -177,8 +249,15 @@ def parse_args():
     clustering_group.add_argument(
         "--hdbscan_metric",
         type=str,
-        default="euclidean",
-        help="Distance metric for HDBSCAN (default: euclidean)",
+        default=None,
+        help="Distance metric for HDBSCAN (required if using HDBSCAN)",
+    )
+    clustering_group.add_argument(
+        "--hdbscan_method",
+        type=str,
+        default="eom",
+        choices=["eom", "leaf"],
+        help="Cluster selection method for HDBSCAN (default: eom)",
     )
 
     # KMeans/Spectral parameters
@@ -199,8 +278,8 @@ def parse_args():
     clustering_group.add_argument(
         "--knn_metric",
         type=str,
-        default="cosine",
-        help="Distance metric for KNN (default: cosine)",
+        default="euclidean",
+        help="Distance metric for KNN (default: euclidean)",
     )
 
     # Spectral parameters
@@ -223,8 +302,8 @@ def parse_args():
     output_group.add_argument(
         "--cache_dir",
         type=str,
-        default="./.embedding_cache",
-        help="Directory for caching embeddings (default: ./.embedding_cache)",
+        default="/path/to/gtai/FDS/embedding_cache",
+        help="Directory for caching embeddings",
     )
     output_group.add_argument(
         "--seed",
@@ -249,6 +328,22 @@ class SubsetDataset:
     def __getitem__(self, idx):
         return self.dataset[self.indices[idx]]
 
+def build_preprocessing_params(args):
+    """Build preprocessing parameters dict from CLI args."""
+    params = {}
+
+    if args.normalize:
+        params["normalization"] = "l2"
+
+    if args.dim_reduction == "umap":
+        params["dim_reduction"] = "umap"
+        params["dr_dims"] = args.dr_dims
+        params["umap_neighbors"] = args.umap_neighbors
+        params["umap_min_dist"] = args.umap_min_dist
+        params["umap_metric"] = args.umap_metric
+
+    return params
+
 
 def build_clustering_params(args):
     """Build clustering parameters dict from CLI args."""
@@ -256,12 +351,15 @@ def build_clustering_params(args):
 
     if args.clustering == "hdbscan":
         params["min_cluster_size"] = args.min_cluster_size
-        if args.min_samples is not None:
+        params["hdbscan_method"] = args.hdbscan_method
+        if args.min_samples:
             params["min_samples"] = args.min_samples
-        params["metric"] = args.hdbscan_metric
+        if not args.hdbscan_metric:
+            raise ValueError("--hdbscan_metric is required for HDBSCAN clustering")
+        params["hdbscan_metric"] = args.hdbscan_metric
 
     elif args.clustering == "kmeans":
-        if args.n_clusters is None:
+        if not args.n_clusters:
             raise ValueError("--n_clusters is required for kmeans clustering")
         params["n_clusters"] = args.n_clusters
         params["random_state"] = args.seed
@@ -271,7 +369,7 @@ def build_clustering_params(args):
         params["metric"] = args.knn_metric
 
     elif args.clustering == "spectral":
-        if args.n_clusters is None:
+        if not args.n_clusters:
             raise ValueError("--n_clusters is required for spectral clustering")
         params["n_clusters"] = args.n_clusters
         params["affinity"] = args.spectral_affinity
@@ -279,22 +377,42 @@ def build_clustering_params(args):
 
     return params
 
+def build_token_params(args):
+    """Build token extraction parameters dict from CLI args."""
+    params = {}
+
+    if args.tokens in ["k_last_cls", "k_last_all"]:
+        if args.lastk_k is None:
+            raise ValueError("--lastk_k is required for k_last_cls or k_last_all token extraction")
+        if args.layer_aggregation is None:
+            raise ValueError("--layer_aggregation is required for k_last_cls or k_last_all token extraction")
+        params["lastk_k"] = args.lastk_k
+        params["layer_aggregation"] = args.layer_aggregation
+        
+        # Set pooling to 'lastk' if not already specified as such and raise warning
+        if args.pooling != "lastk":
+            print("⚠️  Warning: Overriding pooling strategy to 'lastk' for k_last_cls or k_last_all token extraction")
+            args.pooling = "lastk"
+
+    return params
 
 def build_pooling_params(args):
     """Build pooling parameters dict from CLI args."""
     params = {}
 
     if args.pooling == "gem":
+        if args.gem_p is None:
+            raise ValueError("--gem_p is required for GeM pooling")
         params["p"] = args.gem_p
-
-    elif args.pooling == "lastk":
-        params["k"] = args.lastk_k
-        params["aggregation"] = args.lastk_aggregation
-
     elif args.pooling == "spectral":
         params["k"] = args.spectral_k
         if args.spectral_sigma is not None:
             params["sigma"] = args.spectral_sigma
+    
+    elif args.pooling == "lastk":
+        if args.lastk_pooling is None:
+            raise ValueError("--lastk_pooling is required for lastk pooling")
+        params["token_aggregation"] = args.lastk_pooling
 
     return params
 
@@ -308,8 +426,11 @@ def main():
     print(f"\nDataset: {args.dataset}")
     print(f"Base path: {args.base_path}")
     print(f"Extractor: {args.extractor}")
-    print(f"Clustering: {args.clustering}")
+    print(f"Token extraction: {args.tokens}")
     print(f"Pooling: {args.pooling}")
+    print(f"Normalization: {args.normalize}")
+    print(f"Dimensionality reduction: {args.dim_reduction}")
+    print(f"Clustering: {args.clustering}")
     print(f"Validation type: {args.valset_type}")
     print(f"Seed: {args.seed}")
     print(f"Output: {args.output}")
@@ -341,15 +462,21 @@ def main():
             print(f"  Mock val samples: {len(val_dataset)}")
 
     # Build parameter dicts
-    clustering_params = build_clustering_params(args)
+    token_params = build_token_params(args)
     pooling_params = build_pooling_params(args)
-
-    print(f"\nClustering params: {clustering_params}")
+    preprocessing_params = build_preprocessing_params(args)
+    clustering_params = build_clustering_params(args)
+    
+    print("\nToken extraction params:", token_params)
     print(f"Pooling params: {pooling_params}")
+    print(f"Preprocessing params: {preprocessing_params}")
+    print(f"\nClustering params: {clustering_params}")
     print()
 
     # Enforce cache disabling in mock mode
     use_cache = not args.mock
+    num_workers = 0 if args.mock else args.num_workers
+
     if args.mock:
         print("⚠️  MOCK MODE: Caching DISABLED (enforced)")
         print("   Reason: Mock mode uses subset of data, incompatible with full caching")
@@ -362,8 +489,11 @@ def main():
         extractor_name=args.extractor,
         clustering_method=args.clustering,
         clustering_params=clustering_params,
+        token_extraction_strategy=args.tokens,
+        token_params=token_params,
         pooling_strategy=args.pooling,
         pooling_params=pooling_params,
+        preprocessing_params=preprocessing_params,
         valset_type=args.valset_type,
         seed=args.seed,
         cache_dir=args.cache_dir,
@@ -372,6 +502,7 @@ def main():
         device=args.device,
         batch_size=args.batch_size,
         use_cache=use_cache,
+        num_workers=num_workers,
     )
 
     # Compute splits

@@ -14,7 +14,6 @@ from embedding.embedding_extractors import (
 )
 from .pooling_strategies import (
     PoolingStrategy,
-    CLSPooling,
     MeanPooling,
     MaxPooling,
     GeMLPooling,
@@ -52,7 +51,6 @@ __all__ = [
     "CLIPExtractor",
     "SigLIPExtractor",
     # Pooling strategies
-    "CLSPooling",
     "MeanPooling",
     "MaxPooling",
     "GeMLPooling",

@@ -3,8 +3,9 @@
 This module implements semantic data partitioning by:
 1. Extracting image embeddings using foundation models (via ModelRegistry)
 2. Applying optional pooling strategies to aggregate spatial features
-3. Clustering embeddings to group semantically similar samples
-4. Directly mapping clusters to clients (1 cluster = 1 client)
+3. Applying optional normalization and dimensionality reduction
+4. Clustering embeddings to group semantically similar samples
+5. Directly mapping clusters to clients (1 cluster = 1 client)
 
 This creates natural, semantically-meaningful heterogeneity where each client
 receives data from a distinct cluster, mimicking real-world scenarios where
@@ -14,25 +15,15 @@ different clients have different types of data.
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import numpy as np
+import time
+import umap
 
 from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
 from data_loading.dataset import BaseDataset
 from embedding.embedding_extractors import ModelRegistry, EmbeddingExtractor
 from embedding.cache_manager import CacheManager
-from .embedding_utils.pooling_strategies import get_pooling_strategy, PoolingStrategy
-from .embedding_utils.clustering_methods import get_clustering_method, ClusteringMethod
-
-
-# Mapping from pooling strategy to extractor configuration
-POOLING_TO_EXTRACTION = {
-    "cls": {"return_which_tokens": "cls", "needs_pooling": False},
-    "mean": {"return_which_tokens": "all_last", "needs_pooling": True},
-    "max": {"return_which_tokens": "all_last", "needs_pooling": True},
-    "gem": {"return_which_tokens": "all_last", "needs_pooling": True},
-    "lastk": {"return_which_tokens": "k_last_cls", "needs_pooling": True},
-    "spectral": {"return_which_tokens": "all_last", "needs_pooling": True},
-}
-
+from .embedding_utils.pooling_strategies import get_pooling_strategy
+from .embedding_utils.clustering_methods import get_clustering_method
 
 class EmbeddingSplitter(BaseDatasetSplitter):
     """Splits datasets using embedding-based clustering for federated learning.
@@ -41,8 +32,9 @@ class EmbeddingSplitter(BaseDatasetSplitter):
 
     1. Extracting image embeddings using foundation models (via ModelRegistry)
     2. Optionally applying pooling strategies to aggregate features
-    3. Clustering embeddings to group semantically similar samples
-    4. Directly mapping clusters to clients (n_clients = number of clusters)
+    3. Optionally applying normalization and dimensionality reduction
+    4. Clustering embeddings to group semantically similar samples
+    5. Directly mapping clusters to clients (n_clients = number of clusters)
 
     The resulting partitions create natural heterogeneity where each client
     receives data from a distinct semantic cluster.
@@ -67,22 +59,41 @@ class EmbeddingSplitter(BaseDatasetSplitter):
     clustering_params : dict, optional
         Method-specific clustering parameters:
 
-        - HDBSCAN: min_cluster_size, min_samples, metric
-        - KMeans: n_clusters (required), random_state, n_init
+        - HDBSCAN: min_cluster_size, min_samples, metric, method
+        - KMeans: n_clusters (required), n_init
         - KNN: n_neighbors, metric
         - Spectral: n_clusters (required), affinity, gamma
+
+    token_extraction_strategy : str, optional
+        Which tokens to extract before pooling:
+
+        - "cls": CLS token only
+        - "all_last": All tokens from last layer
+        - "k_last_all": All tokens from last K layers
+        - "k_last_cls": CLS tokens from last K layers
+
+        Default: "cls".
+    
+    token_params : dict, optional
+        Strategy-specific token extraction parameters:
+        - k_last_all / k_last_cls: k (number of layers, default 4)
+        - layer_aggregation : How to aggregate layers when using last K layers:
+            - "mean": Average across layers
+            - "concat": Concatenate layers
+            - "weighted": Weighted average (more weight to later layers)
+
+            Default: "mean".
 
     pooling_strategy : str, optional
         How to aggregate token embeddings:
 
-        - "cls": CLS token only (no post-processing)
         - "mean": Average all tokens
         - "max": Max pooling across tokens
         - "gem": Generalized mean pooling
         - "lastk": Aggregate last K layers
         - "spectral": Spectral sharpening
 
-        Default: "cls".
+        Default: "mean".
 
     pooling_params : dict, optional
         Strategy-specific pooling parameters:
@@ -90,6 +101,11 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         - gem: p (power parameter, default 3.0)
         - lastk: k (number of layers, default 4), aggregation ("mean"/"concat"/"weighted")
         - spectral: k (eigenvectors, default 50), sigma (RBF bandwidth)
+    
+    preprocessing_params : dict, optional
+        Preprocessing parameters:
+        - normalization : l2 or none
+        - dim_reduction : umap or none (default "none")
 
     valset_type : str, optional
         How to handle validation data:
@@ -111,7 +127,11 @@ class EmbeddingSplitter(BaseDatasetSplitter):
     device : str, optional
         Device for computation ("cuda", "cpu", etc.). Auto-detects if None.
     batch_size : int, optional
-        Batch size for embedding extraction. Default: 32.
+        Batch size for embedding extraction. Default: 100.
+    num_workers : int, optional
+        Number of DataLoader worker processes for parallel data loading.
+        Default: 4. Set to 0 for single-threaded loading (recommended for
+        small datasets or to avoid worker process issues).
 
     Attributes
     ----------
@@ -137,8 +157,8 @@ class EmbeddingSplitter(BaseDatasetSplitter):
     ...     val_dataset=val_dataset,
     ...     extractor_name="dinov2-base",
     ...     clustering_method="hdbscan",
-    ...     clustering_params={"min_cluster_size": 15},
-    ...     pooling_strategy="cls",
+    ...     clustering_params={"min_cluster_size": 100},
+    ...     token_extraction_strategy="cls",
     ...     valset_type="global",
     ...     seed=42,
     ... )
@@ -154,6 +174,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
     ...     extractor_name="clip-base-patch16",
     ...     clustering_method="kmeans",
     ...     clustering_params={"n_clusters": 10},
+    ...     token_extraction_strategy="all_last",
     ...     pooling_strategy="mean",
     ...     dataset_name="tiny_imagenet",
     ...     base_path="/path/to/data",
@@ -180,24 +201,64 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         extractor_name: str,
         clustering_method: str,
         clustering_params: Optional[Dict] = None,
-        pooling_strategy: str = "cls",
+        token_extraction_strategy: str = "cls",
+        token_params: Optional[Dict] = None,
+        pooling_strategy: str = "mean",
         pooling_params: Optional[Dict] = None,
+        preprocessing_params: Optional[Dict] = None,
         valset_type: str = "global",
         seed: Optional[int] = None,
         cache_dir: str = "./.embedding_cache",
         dataset_name: Optional[str] = None,
         base_path: Optional[str] = None,
         device: Optional[str] = None,
-        batch_size: int = 32,
+        batch_size: int = 100,
         use_cache: bool = True,
+        num_workers: int = 4,
     ):
         """Initialize the embedding splitter."""
+        # Validate token extraction strategy
+        valid_extraction = [
+            "cls",
+            "all_last",
+            "k_last_all",
+            "k_last_cls",
+        ]
+        if token_extraction_strategy not in valid_extraction:
+            raise ValueError(
+                f"Invalid token extraction: {token_extraction_strategy}. "
+                f"Choose from {valid_extraction}"
+            )
+        
+        # Validate layer aggregation if using last K layers
+        if token_extraction_strategy in ["k_last_all", "k_last_cls"]:
+            try:
+                layer_aggregation = token_params["layer_aggregation"]
+                lastk_k = token_params["lastk_k"]
+            except KeyError:
+                raise ValueError(
+                    "token_params must include 'layer_aggregation' and 'lastk_k' "
+                    "when using 'k_last_all' or 'k_last_cls' extraction."
+                )
+            valid_layer_agg = ["mean", "concat", "weighted"]
+            if layer_aggregation not in valid_layer_agg:
+                raise ValueError(
+                    f"Invalid layer aggregation: {layer_aggregation}. "
+                    f"Choose from {valid_layer_agg}"
+                )
+        else:
+            token_params = token_params or {}
+
         # Validate pooling strategy
-        valid_pooling = ["cls", "mean", "max", "gem", "lastk", "spectral"]
+        valid_pooling = ["mean", "max", "gem", "lastk", "spectral"]
         if pooling_strategy not in valid_pooling:
             raise ValueError(
                 f"Invalid pooling: {pooling_strategy}. Choose from {valid_pooling}"
             )
+        
+        # Turn off pooling if using CLS tokens only
+        if token_extraction_strategy == "cls":
+            pooling_strategy = "cls"
 
         # Validate clustering method
         valid_clustering = ["hdbscan", "kmeans", "knn", "spectral"]
@@ -219,14 +280,21 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         self.extractor_name = extractor_name
         self.clustering_method = clustering_method.lower()
         self.clustering_params = clustering_params or {}
+        self.token_extraction_strategy = token_extraction_strategy
+        self.token_params = token_params
         self.pooling_strategy = pooling_strategy
         self.pooling_params = pooling_params or {}
+        self.preprocessing_params = preprocessing_params or {}
         self.cache_dir = cache_dir
         self.dataset_name = dataset_name
         self.base_path = base_path
         self.device = device
         self.batch_size = batch_size
         self.use_cache = use_cache
+        self.num_workers = num_workers
+
+        # need to persist the umap reducer if used
+        self.umap_reducer: Optional[umap.UMAP] = None
 
         # Results stored after computation
         self.cluster_labels_: Optional[np.ndarray] = None
@@ -246,10 +314,18 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             device=self.device,
             batch_size=self.batch_size,
             cache_manager=cache_manager,
+            num_workers=self.num_workers,
         )
 
-    def _get_embeddings(self) -> np.ndarray:
-        """Extract and optionally pool embeddings.
+    def _get_embeddings(self, dataset: BaseDataset, dataset_type: str = "train") -> np.ndarray:
+        """Extract and optionally pool embeddings for a specific dataset.
+        
+        Parameters
+        ----------
+        dataset : BaseDataset
+            Dataset to extract embeddings from.
+        dataset_type : str, optional
+            Type of dataset ("train" or "val") for logging purposes.
 
         Returns
         -------
@@ -258,38 +334,89 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         """
         extractor = self._get_extractor()
         image_paths = [
-            str(self.train_dataset[i][0]) for i in range(len(self.train_dataset))
+            str(dataset[i][0]) for i in range(len(dataset))
         ]
 
-        # Get extraction config for this pooling strategy
-        extraction_config = POOLING_TO_EXTRACTION[self.pooling_strategy]
-
-        print(f"Extracting embeddings using {self.extractor_name}...")
-        print(f"  Pooling strategy: {self.pooling_strategy}")
-        print(f"  Token selection: {extraction_config['return_which_tokens']}")
+        print(f"Extracting {dataset_type} embeddings using {self.extractor_name}...")
+        # only print for train to reduce noise
+        if dataset_type == "train":
+            print(f"  Token extraction strategy: {self.token_extraction_strategy}")
+            if self.token_extraction_strategy in ["k_last_all", "k_last_cls"]:
+                print(f"  Token layer aggregation: {self.token_params['layer_aggregation']}")
+                print(f"  Token last K layers: {self.token_params['lastk_k']}")
+            if self.pooling_strategy != "cls":
+                print(f"  Pooling strategy: {self.pooling_strategy}")
 
         # Extract embeddings (caching controlled by use_cache parameter)
-        print(f"  Caching: {'enabled' if self.use_cache else 'disabled'}")
+            print(f"  Caching: {'enabled' if self.use_cache else 'disabled'}")
+
+        print(f" Starting extraction for {len(image_paths)} images...")
+        time_start = time.time()
         raw_embeddings = extractor.extract_embeddings(
             images=image_paths,
-            return_which_tokens=extraction_config["return_which_tokens"],
-            k_last=self.pooling_params.get("k", 4),  # For k_last extraction
+            return_which_tokens=self.token_extraction_strategy,
+            k_last=self.token_params.get("lastk_k", -1), # ignored if last_k not used
             use_cache=self.use_cache,
             dataset_name=self.dataset_name,
             base_path=self.base_path,
         )
+        time_end = time.time()
+        print(f"✓ Extraction completed in {time_end - time_start:.2f} seconds")
+        print(f"  Raw embeddings shape: {raw_embeddings.shape}")
 
         # Apply pooling if needed
-        if extraction_config["needs_pooling"]:
-            print(f"  Applying {self.pooling_strategy} pooling...")
-            pooling = get_pooling_strategy(
-                self.pooling_strategy, **self.pooling_params
-            )
-            embeddings = pooling.pool(raw_embeddings)
-        else:
+        if self.pooling_strategy == "cls":
+            # CLS token only, no pooling needed
+            print("  Using CLS token only, skipping pooling.")
             embeddings = raw_embeddings
+        else:
+            if self.pooling_strategy == "lastk":
+                self.layer_aggregation = self.token_params["layer_aggregation"]
+                token_agg = self.pooling_params["token_aggregation"]
+                # Last K layers pooling
+                print(f"  Applying Last K Layers pooling with layer aggregation {self.layer_aggregation} and token aggregation {token_agg}.")
+                pooler = get_pooling_strategy(
+                    "lastk",
+                    layer_aggregation=self.layer_aggregation,
+                    token_aggregation=token_agg,
+                )
+            else:
+                # Other pooling strategies
+                print(f"  Applying {self.pooling_strategy} pooling.")
+                pooler = get_pooling_strategy(
+                    self.pooling_strategy, **self.pooling_params
+                )
+            embeddings = pooler.pool(raw_embeddings)
 
         print(f"✓ Final embeddings shape: {embeddings.shape}")
+        return embeddings
+
+    def _preprocess_embeddings(self, embeddings, fit=True) -> np.ndarray:
+        """Apply preprocessing (dimensionality reduction, normalization) to embeddings."""
+        if not self.preprocessing_params:
+            raise ValueError("No preprocessing_params provided for embedding preprocessing.")
+        args = self.preprocessing_params
+        if args.get("normalization", "none") == "l2":
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            embeddings = embeddings / np.where(norms == 0, 1, norms)
+            print("  Applied L2 normalization to embeddings")
+        
+        if args.get("dim_reduction", "none") == "umap":
+            if fit:
+                self.umap_reducer = umap.UMAP(
+                    n_components=args["dr_dims"],
+                    n_neighbors=args["umap_neighbors"],
+                    min_dist=args["umap_min_dist"],
+                    metric=args["umap_metric"],
+                    # random_state=self.seed, # Uncomment for reproducibility, incompatible with n_jobs > 1 (parallelism)
+                )
+                print(f"  UMAP: {embeddings.shape[1]} → {args['dr_dims']} (neighbors={args['umap_neighbors']}, min_dist={args['umap_min_dist']})")
+                embeddings = self.umap_reducer.fit_transform(embeddings)
+            else:
+                if self.umap_reducer is None:
+                    raise ValueError("UMAP reducer not fitted yet.")
+                embeddings = self.umap_reducer.transform(embeddings)
+        
         return embeddings
 
     def _cluster(self, embeddings: np.ndarray) -> np.ndarray:
@@ -306,16 +433,22 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             Cluster labels, shape (n_samples,). Labels are integers >= 0,
             or -1 for noise (HDBSCAN only).
         """
+        if embeddings.ndim != 2:
+            raise ValueError(
+                f"Embeddings must be 2D array, got shape {embeddings.shape}"
+            )
         clustering = get_clustering_method(
             self.clustering_method, **self.clustering_params
         )
 
         print(f"Clustering with {self.clustering_method}...")
+        time_start = time.time()
         cluster_labels = clustering.cluster(embeddings)
         self.cluster_info_ = clustering.get_cluster_info()
 
         num_clusters = self.cluster_info_.get("num_clusters", 0)
-        print(f"✓ Found {num_clusters} clusters")
+        time_end = time.time()
+        print(f"✓ Found {num_clusters} clusters in {time_end - time_start:.2f} seconds")
 
         if "noise_count" in self.cluster_info_:
             print(f"  Noise samples: {self.cluster_info_['noise_count']}")
@@ -347,6 +480,12 @@ class EmbeddingSplitter(BaseDatasetSplitter):
 
         # Get cluster centroids
         unique_labels = [l for l in set(labels) if l != -1]
+        
+        # If no clusters found (all noise), return single cluster
+        if not unique_labels:
+            print("  All points are noise; assigning all to single cluster 0.")
+            return np.zeros_like(labels)
+
         centroids = {
             label: embeddings[labels == label].mean(axis=0) for label in unique_labels
         }
@@ -368,12 +507,13 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         This is the main method that orchestrates the embedding-based
         partitioning pipeline:
 
-        1. Extract embeddings from training images
-        2. Cluster embeddings into groups
+        1. Extract embeddings from training set
+        2. Cluster training embeddings into groups
         3. Handle noise points (assign to nearest cluster)
         4. Set n_clients = number of clusters
         5. Directly map clusters to clients (cluster_i -> client_i)
-        6. Build the final splits structure with train/val data
+        6. Handle validation set according to valset_type
+        7. Build the final splits structure with train/val data
 
         Returns
         -------
@@ -388,29 +528,33 @@ class EmbeddingSplitter(BaseDatasetSplitter):
                     "global_val": [...] or None
                 }
         """
-        # 1. Extract embeddings (caching handled by extractor)
-        embeddings = self._get_embeddings()
+        # 1. Extract training set embeddings (caching handled by extractor)
+        train_embeddings = self._get_embeddings(self.train_dataset, dataset_type="train")
 
-        # 2. Cluster
-        cluster_labels = self._cluster(embeddings)
+        # 2. Preprocess embeddings if specified
+        if self.preprocessing_params:
+            train_embeddings = self._preprocess_embeddings(train_embeddings, fit=True)
+
+        # 3. Cluster Training embeddings
+        cluster_labels = self._cluster(train_embeddings)
         self.cluster_labels_ = cluster_labels
 
-        # 3. Handle noise (HDBSCAN returns -1 for noise)
-        cluster_labels = self._assign_noise_to_nearest(embeddings, cluster_labels)
+        # 4. Handle noise (HDBSCAN returns -1 for noise)
+        cluster_labels = self._assign_noise_to_nearest(train_embeddings, cluster_labels)
 
-        # 4. n_clients = num_clusters (determined by clustering)
+        # 5. n_clients = num_clusters (determined by clustering)
         unique_clusters = sorted(set(cluster_labels))
         self.n_clients = len(unique_clusters)
 
         print(f"\nCreating {self.n_clients} clients from {len(unique_clusters)} clusters")
 
-        # 5. Direct mapping: cluster_i -> client_i
+        # 6. Direct mapping: cluster_i -> client_i
         # Create mapping from original cluster labels to sequential client IDs
         cluster_to_client = {
             cluster_id: client_idx for client_idx, cluster_id in enumerate(unique_clusters)
         }
 
-        # Get indices for each client
+        # Build client train indices
         client_train_indices = {
             f"client_{client_idx}": np.where(
                 cluster_labels == cluster_id
@@ -418,12 +562,11 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             for cluster_id, client_idx in cluster_to_client.items()
         }
 
-        # 6. Build splits
         splits: DatasetSplits = {"clients": {}, "global_val": None}
 
-        # Handle validation set
+        # 6. Handle validation logic
         if self.valset_type == "global" and self.val_dataset is not None:
-            # Global validation set (all clients share)
+            # Global validation set (all clients share original val set)
             splits["global_val"] = self._load_dataset_samples(self.val_dataset)
 
             # Clients have no local validation
@@ -434,32 +577,34 @@ class EmbeddingSplitter(BaseDatasetSplitter):
                 )
 
         elif self.valset_type == "local" and self.val_dataset is not None:
-            # Split validation set across clients proportionally
-            val_indices = list(range(len(self.val_dataset)))
-            rng = np.random.RandomState(self.seed)
-            rng.shuffle(val_indices)
+            # Local validation: split val set proportionally to train clusters
+            val_embeddings = self._get_embeddings(self.val_dataset, dataset_type="val")   
 
-            # Calculate split points
-            client_train_sizes = [
-                len(indices) for indices in client_train_indices.values()
-            ]
-            total_train = sum(client_train_sizes)
-            val_split_points = []
-            cumsum = 0
-            for size in client_train_sizes[:-1]:
-                cumsum += int(len(val_indices) * size / total_train)
-                val_split_points.append(cumsum)
+            # Preprocess val embeddings if needed
+            if self.preprocessing_params:
+                val_embeddings = self._preprocess_embeddings(val_embeddings, fit=False)
 
-            val_splits = np.split(val_indices, val_split_points)
+            train_centroids = {}
+            for cluster_id, client_idx in cluster_to_client.items():
+                mask = cluster_labels == cluster_id
+                if mask.any():
+                    train_centroids[client_idx] = train_embeddings[mask].mean(axis=0)
+                else:
+                    train_centroids[client_idx] = np.zeros(train_embeddings.shape[1])
 
-            for idx, (client_id, train_indices) in enumerate(
-                client_train_indices.items()
-            ):
+            # Assign Validation Samples to Nearest Client
+            client_val_indices = {cid: [] for cid in client_train_indices.keys()}
+            for i, val_emb in enumerate(val_embeddings):
+                # Find nearest centroid
+                nearest_client_idx = min(train_centroids.keys(), key=lambda c_idx: np.linalg.norm(val_emb - train_centroids[c_idx]))
+                client_val_indices[f"client_{nearest_client_idx}"].append(i)
+
+            # Build Client Splits
+            for client_id, train_idx in client_train_indices.items():
+                val_idx = client_val_indices.get(client_id, [])
                 splits["clients"][client_id] = ClientSplit(
-                    train=self._load_dataset_samples(self.train_dataset, train_indices),
-                    val=self._load_dataset_samples(
-                        self.val_dataset, val_splits[idx].tolist()
-                    ),
+                    train=self._load_dataset_samples(self.train_dataset, train_idx),
+                    val=self._load_dataset_samples(self.val_dataset, val_idx)
                 )
 
         else:

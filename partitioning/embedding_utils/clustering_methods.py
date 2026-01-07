@@ -19,14 +19,14 @@ Usage
 Use the factory function for easy instantiation:
 
     >>> from partitioning.embedding_utils.clustering_methods import get_clustering_method
-    >>> clustering = get_clustering_method("hdbscan", min_cluster_size=15)
+    >>> clustering = get_clustering_method("hdbscan", min_cluster_size=100, metric="cosine")
     >>> labels = clustering.cluster(embeddings)
     >>> info = clustering.get_cluster_info()
 
 Or instantiate directly:
 
     >>> from partitioning.embedding_utils.clustering_methods import HDBSCANMethod
-    >>> clustering = HDBSCANMethod(min_cluster_size=15, min_samples=5)
+    >>> clustering = HDBSCANMethod(min_cluster_size=100, min_samples=5)
     >>> labels = clustering.cluster(embeddings)
 
 See Also
@@ -38,10 +38,9 @@ EmbeddingConfig : Configuration for selecting clustering methods.
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 import numpy as np
-from sklearn.cluster import KMeans, SpectralClustering
+from sklearn.cluster import KMeans, SpectralClustering, HDBSCAN
 from sklearn.neighbors import kneighbors_graph
 from scipy.sparse.csgraph import connected_components
-import hdbscan
 
 
 class ClusteringMethod(ABC):
@@ -99,7 +98,7 @@ class HDBSCANMethod(ClusteringMethod):
     ----------
     min_cluster_size : int, optional
         Minimum number of samples in a cluster. Smaller values create more
-        clusters. Default: 15.
+        clusters. Default: 100.
     min_samples : int, optional
         Minimum samples in a neighborhood for core points. If None, defaults
         to min_cluster_size. Smaller values are less conservative.
@@ -132,17 +131,17 @@ class HDBSCANMethod(ClusteringMethod):
 
     def __init__(
         self,
-        min_cluster_size: int = 15,
+        min_cluster_size: int = 100,
         min_samples: Optional[int] = None,
-        metric: str = "euclidean",
+        hdbscan_metric: str = "euclidean",
         cluster_selection_epsilon: float = 0.0,
-        cluster_selection_method: str = "eom",
+        hdbscan_method: str = "eom",
     ):
         self.min_cluster_size = min_cluster_size
         self.min_samples = min_samples or min_cluster_size
-        self.metric = metric
+        self.metric = hdbscan_metric
         self.cluster_selection_epsilon = cluster_selection_epsilon
-        self.cluster_selection_method = cluster_selection_method
+        self.cluster_selection_method = hdbscan_method
 
         self.clusterer = None
         self.labels_ = None
@@ -150,10 +149,11 @@ class HDBSCANMethod(ClusteringMethod):
 
     def cluster(self, embeddings: np.ndarray) -> np.ndarray:
         """Apply HDBSCAN clustering."""
-        self.clusterer = hdbscan.HDBSCAN(
+        self.clusterer = HDBSCAN(
             min_cluster_size=self.min_cluster_size,
             min_samples=self.min_samples,
             metric=self.metric,
+            # n_jobs=4,
             cluster_selection_epsilon=self.cluster_selection_epsilon,
             cluster_selection_method=self.cluster_selection_method,
         )
@@ -189,7 +189,9 @@ class HDBSCANMethod(ClusteringMethod):
     def __repr__(self) -> str:
         return (
             f"HDBSCANMethod(min_cluster_size={self.min_cluster_size}, "
-            f"min_samples={self.min_samples})"
+            f"min_samples={self.min_samples}),"
+            f"metric={self.metric}),"
+            f"cluster_selection_method={self.cluster_selection_method})"
         )
 
 
@@ -275,7 +277,11 @@ class KMeansMethod(ClusteringMethod):
         }
 
     def __repr__(self) -> str:
-        return f"KMeansMethod(n_clusters={self.n_clusters})"
+        return (
+            f"KMeansMethod(n_clusters={self.n_clusters}),"
+            f"random_state={self.random_state})"
+            f"n_init={self.n_init})"
+        )
 
 
 class KNNGraphMethod(ClusteringMethod):
@@ -442,6 +448,7 @@ class SpectralMethod(ClusteringMethod):
             gamma=gamma,
             n_neighbors=self.n_neighbors,
             random_state=self.random_state,
+            # n_jobs=4,
         )
 
         self.labels_ = self.clusterer.fit_predict(embeddings)
@@ -497,7 +504,7 @@ def get_clustering_method(name: str, **kwargs) -> ClusteringMethod:
 
     Examples
     --------
-    >>> clustering = get_clustering_method("hdbscan", min_cluster_size=15)
+    >>> clustering = get_clustering_method("hdbscan", min_cluster_size=100)
     >>> clustering = get_clustering_method("kmeans", n_clusters=10)
     >>> clustering = get_clustering_method("knn", n_neighbors=15)
     >>> clustering = get_clustering_method("spectral", n_clusters=10, affinity="rbf")

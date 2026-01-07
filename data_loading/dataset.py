@@ -326,7 +326,7 @@ def _load_tiny_imagenet(self) -> None:
 @BaseDataset.register_dataset("food101")
 def _load_food101(self):
     """Load Food-101 dataset."""
-    valid_splits = ["train", "test"]
+    valid_splits = ["train", "val"]
     if self.split not in valid_splits:
         raise ValueError(f"Invalid split '{self.split}'. Valid options: {valid_splits}")
 

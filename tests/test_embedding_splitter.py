@@ -337,18 +337,6 @@ class TestPoolingStrategies:
         from partitioning.embedding_utils.pooling_strategies import PoolingStrategy
         assert isinstance(pooling, PoolingStrategy)
 
-    def test_pooling_on_2d_embeddings(self, clusterable_embeddings):
-        """Pooling 2D embeddings (already pooled) returns as-is."""
-        embeddings_2d, _ = clusterable_embeddings
-
-        from partitioning.embedding_utils.pooling_strategies import CLSPooling
-        pooling = CLSPooling()
-
-        result = pooling.pool(embeddings_2d)
-
-        # Should return unchanged for 2D input
-        np.testing.assert_array_equal(result, embeddings_2d)
-
     def test_pooling_on_3d_embeddings_with_tokens(self, sample_embeddings_3d):
         """Pooling 3D embeddings reduces token dimension."""
         from partitioning.embedding_utils.pooling_strategies import MeanPooling

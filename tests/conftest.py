@@ -5,7 +5,6 @@ This module provides reusable fixtures for:
 - Embeddings (2D pooled, 3D with tokens, clusterable)
 - VLM annotations (JSONL format for all 5 criteria)
 - Cache management (temporary directories, CacheManager instances)
-- Configuration (embedding configs for different test scenarios)
 """
 
 import json
@@ -386,64 +385,3 @@ def disabled_cache_manager(tmp_cache_dir):
     """
     from embedding.cache_manager import CacheManager
     return CacheManager(cache_dir=tmp_cache_dir, enabled=False)
-
-
-# ============================================================================
-# Configuration Fixtures
-# ============================================================================
-
-@pytest.fixture
-def default_embedding_config():
-    """Fast EmbeddingConfig for testing.
-
-    Uses 'fast' preset with small batch size for quick tests.
-
-    Returns:
-        EmbeddingConfig instance.
-    """
-    from partitioning.embedding_utils.config import get_preset_config
-    return get_preset_config("fast", n_clients=10)
-
-
-@pytest.fixture
-def all_embedding_configs():
-    """All preset embedding configs for parameterized testing.
-
-    Returns:
-        List of EmbeddingConfig instances: [default, fast, high_quality, spectral].
-    """
-    from partitioning.embedding_utils.config import get_preset_config
-    return [
-        get_preset_config("default", n_clients=10),
-        get_preset_config("fast", n_clients=10),
-        get_preset_config("high_quality", n_clients=10),
-        get_preset_config("spectral", n_clients=10),
-    ]
-
-
-# ============================================================================
-# Pytest Configuration Hooks
-# ============================================================================
-
-def pytest_configure(config):
-    """Register custom markers for test organization."""
-    config.addinivalue_line(
-        "markers",
-        "slow: marks tests as slow (deselect with '-m \"not slow\"')"
-    )
-    config.addinivalue_line(
-        "markers",
-        "unit: marks tests as unit tests (fast, no I/O)"
-    )
-    config.addinivalue_line(
-        "markers",
-        "integration: marks tests as integration tests (cross-component workflows)"
-    )
-    config.addinivalue_line(
-        "markers",
-        "property: marks property-based tests using Hypothesis"
-    )
-    config.addinivalue_line(
-        "markers",
-        "gpu: marks tests requiring GPU (deselect with '-m \"not gpu\"' on CPU-only)"
-    )

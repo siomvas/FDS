@@ -380,6 +380,12 @@ class CacheManager:
         )
         cache_file = self.cache_dir / f"{cache_key}.npz"
 
+        config_entry = {
+            "pooling_strategy": pooling_strategy,
+            "layers": layers,
+            **kwargs
+        }
+
         try:
             save_dict = {}
             
@@ -434,6 +440,8 @@ class CacheManager:
                 "num_images": len(image_paths) if image_paths else 0,
                 "base_path": str(base_path) if base_path else None,
                 "file": cache_file.name,
+                "config": config_entry,
+                "created_at": os.path.getmtime(cache_file),
             }
             self._save_metadata()
 

@@ -96,8 +96,7 @@ class MeanPooling(PoolingStrategy):
     def pool(self, embeddings: np.ndarray) -> np.ndarray:
         """Average over token dimension."""
         if embeddings.ndim == 2:
-            # Already pooled
-            return embeddings
+            raise ValueError("MeanPooling expects 3D embeddings with multiple tokens per sample.")
         elif embeddings.ndim == 3:
             # Mean over tokens
             return np.mean(embeddings, axis=1)
@@ -124,7 +123,7 @@ class MaxPooling(PoolingStrategy):
     def pool(self, embeddings: np.ndarray) -> np.ndarray:
         """Max pooling over token dimension."""
         if embeddings.ndim == 2:
-            return embeddings
+            raise ValueError("MaxPooling expects 3D embeddings with multiple tokens per sample.")
         elif embeddings.ndim == 3:
             return np.max(embeddings, axis=1)
         else:
@@ -171,7 +170,7 @@ class GeMLPooling(PoolingStrategy):
     def pool(self, embeddings: np.ndarray) -> np.ndarray:
         """Apply GeM pooling with proper handling of signed values."""
         if embeddings.ndim == 2:
-            return embeddings
+            raise ValueError("GeMLPooling expects 3D embeddings with multiple tokens per sample.")
         elif embeddings.ndim == 3:
             # GeM formula: (mean(x^p))^(1/p)
             # For signed values, use: sign(x) * |x|^p to preserve signs
@@ -205,14 +204,21 @@ class LastKLayerPooling(PoolingStrategy):
 
     Parameters
     ----------
-    k : int, optional
-        Number of last layers to aggregate. Default: 4.
-    aggregation : str, optional
-        Aggregation method:
+    layer_aggregation : str, optional
+        Aggregation method across the last K layers. Options:
 
         - "mean": Average across layers (preserves dimension)
         - "concat": Concatenate layers (output dim = k * embed_dim)
         - "weighted": Weighted average (later layers weighted higher)
+
+        Default: "mean".
+    token_aggregation: str, optional
+        Aggregation method across tokens after layer aggregation. Options:
+
+        - "mean": Average across tokens
+        - "max": Max across tokens
+        - "gem": Generalized mean pooling (use p=... kwarg)
+        - "cls": Use CLS token (if available)
 
         Default: "mean".
 
@@ -222,6 +228,7 @@ class LastKLayerPooling(PoolingStrategy):
     - "concat" increases embedding dimension by factor k
     - "weighted" assigns linearly increasing weights to later layers
     - Earlier layers capture low-level features, later layers capture semantics
+    - After layer aggregation, further token aggregation is applied as defined by `token_aggregation`
 
     Raises
     ------
@@ -231,14 +238,12 @@ class LastKLayerPooling(PoolingStrategy):
         If input is not a dictionary of layer embeddings.
     """
 
-    def __init__(self, k: int = 4, aggregation: str = "mean"):
-        self.k = k
-        self.aggregation = aggregation
+    def __init__(self, layer_aggregation: str = "mean", token_aggregation: str = "mean", **kwargs):
+        self.layer_aggregation = layer_aggregation
+        self.token_aggregation = token_aggregation
+        self.kwargs = kwargs
 
-        if aggregation not in ["mean", "concat", "weighted"]:
-            raise ValueError(f"Unknown aggregation: {aggregation}. Choose from mean/concat/weighted")
-
-    def pool(self, layer_embeddings: Dict[int, np.ndarray]) -> np.ndarray:
+    def pool_layers(self, layer_embeddings: np.ndarray) -> np.ndarray:
         """
         Pool embeddings from multiple layers.
 
@@ -248,35 +253,71 @@ class LastKLayerPooling(PoolingStrategy):
         Returns:
             Aggregated embeddings
         """
-        if not isinstance(layer_embeddings, dict):
-            raise TypeError("LastKLayerPooling expects dict of layer embeddings")
+        if layer_embeddings.ndim != 4:
+            raise ValueError(
+                f"Expected layer_embeddings to be a [n_samples, n_layers, n_tokens, embed_dim] array."
+                f"Got shape: {layer_embeddings.shape}"
+            )
 
-        # Get last K layers
-        sorted_layers = sorted(layer_embeddings.keys())
-        last_k_layers = sorted_layers[-self.k :]
+        n_samples, n_layers, n_tokens, embed_dim = layer_embeddings.shape
 
-        # Stack embeddings from last K layers
-        stacked = np.stack([layer_embeddings[layer] for layer in last_k_layers], axis=0)
-        # Shape: (k, n_samples, embed_dim)
+        print(f"Pooling for {n_samples} samples from {n_layers} layers with {n_tokens} tokens each. Embed dim: {embed_dim}")
 
-        if self.aggregation == "mean":
-            # Average across layers
-            return np.mean(stacked, axis=0)
+        if self.layer_aggregation == "mean":
 
-        elif self.aggregation == "concat":
-            # Concatenate layers
-            # Shape: (n_samples, k * embed_dim)
-            return np.concatenate([layer_embeddings[layer] for layer in last_k_layers], axis=1)
+            return np.mean(layer_embeddings, axis=1)
 
-        elif self.aggregation == "weighted":
+        elif self.layer_aggregation == "concat":
+            # Shape: (n_samples, n_tokens, n_layers * embed_dim)
+            transposed = np.transpose(layer_embeddings, (0, 2, 1, 3))
+            return transposed.reshape(n_samples, n_tokens, n_layers * embed_dim)
+
+        elif self.layer_aggregation == "weighted":
             # Weighted average (more weight to later layers)
-            weights = np.arange(1, self.k + 1, dtype=float)
+            weights = np.arange(1, n_layers+1, dtype=float)
             weights = weights / weights.sum()
-            weighted = np.sum(stacked * weights[:, None, None], axis=0)
+            weighted = np.tensordot(layer_embeddings, weights, axes=([1], [0]))
             return weighted
+        
+        else:
+            raise ValueError(f"Unknown aggregation: {self.layer_aggregation}. Choose from mean/concat/weighted")
+    
+    def pool_tokens(self, embeddings: np.ndarray) -> np.ndarray:
+
+        if self.token_aggregation == "mean":
+            return MeanPooling().pool(embeddings)
+        elif self.token_aggregation == "max":
+            return MaxPooling().pool(embeddings)
+        elif self.token_aggregation == "gem":
+            p = self.kwargs.get("p", 3.0)
+            return GeMLPooling(p=p).pool(embeddings)
+        elif self.token_aggregation == "cls":
+            if embeddings.ndim != 3:
+                raise ValueError("CLS token aggregation expects 3D embeddings with multiple tokens per sample.")
+            return embeddings[:, 0, :]
+        else:
+            raise ValueError(f"Unknown token aggregation: {self.token_aggregation}. Choose from mean/max/gem/cls")
+    
+    def pool(self, embeddings: np.ndarray) -> np.ndarray:
+        """
+        Pool embeddings from last K layers and then across tokens.
+
+        Args:
+            embeddings: Shape (n_samples, n_layers, n_tokens, embed_dim)
+
+        Returns:
+            Pooled embeddings (n_samples, embed_dim) or (n_samples, k*embed_dim) if concat
+        """
+        # First pool across layers
+        layer_pooled = self.pool_layers(embeddings)
+
+        # Then pool across tokens
+        token_pooled = self.pool_tokens(layer_pooled)
+
+        return token_pooled
 
     def __repr__(self) -> str:
-        return f"LastKLayerPooling(k={self.k}, aggregation={self.aggregation})"
+        return f"LastKLayerPooling(layer_aggregation={self.layer_aggregation}, token_aggregation={self.token_aggregation})"
 
 
 class SpectralSharpeningPooling(PoolingStrategy):

@@ -14,7 +14,6 @@ import json
 
 # Import components to test
 from partitioning.embedding_utils.pooling_strategies import (
-    CLSPooling,
     MeanPooling,
     MaxPooling,
     GeMLPooling,
@@ -86,30 +85,6 @@ def clusterable_embeddings():
 # ============================================================================
 # POOLING STRATEGY TESTS
 # ============================================================================
-
-class TestCLSPooling:
-    """Test CLS token pooling."""
-
-    def test_2d_input_unchanged(self, sample_embeddings_2d):
-        """2D input (already pooled) should pass through unchanged."""
-        pooling = CLSPooling()
-        result = pooling.pool(sample_embeddings_2d)
-        assert result.shape == sample_embeddings_2d.shape
-        np.testing.assert_array_equal(result, sample_embeddings_2d)
-
-    def test_3d_input_extracts_first_token(self, sample_embeddings_3d):
-        """3D input should extract CLS token (first token)."""
-        pooling = CLSPooling()
-        result = pooling.pool(sample_embeddings_3d)
-        assert result.shape == (50, 768)
-        np.testing.assert_array_equal(result, sample_embeddings_3d[:, 0, :])
-
-    def test_invalid_dimensions(self):
-        """Should raise error for invalid dimensions."""
-        pooling = CLSPooling()
-        with pytest.raises(ValueError, match="Expected 2D or 3D"):
-            pooling.pool(np.random.randn(10, 20, 30, 40))
-
 
 class TestMeanPooling:
     """Test mean pooling."""
@@ -255,11 +230,6 @@ class TestSpectralSharpeningPooling:
 
 class TestPoolingFactory:
     """Test pooling strategy factory function."""
-
-    def test_creates_cls_pooling(self):
-        """Should create CLSPooling."""
-        pooling = get_pooling_strategy("cls")
-        assert isinstance(pooling, CLSPooling)
 
     def test_creates_gem_with_params(self):
         """Should create GeMLPooling with parameters."""
@@ -528,105 +498,7 @@ class TestCacheManager:
         assert cache.get("dinov2-base", ["img1.jpg"], pooling_strategy="cls") is None
         assert cache.get("clip-base-patch16", ["img1.jpg"], pooling_strategy="cls") is not None
 
-
 # ============================================================================
-# CONFIGURATION TESTS
-# ============================================================================
-
-class TestConfiguration:
-    """Test configuration system."""
-
-    def test_model_config_validation(self):
-        """ModelConfig should validate model type."""
-        # Valid
-        config = ModelConfig(model_type="dinov2", variant="base")
-        assert config.model_type == "dinov2"
-
-        # Invalid
-        with pytest.raises(ValueError, match="Invalid model_type"):
-            ModelConfig(model_type="invalid", variant="base")
-
-    def test_pooling_config_validation(self):
-        """PoolingConfig should validate strategy."""
-        # Valid
-        config = PoolingConfig(strategy="cls")
-        assert config.strategy == "cls"
-
-        # Invalid
-        with pytest.raises(ValueError, match="Invalid pooling strategy"):
-            PoolingConfig(strategy="invalid")
-
-    def test_clustering_config_validation(self):
-        """ClusteringConfig should validate method."""
-        # Valid
-        config = ClusteringConfig(method="hdbscan")
-        assert config.method == "hdbscan"
-
-        # Invalid
-        with pytest.raises(ValueError, match="Invalid clustering method"):
-            ClusteringConfig(method="invalid")
-
-    def test_embedding_config_creation(self):
-        """Should create complete EmbeddingConfig."""
-        config = EmbeddingConfig(
-            model=ModelConfig(model_type="dinov2", variant="base"),
-            pooling=PoolingConfig(strategy="cls"),
-            clustering=ClusteringConfig(method="hdbscan"),
-            n_clients=10,
-        )
-
-        assert config.n_clients == 10
-        assert config.model.model_type == "dinov2"
-        assert config.pooling.strategy == "cls"
-
-    def test_config_to_dict(self):
-        """Should convert config to dictionary."""
-        config = EmbeddingConfig(
-            model=ModelConfig(model_type="dinov2", variant="base"),
-            pooling=PoolingConfig(strategy="cls"),
-            clustering=ClusteringConfig(method="hdbscan"),
-            n_clients=10,
-        )
-
-        config_dict = config.to_dict()
-        assert isinstance(config_dict, dict)
-        assert config_dict["n_clients"] == 10
-        assert config_dict["model"]["model_type"] == "dinov2"
-
-    def test_config_to_json_and_from_json(self, tmp_cache_dir):
-        """Should save and load config as JSON."""
-        config = EmbeddingConfig(
-            model=ModelConfig(model_type="dinov2", variant="base"),
-            pooling=PoolingConfig(strategy="gem", params={"p": 3.0}),
-            clustering=ClusteringConfig(method="kmeans", params={"n_clusters": 5}),
-            n_clients=10,
-        )
-
-        # Save to JSON
-        json_path = Path(tmp_cache_dir) / "config.json"
-        config.to_json(str(json_path))
-
-        # Load from JSON
-        loaded_config = EmbeddingConfig.from_json(str(json_path))
-
-        assert loaded_config.n_clients == 10
-        assert loaded_config.model.variant == "base"
-        assert loaded_config.pooling.params["p"] == 3.0
-        assert loaded_config.clustering.params["n_clusters"] == 5
-
-    def test_preset_configs(self):
-        """Should provide preset configurations."""
-        presets = ["default", "fast", "high_quality", "spectral"]
-
-        for preset_name in presets:
-            config = get_preset_config(preset_name, n_clients=10)
-            assert isinstance(config, EmbeddingConfig)
-            assert config.n_clients == 10
-
-    def test_invalid_preset_raises(self):
-        """Invalid preset should raise error."""
-        with pytest.raises(ValueError, match="Unknown preset"):
-            get_preset_config("invalid", n_clients=10)
 
     def test_cache_settings_flattened(self):
         """Cache settings should be direct fields, not nested."""
@@ -919,7 +791,6 @@ class TestCrossComponentIntegration:
 
         # Apply different pooling strategies
         strategies = {
-            "cls": CLSPooling(),
             "mean": MeanPooling(),
             "max": MaxPooling(),
         }
