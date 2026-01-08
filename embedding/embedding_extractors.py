@@ -126,6 +126,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import transforms, models
+from tqdm import tqdm
 
 from data_loading.dataset import to_image_dataset
 from embedding.cache_manager import CacheManager
@@ -487,7 +488,7 @@ class EmbeddingExtractor(ABC):
         cache_params = {
             "return_which_tokens": return_which_tokens,
             "k_last": k_last,
-            **kwargs
+            # **kwargs
         }
 
         # 1. Check Unified Cache
@@ -500,7 +501,10 @@ class EmbeddingExtractor(ABC):
                 **cache_params
             )
             if cached_data is not None:
+                print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
                 return cached_data
+            else:
+                print(f"  ✗ Cache MISS: {self.model_name} - Computing...")
 
         # 2. Compute if not cached
         if not self.model:
@@ -511,7 +515,7 @@ class EmbeddingExtractor(ABC):
         output_hidden = "k_last" in return_which_tokens
 
         with torch.no_grad():
-            for batch in dataloader:
+            for batch in tqdm(dataloader, desc=f"Extracting embeddings with {self.model_name}", unit="batch", leave=False):
                 if batch is None: 
                     continue
                 batch = batch.to(self.device)
@@ -618,7 +622,8 @@ class InceptionExtractor(EmbeddingExtractor):
         **kwargs: Any,
     ) -> np.ndarray:
 
-        cache_params = {**kwargs}
+        # cache_params = {**kwargs}
+        cache_params = {} # Inception does not have token selection params
 
         if use_cache and self.cache_manager:
             cached_data = self.cache_manager.get(
@@ -629,7 +634,10 @@ class InceptionExtractor(EmbeddingExtractor):
                 **cache_params
             )
             if cached_data is not None:
+                print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
                 return cached_data
+            else:
+                print(f"  ✗ Cache MISS: {self.model_name} - Computing...")
 
         if not self.model:
             self.load_model()
@@ -638,7 +646,7 @@ class InceptionExtractor(EmbeddingExtractor):
         dataloader = self._get_dataloader(images)
 
         with torch.no_grad():
-            for batch in dataloader:
+            for batch in tqdm(dataloader, desc=f"Extracting embeddings with {self.model_name}", unit="batch", leave=False):
                 if batch is None: continue
                 batch = batch.to(self.device)
                 emb = self.model(batch)
@@ -886,7 +894,7 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
     """
 
     def __init__(self, variant: str = "64", **kwargs):
-        super().__init__(model_name="raw_pixel_resizer", **kwargs)
+        super().__init__(model_name=f"raw_pixel_resizer-{variant}", **kwargs)
         try:
             self.target_size = int(variant)
         except ValueError:
@@ -1000,7 +1008,7 @@ class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
             self.target_dim = int(target_dim_str)
         except ValueError:
             raise ValueError(f"Invalid variant '{variant}' for RandomProjectionResizerExtractor. Use format '<size>-<target_dim>'.")
-        super().__init__(model_name="sparse_random_projection_resizer", **kwargs)
+        super().__init__(model_name=f"sparse_random_projection_resizer-{variant}", **kwargs)
         self.transformer: Optional[Any] = None
 
     def load_model(self) -> None:
@@ -1259,7 +1267,7 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
         except ValueError:
             raise ValueError(f"Invalid variant '{variant}' for WaveletScatteringExtractor. Use format '<size>-<J>'.")
 
-        super().__init__(model_name="wavelet_scattering", **kwargs)
+        super().__init__(model_name=f"wavelet_scattering-{variant}", **kwargs)
         self.scattering: Optional[Any] = None
 
     def load_model(self) -> None:

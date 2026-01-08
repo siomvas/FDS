@@ -72,7 +72,7 @@ import os
 from typing import List, Dict, Optional, Any, Union
 from vendi_score import vendi
 
-from embedding.cache_embeddings import CacheManager
+from embedding.cache_manager import CacheManager
 from embedding.embedding_extractors import ModelRegistry
 
 from data_loading.dataset import ImageDataset

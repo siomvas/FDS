@@ -30,7 +30,7 @@ REPORT_FILE="$OUTPUT_ROOT/report.html"
 
 # Evaluation Settings
 FEATURE_MODEL="inception_v3"
-SUBSAMPLE=0
+SUBSAMPLE=1000
 BATCH_SIZE=100
 
 # VLM Settings
@@ -103,8 +103,8 @@ python "$GENERATE_BASELINES" \
     --dataset "$DATASET" \
     --base_path "$BASE_DATA_PATH" \
     --output_dir "$BASELINE_DIR" \
-    --n_clients 10 20 \
-    --alphas 0.1 0.5 \
+    --n_clients 5 \
+    --alphas 0.5 \
     --seeds 42 \
     "${VLM_ARGS[@]+"${VLM_ARGS[@]}"}"
 

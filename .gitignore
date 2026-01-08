@@ -48,3 +48,5 @@ tests/.hypothesis/
 
 # Logs and partition jsons
 scripts/embedding_partitions
+
+benchmark_results/

@@ -23,6 +23,17 @@ Usage:
     python evaluate_partitions.py --partition_dir ./partitions --force ...
 """
 
+import os
+
+# --- CRITICAL CPU CONSTRAINT ---
+# Must be set BEFORE importing numpy/torch to prevent 5000% CPU spikes.
+# This forces matrix operations to use a sane number of threads.
+os.environ["OMP_NUM_THREADS"] = "8"
+os.environ["MKL_NUM_THREADS"] = "8"
+os.environ["OPENBLAS_NUM_THREADS"] = "8"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "8"
+os.environ["NUMEXPR_NUM_THREADS"] = "8"
+
 import argparse
 import json
 import time
