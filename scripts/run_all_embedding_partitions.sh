@@ -204,10 +204,11 @@ for extractor in "${EXTRACTORS[@]}"; do
                                 else
                                     echo "  ✗ Failed (see $log_path)"
                                     ((failed++))
-                                    # prepend FAIL to log file and output file names
-                                    mv "$log_path" "FAIL_${log_path%.log}.log"
-                                    mv "$output_path" "FAIL_${output_path%.json}.json"
-
+                                    # append FAIL to log file and output file names
+                                    mv "$log_path" "${log_path%.log}_FAIL.log"
+                                    if [[ -f "$output_path" ]]; then
+                                        mv "$output_path" "${output_path%.json}_FAIL.json"
+                                    fi
                                 fi
                             done
                         done
@@ -234,7 +235,7 @@ echo "  Successful: $success"
 echo "  Failed: $failed"
 echo ""
 echo "Time elapsed: ${hours}h ${minutes}m ${seconds}s"
-echo "Output directory: $OUTPUT_DIR"
+echo "Output base directory: $OUTPUT_DIR"
 echo "Log directory: $OUTPUT_DIR/logs"
 echo ""
 
