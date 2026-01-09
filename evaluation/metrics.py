@@ -211,6 +211,7 @@ def _extract_features(
 
     return features_list
 
+
 def _compute_pairwise(items, metric_fn, return_all=False):
     """Compute pairwise metrics across all pairs of items.
 
@@ -250,6 +251,7 @@ def _compute_pairwise(items, metric_fn, return_all=False):
 
 # --- Label Metrics --- #
 
+
 def JS_divergence(dataset_list, num_classes=None, return_all=False):
     """Compute Jensen-Shannon Divergence between label distributions.
 
@@ -284,7 +286,8 @@ def JS_divergence(dataset_list, num_classes=None, return_all=False):
         if len(d) == 0:
             raise ValueError("Datasets must contain at least one sample each.")
         labels.append(np.array([item["label"] for item in d]))
-    if num_classes is None: num_classes = max(l.max() for l in labels) + 1
+    if num_classes is None:
+        num_classes = max(l.max() for l in labels) + 1
     dists = []
     for l in labels:
         c = np.bincount(l, minlength=num_classes) + 1e-10
@@ -327,7 +330,8 @@ def TV_label_distributions(dataset_list, num_classes=None, return_all=False):
         - TV = 0.5 * ||p - q||_1 (half of L1 distance)
     """
     labels = [np.array([item["label"] for item in d]) for d in dataset_list]
-    if num_classes is None: num_classes = max(l.max() for l in labels) + 1
+    if num_classes is None:
+        num_classes = max(l.max() for l in labels) + 1
     dists = []
     for l in labels:
         c = np.bincount(l, minlength=num_classes) + 1e-10
@@ -367,7 +371,8 @@ def JSD_client_to_global(dataset_list, num_classes=None, return_all=False):
         - Complementary to pairwise JSD which measures client-to-client heterogeneity
     """
     labels = [np.array([item["label"] for item in d]) for d in dataset_list]
-    if num_classes is None: num_classes = max(l.max() for l in labels) + 1
+    if num_classes is None:
+        num_classes = max(l.max() for l in labels) + 1
     all_labels = np.concatenate(labels)
     global_counts = np.bincount(all_labels, minlength=num_classes) + 1e-10
     global_dist = global_counts / global_counts.sum()
@@ -379,6 +384,7 @@ def JSD_client_to_global(dataset_list, num_classes=None, return_all=False):
         jsd = 0.5 * (stats.entropy(client_dist, m) + stats.entropy(global_dist, m))
         jsd_list.append(jsd)
     return jsd_list if return_all else float(np.mean(jsd_list))
+
 
 # --- Feature Metrics --- #
 
@@ -432,11 +438,15 @@ def FID_distance(dataset_list, return_all=False, **kwargs):
         raise ValueError("At least two datasets are required.")
 
     # FID is defined for InceptionV3 features only
-    kwargs['model_name'] = 'inception_v3'
+    kwargs["model_name"] = "inception_v3"
     features = _extract_features(dataset_list, **kwargs)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    features_list = [torch.as_tensor(f, device=device, dtype=torch.float64) for f in features]
+
     def compute_stats(act):
-        return np.mean(act, axis=0), np.cov(act, rowvar=False)
+        return torch.mean(act, dim=0), torch.cov(act.T)
 
     def compute_fid(stats1, stats2):
         mu1, sigma1 = stats1
@@ -457,8 +467,26 @@ def FID_distance(dataset_list, return_all=False, **kwargs):
 
         return diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean)
 
-    stats_list = [compute_stats(f) for f in features]
-    return _compute_pairwise(stats_list, compute_fid, return_all)
+    def compute_fid_gpu(stat1, stat2):
+        mu1, sigma1 = stat1
+        mu2, sigma2 = stat2
+        diff = mu1 - mu2
+        ssd = diff.dot(diff)
+        covprod = sigma1 @ sigma2
+        
+        # Compute eigenvalues of the product
+        # The trace of the matrix square root = sum of sqrt of eigenvalues
+        # Note: Σ1Σ2 is not necessarily symmetric, but its eigenvalues are real/non-negative
+        eigvals = torch.linalg.eigvals(covprod)
+        eigvals = eigvals.real
+        eigvals = torch.clamp(eigvals, min=0.0)
+        tr_covmean = torch.sum(torch.sqrt(eigvals))
+        fid = ssd + torch.trace(sigma1) + torch.trace(sigma2) - 2 * tr_covmean
+        
+        return max(0.0, fid.item())
+
+    stats_list = [compute_stats(f) for f in features_list]
+    return _compute_pairwise(stats_list, compute_fid_gpu, return_all)
 
 
 def MMD(dataset_list, sigma=None, return_all=False, **kwargs):
@@ -497,6 +525,7 @@ def MMD(dataset_list, sigma=None, return_all=False, **kwargs):
     features = _extract_features(dataset_list, **kwargs)
     return _compute_pairwise(features, lambda f1, f2: MMD_rbf_kernel(f1, f2, sigma), return_all)
 
+
 def energy_distance_features(dataset_list, return_all=False, **kwargs):
     """Compute Energy Distance between feature distributions.
 
@@ -532,12 +561,32 @@ def energy_distance_features(dataset_list, return_all=False, **kwargs):
         distances" (2013)
     """
     features = _extract_features(dataset_list, **kwargs)
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     def energy_distance(X, Y):
-        dXX = cdist(X, X, 'euclidean')
-        dYY = cdist(Y, Y, 'euclidean')
-        dXY = cdist(X, Y, 'euclidean')
+        dXX = cdist(X, X, "euclidean")
+        dYY = cdist(Y, Y, "euclidean")
+        dXY = cdist(X, Y, "euclidean")
         return 2 * np.mean(dXY) - np.mean(dXX) - np.mean(dYY)
-    return _compute_pairwise(features, energy_distance, return_all)
+
+    def energy_distance_gpu(X, Y):
+        # Convert to GPU
+        X = torch.as_tensor(X, device=device, dtype=torch.float32)
+        Y = torch.as_tensor(Y, device=device, dtype=torch.float32)
+        
+        # Helper for mean euclidean distance
+        def mean_dist(A, B):
+            # p=2 is Euclidean
+            return torch.cdist(A, B, p=2).mean()
+
+        dXY = mean_dist(X, Y)
+        dXX = mean_dist(X, X)
+        dYY = mean_dist(Y, Y)
+        
+        return (2 * dXY - dXX - dYY).item()
+
+    return _compute_pairwise(features, energy_distance_gpu if torch.cuda.is_available() else energy_distance, return_all)
 
 
 def sliced_wasserstein_distance(dataset_list, return_all=False, **kwargs):
@@ -577,21 +626,45 @@ def sliced_wasserstein_distance(dataset_list, return_all=False, **kwargs):
         Bonneel et al., "Sliced and Radon Wasserstein Barycenters of Measures" (2015)
     """
     features = _extract_features(dataset_list, **kwargs)
-    # def wd_1d(f1, f2):
-    #     return np.mean([stats.wasserstein_distance(f1[:, i], f2[:, i]) for i in range(f1.shape[1])])
-    # switch to proper sliced wasserstein distance
-    def compute_swd(f1, f2, num_projections=500):
-        n_dims = f1.shape[1]
-        projections = np.random.randn(num_projections, n_dims)
-        projections /= np.linalg.norm(projections, axis=1, keepdims=True)
-        swd = []
-        for p in projections:
-            proj_f1 = f1.dot(p)
-            proj_f2 = f2.dot(p)
-            swd.append(stats.wasserstein_distance(proj_f1, proj_f2))
-        return np.mean(swd)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dim = features[0].shape[1]
 
-    return _compute_pairwise(features, compute_swd, return_all)
+    seed = kwargs.get("random_seed", 42)
+    if seed is not None:
+        torch.manual_seed(seed)
+    
+    num_projections = kwargs.get("num_projections", 500)
+    projections = torch.randn((dim, num_projections), device=device, dtype=torch.float32)
+    projections = torch.nn.functional.normalize(projections, p=2, dim=0)
+
+    def compute_swd_gpu(X_np, Y_np):
+        X = torch.as_tensor(X_np, device=device, dtype=torch.float32)
+        Y = torch.as_tensor(Y_np, device=device, dtype=torch.float32)
+        
+        X_proj = X @ projections
+        Y_proj = Y @ projections
+        
+        # Sorting along the sample dimension (dim=0) gives us the empirical quantile function (Inverse CDF)
+        X_sorted, _ = torch.sort(X_proj, dim=0)
+        Y_sorted, _ = torch.sort(Y_proj, dim=0)
+        
+        # Handle unequal sample sizes (N1 != N2)
+        if X_sorted.shape[0] != Y_sorted.shape[0]:
+            # We must interpolate the smaller one to match the other.
+            target_size = max(X_sorted.shape[0], Y_sorted.shape[0])
+            
+            def _interpolate_to_target(tensor, target_len):
+                t_reshaped = tensor.t().unsqueeze(0) 
+                t_interp = torch.nn.functional.interpolate(t_reshaped, size=target_len, mode='linear', align_corners=True)
+                return t_interp.squeeze(0).t()
+
+            X_sorted = _interpolate_to_target(X_sorted, target_size)
+            Y_sorted = _interpolate_to_target(Y_sorted, target_size)
+
+        swd = torch.abs(X_sorted - Y_sorted).mean()       
+        return swd.item()
+
+    return _compute_pairwise(features, compute_swd_gpu, return_all)
 
 
 def KS_multivariate_test(
@@ -600,7 +673,7 @@ def KS_multivariate_test(
     pca_components: Optional[int] = None,
     pca_variance: Optional[float] = None,
     return_all: bool = False,
-    **kwargs
+    **kwargs,
 ):
     """Multivariate Kolmogorov-Smirnov test with optional PCA preprocessing.
 
@@ -734,11 +807,10 @@ def vendi_score(dataset_list, q=1, normalize=True, return_all=False, **kwargs):
 
 def intrinsic_dimensionality(
     dataset_list: List[List[Dict[str, Any]]],
-    method: str = "two_nn",
+    method: str = "mle",
     k: int = 10,
-    use_faiss: bool = True,
     return_all: bool = False,
-    **kwargs
+    **kwargs,
 ) -> Union[List[float], float]:
     """Estimate intrinsic dimensionality of feature distributions.
 
@@ -757,7 +829,7 @@ def intrinsic_dimensionality(
         - "two_nn": TWO-NN estimator (fast, robust)
         - "mle": Maximum Likelihood Estimator (more accurate, uses k neighbors)
 
-        Default: "two_nn".
+        Default: "mle".
     k : int, optional
         Number of neighbors for MLE method. Default: 10.
     use_faiss : bool, optional
@@ -789,102 +861,63 @@ def intrinsic_dimensionality(
     - MLE: Levina & Bickel, "Maximum Likelihood Estimation of Intrinsic
       Dimension" (2004)
     """
+
     features = _extract_features(dataset_list, **kwargs)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def two_nn_faiss(X: np.ndarray) -> float:
-        """TWO-NN estimator using FAISS on GPU."""
-        try:
-            import faiss
-        except ImportError:
-            raise ImportError("FAISS not installed")
+    def two_nn_torch(X_np: np.ndarray) -> float:
+        N = X_np.shape[0]
+        if N < 3: return 0.0
 
-        X = np.ascontiguousarray(X.astype('float32'))
-        n, d = X.shape
+        X = torch.as_tensor(X_np, device=device, dtype=torch.float32)
+        dists = torch.cdist(X, X, p=2)
 
-        index = faiss.IndexFlatL2(d)
-        index.add(X)
-        distances, _ = index.search(X, 3)
+        top_dists, _ = dists.topk(3, dim=1, largest=False)
+        r1 = top_dists[:, 1]
+        r2 = top_dists[:, 2]
 
-        r1 = np.sqrt(distances[:, 1])
-        r2 = np.sqrt(distances[:, 2])
-        valid = r1 > 1e-10
-        mu = r2[valid] / r1[valid]
+        valid_mask = r1 > 1e-10
+        r1 = r1[valid_mask]
+        r2 = r2[valid_mask]
+        mu = r2 / r1
 
-        return len(mu) / np.sum(np.log(mu))
+        id_val = r1.shape[0] / torch.sum(torch.log(mu))
 
-    def two_nn_sklearn(X: np.ndarray) -> float:
-        from sklearn.neighbors import NearestNeighbors
+        return id_val.item()
 
-        n, d = X.shape
+    def mle_torch(X_np: np.ndarray, k_neighbors: int) -> float:
 
-        # Find 3 nearest neighbors (including self)
-        nbrs = NearestNeighbors(n_neighbors=3, algorithm='auto').fit(X)
-        distances, _ = nbrs.kneighbors(X)
+        N = X_np.shape[0]
+        if N < k_neighbors + 1: return 0.0
+        
+        X = torch.as_tensor(X_np, device=device, dtype=torch.float32)
+        
+        # Compute distances
+        dists = torch.cdist(X, X, p=2)
+        top_dists, _ = dists.topk(k_neighbors + 1, dim=1, largest=False)
 
-        # TWO-NN formula
-        r1 = distances[:, 1]  # Distance to 1st neighbor (excluding self)
-        r2 = distances[:, 2]  # Distance to 2nd neighbor
+        r_k = top_dists[:, k_neighbors]      # The radius of the k-th neighbor
+        r_i = top_dists[:, 1:k_neighbors+1]  # Radii of all k neighbors
 
-        valid = r1 > 1e-10
-        mu = r2[valid] / r1[valid]
-
-        return len(mu) / np.sum(np.log(mu))
-
-    def mle_faiss(X: np.ndarray, k: int) -> float:
-        try:
-            import faiss
-        except ImportError:
-            raise ImportError("FAISS not installed")
-
-        X = np.ascontiguousarray(X.astype('float32'))
-        n, d = X.shape
-
-        index = faiss.IndexFlatL2(d)
-        index.add(X)
-        distances, _ = index.search(X, k + 1)
-
-        # MLE formula: m_hat = [1/k * Σ log(r_k / r_i)]^-1
-        # distances[:, 0] is self, so skip it
-        r_k = np.sqrt(distances[:, k])  # Distance to k-th neighbor
-        r_i = np.sqrt(distances[:, 1:k + 1])  # Distances to neighbors 1...k
-
-        # Compute for each point
-        m_estimates = []
-        for i in range(n):
-            if r_k[i] > 1e-10:
-                log_ratios = np.log(r_k[i] / (r_i[i] + 1e-10))
-                m_i = 1.0 / (np.mean(log_ratios) + 1e-10)
-                m_estimates.append(m_i)
-
-        return float(np.mean(m_estimates))
-
-    def mle_sklearn(X: np.ndarray, k: int) -> float:
-        from sklearn.neighbors import NearestNeighbors
-
-        n, d = X.shape
-
-        # Find k+1 nearest neighbors (including self)
-        nbrs = NearestNeighbors(n_neighbors=k + 1, algorithm='auto').fit(X)
-        distances, _ = nbrs.kneighbors(X)
-
-        # MLE formula
-        r_k = distances[:, k]
-        r_i = distances[:, 1:k + 1]  # Exclude self (index 0)
-
-        m_estimates = []
-        for i in range(n):
-            if r_k[i] > 1e-10:
-                log_ratios = np.log(r_k[i] / (r_i[i] + 1e-10))
-                m_i = 1.0 / (np.mean(log_ratios) + 1e-10)
-                m_estimates.append(m_i)
-
-        return float(np.mean(m_estimates))
+        valid = r_k > 1e-10
+        r_k = r_k[valid]
+        r_i = r_i[valid]
+        
+        if r_k.shape[0] == 0: return 0.0
+        
+        # Formula: m_i = [ 1/(k-1) * sum(log(r_k / r_j)) ] ^ -1
+        log_ratios = torch.log(r_k.unsqueeze(1) / (r_i + 1e-10))
+        
+        # Mean of logs -> Invert -> Mean across samples
+        m_i = 1.0 / (torch.mean(log_ratios, dim=1) + 1e-10)
+        
+        return torch.mean(m_i).item()
 
     # Select estimator
     if method == "two_nn":
-        estimator = two_nn_faiss if use_faiss else two_nn_sklearn
+        estimator = two_nn_torch
     elif method == "mle":
-        estimator = lambda X: (mle_faiss(X, k) if use_faiss else mle_sklearn(X, k))
+        estimator = lambda X: mle_torch(X, k)
     else:
         raise ValueError(f"Unknown method '{method}'. Choose 'two_nn' or 'mle'.")
 
@@ -892,14 +925,14 @@ def intrinsic_dimensionality(
     id_estimates = []
     for i, feat in enumerate(features):
         try:
-            id_est = estimator(feat)
-            id_estimates.append(id_est)
-            print(f"Dataset {i}: Intrinsic dimension ≈ {id_est:.2f}")
+            val = estimator(feat)
+            id_estimates.append(val)
         except Exception as e:
             print(f"Warning: Failed to estimate ID for dataset {i}: {e}")
             id_estimates.append(np.nan)
 
     return id_estimates if return_all else float(np.nanmean(id_estimates))
+
 
 def knn_separability(dataset_list, k=5, return_all=False, **kwargs):
     """Compute k-nearest neighbor separability across clients.
@@ -941,19 +974,25 @@ def knn_separability(dataset_list, k=5, return_all=False, **kwargs):
         Related to Hopkins statistic for clustering tendency
     """
     features = _extract_features(dataset_list, **kwargs)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     labels = []
     all_features = []
     for idx, f in enumerate(features):
-        all_features.append(f)
-        labels.append(np.full(f.shape[0], idx))
-    X = np.vstack(all_features)
-    y = np.concatenate(labels)
-    dists = cdist(X, X, 'euclidean')
-    np.fill_diagonal(dists, np.inf)
-    knn_indices = np.argsort(dists, axis=1)[:, :k]
-    iso_list = [np.mean(y[n_idx] == y[i]) for i, n_idx in enumerate(knn_indices)]
+        t = torch.as_tensor(f, device=device, dtype=torch.float32)
+        all_features.append(t)
+        labels.append(torch.full((t.size(0),), idx, device=device, dtype=torch.long))        
+    X = torch.cat(all_features, dim=0)
+    y = torch.cat(labels, dim=0)
+    dists = torch.cdist(X, X, p=2)
+    dists.fill_diagonal_(float('inf'))  # Exclude self in nearest neighbors
+    knn_indices = dists.topk(k, dim=1, largest=False).indices  # (N, k)
+    knn_labels = y[knn_indices]  # (N, k)
+    matches = (knn_labels == y.unsqueeze(1)).float()  # (N, k)
+    iso_scores = matches.mean(dim=1)  # (N,)
 
-    return iso_list if return_all else float(np.mean(iso_list))
+    return iso_scores.cpu().tolist() if return_all else float(iso_scores.mean().item())
+
 
 def centroid_distance(dataset_list, return_all=False, **kwargs):
     """Compute Euclidean distance between client feature centroids.
@@ -986,8 +1025,10 @@ def centroid_distance(dataset_list, return_all=False, **kwargs):
         - Useful for quick heterogeneity assessment
     """
     features = _extract_features(dataset_list, **kwargs)
-    centroids = [np.mean(f, axis=0) for f in features]
-    return _compute_pairwise(centroids, lambda c1, c2: np.linalg.norm(c1 - c2), return_all)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    centroids = [torch.mean(torch.as_tensor(f, device=device), dim=0) for f in features]
+    return _compute_pairwise(centroids, lambda c1, c2: torch.linalg.norm(c1 - c2).item(), return_all)
+
 
 def feature_variance(dataset_list, return_all=False, **kwargs):
     """Compute feature variance within each client's dataset.
@@ -1025,13 +1066,21 @@ def feature_variance(dataset_list, return_all=False, **kwargs):
         - Total variance = mean(variances) measures overall diversity
     """
     features = _extract_features(dataset_list, **kwargs)
-    variances = [float(np.sum((f - np.mean(f, axis=0))**2) / (f.shape[0] - 1)) for f in features]
+    variances = [float(np.sum((f - np.mean(f, axis=0)) ** 2) / (f.shape[0] - 1)) for f in features]
     return variances if return_all else np.mean(variances)
+
 
 # --- Utils ---
 
 
-def MMD_rbf_kernel(X, Y, sigma=None):
+def MMD_rbf_kernel(
+    X: np.ndarray,
+    Y: np.ndarray,
+    sigma: Optional[float] = None,
+    sigma_samples: int = 1000,
+    device: Optional[torch.device] = None,
+    seed: Optional[int] = None,
+) -> float:
     """Calculate squared Maximum Mean Discrepancy using RBF kernel.
 
     This is the core MMD computation used by the :func:`MMD` metric.
@@ -1046,6 +1095,13 @@ def MMD_rbf_kernel(X, Y, sigma=None):
     sigma : float, optional
         RBF kernel bandwidth. If None, uses median heuristic
         (median of non-zero pairwise distances).
+    sigma_samples : int, optional
+        Number of samples to use for median heuristic if sigma is None. Default: 1000.
+    device : torch.device, optional
+        Device to perform computation on (CPU or GPU). If None,
+        defaults to GPU if available, else CPU.
+    seed : int, optional
+        Random seed for reproducibility when computing median heuristic.
 
     Returns
     -------
@@ -1056,25 +1112,59 @@ def MMD_rbf_kernel(X, Y, sigma=None):
     -----
     Uses unbiased estimator: excludes self-comparisons from kernel matrices.
     """
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # default to GPU if available
+
     X, Y = np.atleast_2d(X), np.atleast_2d(Y)
-    m, n = X.shape[0], Y.shape[0]
+    m, d = X.shape
+    n, d2 = Y.shape
 
     if m < 2 or n < 2:
         raise ValueError("Each sample must have at least 2 points for unbiased MMD.")
 
+    assert d == d2, "Feature dimensions must match."
+
+    # --- 1. Convert to torch tensors on specified device ---
+    X = torch.from_numpy(X).to(device).float()
+    Y = torch.from_numpy(Y).to(device).float()
+
+    # --- 2. Compute sigma using median heuristic if not provided ---
     if sigma is None:
-        combined = np.vstack([X, Y])
-        dists = cdist(combined, combined, "euclidean")
-        non_zero_dists = dists[dists > 0]
-        sigma = np.median(non_zero_dists) if len(non_zero_dists) > 0 else 1.0
+        if seed is not None:
+            torch.manual_seed(seed)
+        if max(m, n) > sigma_samples:
+            indices_x = torch.randperm(m, device=device)[:sigma_samples]
+            indices_y = torch.randperm(n, device=device)[:sigma_samples]
+            combined = torch.cat([X[indices_x], Y[indices_y]], dim=0)
+        else:
+            combined = torch.cat([X, Y], dim=0)
+        
+        sq_dists = torch.cdist(combined, combined, p=2.0).pow(2).view(-1)
+        # dists = torch.pdist(torch.cat([x, y], dim=0)[:,None])
+        sq_dists = sq_dists[sq_dists > 0]  # exclude zero distances
 
-    def rbf(A, B):
-        return np.exp(-cdist(A, B, "sqeuclidean") / (2 * sigma**2))
+        denominator = sq_dists.median() if sq_dists.numel() > 0 else torch.tensor(1.0, device=device)
 
-    K_XX, K_YY, K_XY = rbf(X, X), rbf(Y, Y), rbf(X, Y)
-    np.fill_diagonal(K_XX, 0)
-    np.fill_diagonal(K_YY, 0)
+        del combined, sq_dists
+    
+    else:
+        denominator = torch.tensor(2 * sigma**2, device=device)
 
-    mmd_squared = K_XX.sum() / (m * (m - 1)) + K_YY.sum() / (n * (n - 1)) - 2 * K_XY.sum() / (m * n)
+    def _rbf_kernel_sum(A, B, exclude_diag):
+        sq_dists = torch.cdist(A, B, p=2.0).pow(2)
+        K = torch.exp(-sq_dists / denominator)
+        
+        if exclude_diag:
+            K.fill_diagonal_(0.0)
+        return K.sum()
+    
+    sum_XY = _rbf_kernel_sum(X, Y, exclude_diag=False)
+    sum_XX = _rbf_kernel_sum(X, X, exclude_diag=True)
+    sum_YY = _rbf_kernel_sum(Y, Y, exclude_diag=True)
 
-    return max(mmd_squared, 0.0)
+    mmd_squared = (sum_XX / (m * (m - 1))) + \
+                  (sum_YY / (n * (n - 1))) - \
+                  (2 * sum_XY / (m * n))
+
+    return max(0.0, mmd_squared.item())  # ensure non-negative

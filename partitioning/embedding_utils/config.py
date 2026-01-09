@@ -54,7 +54,7 @@ class ModelConfig:
     variant: str
     device: Optional[str] = None
     batch_size: int = 32
-    num_workers: int = 4
+    num_workers: int = 0
     proxy: Optional[str] = None
 
     def __post_init__(self):

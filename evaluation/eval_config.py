@@ -197,8 +197,8 @@ class MetricResults:
     wasserstein_std: Optional[float] = None
     energy_dist_mean: Optional[float] = None
     energy_dist_std: Optional[float] = None
-    ks_multivariate_reject_rate: Optional[float] = None
-    ks_multivariate_min_pvalue: Optional[float] = None
+    # ks_multivariate_reject_rate: Optional[float] = None
+    # ks_multivariate_min_pvalue: Optional[float] = None
     vendi_score_mean: Optional[float] = None
     vendi_score_std: Optional[float] = None
     
@@ -290,13 +290,13 @@ METRIC_META = {
         "std_field": "energy_dist_std",
         "category": "feature_distance"
     },
-    "ks_multivariate_reject_rate": {
-        "title": "KS Test Rejection Rate",
-        "ylabel": "Rejection Rate",
-        "higher_is_better": False, # Lower = distributions are more similar
-        "std_field": None, # Rate is a single scalar summary
-        "category": "feature_distance"
-    },
+    # "ks_multivariate_reject_rate": {
+    #     "title": "KS Test Rejection Rate",
+    #     "ylabel": "Rejection Rate",
+    #     "higher_is_better": False, # Lower = distributions are more similar
+    #     "std_field": None, # Rate is a single scalar summary
+    #     "category": "feature_distance"
+    # },
 
     # --- Feature Heterogeneity (Separability) ---
     "knn_sep_mean": {

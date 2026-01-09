@@ -15,11 +15,14 @@ set -u  # Exit on undefined variable
 
 # --- Configuration -----------------------------------------------------------
 DATASET="${1:-tiny_imagenet}"
-EMBEDDING_DIR="${2:-./embedding_partitions/$DATASET}"
+
 
 # Paths - Use environment variables with sensible defaults
 BASE_DATA_PATH="${FDS_BASE_PATH:-/path/to/gtai/FDS}"
 CACHE_DIR="${FDS_CACHE_DIR:-/path/to/gtai/FDS/embedding_cache}"
+
+# Embedding Partitions Directory is inside BASE_DATA_PATH
+EMBEDDING_DIR="${2:-$BASE_DATA_PATH/embedding_partitions/$DATASET}"
 
 OUTPUT_ROOT="./benchmark_results/$DATASET"
 
@@ -30,7 +33,7 @@ REPORT_FILE="$OUTPUT_ROOT/report.html"
 
 # Evaluation Settings
 FEATURE_MODEL="inception_v3"
-SUBSAMPLE=1000
+SUBSAMPLE=0
 BATCH_SIZE=100
 
 # VLM Settings
@@ -103,8 +106,8 @@ python "$GENERATE_BASELINES" \
     --dataset "$DATASET" \
     --base_path "$BASE_DATA_PATH" \
     --output_dir "$BASELINE_DIR" \
-    --n_clients 5 \
-    --alphas 0.5 \
+    --n_clients 5 10\
+    --alphas 0.1 0.5 \
     --seeds 42 \
     "${VLM_ARGS[@]+"${VLM_ARGS[@]}"}"
 

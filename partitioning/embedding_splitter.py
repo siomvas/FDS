@@ -214,7 +214,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         device: Optional[str] = None,
         batch_size: int = 100,
         use_cache: bool = True,
-        num_workers: int = 4,
+        num_workers: int = 0,
     ):
         """Initialize the embedding splitter."""
         # Validate token extraction strategy

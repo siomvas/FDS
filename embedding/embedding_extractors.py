@@ -347,7 +347,7 @@ class EmbeddingExtractor(ABC):
         model_name: str,
         device: Optional[Union[str, torch.device]] = None,
         batch_size: int = 64,
-        num_workers: int = 4,
+        num_workers: int = 0,
         proxy: Optional[str] ='http://proxy.example.org:3128',
         model_dir: Optional[str] = None,
         cache_manager: Optional[CacheManager] = None,
@@ -593,7 +593,7 @@ class InceptionExtractor(EmbeddingExtractor):
         super().__init__(model_name="inception_v3", **kwargs)
 
     def load_model(self) -> None:
-        print(f"Loading InceptionV3 (FID compat)...")
+        print(f"    Loading InceptionV3 ...")
         self.transform = transforms.Compose([
             transforms.Resize(299),
             transforms.CenterCrop(299),
@@ -634,10 +634,10 @@ class InceptionExtractor(EmbeddingExtractor):
                 **cache_params
             )
             if cached_data is not None:
-                print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
+                # print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
                 return cached_data
-            else:
-                print(f"  ✗ Cache MISS: {self.model_name} - Computing...")
+            # else:
+                # print(f"  ✗ Cache MISS: {self.model_name} - Computing...")
 
         if not self.model:
             self.load_model()

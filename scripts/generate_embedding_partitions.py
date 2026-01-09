@@ -121,7 +121,7 @@ def parse_args():
     model_group.add_argument(
         "--num_workers",
         type=int,
-        default=4,
+        default=0,
         help="Number of DataLoader worker processes (default: 4). Set to 0 for single-threaded loading.",
     )
     

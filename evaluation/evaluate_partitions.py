@@ -311,13 +311,13 @@ def compute_feature_metrics(
     results["energy_dist_mean"] = float(np.mean(ed_all))
     results["energy_dist_std"] = float(np.std(ed_all))
     
-    print(f"    Computing KS Test ({feature_model})...")
-    ks_all = metrics.KS_multivariate_test(
-        client_datasets_sub, pca_variance=0.95, return_all=True, **ext_kwargs
-    )
-    results["ks_multivariate_reject_rate"] = float(np.mean([r["reject_null"] for r in ks_all]))
-    min_pvals = [r["min_pvalue"] for r in ks_all]
-    results["ks_multivariate_min_pvalue"] = float(np.min(min_pvals)) if min_pvals else None
+    # print(f"    Computing KS Test ({feature_model})...")
+    # ks_all = metrics.KS_multivariate_test(
+    #     client_datasets_sub, pca_variance=0.95, return_all=True, **ext_kwargs
+    # )
+    # results["ks_multivariate_reject_rate"] = float(np.mean([r["reject_null"] for r in ks_all]))
+    # min_pvals = [r["min_pvalue"] for r in ks_all]
+    # results["ks_multivariate_min_pvalue"] = float(np.min(min_pvals)) if min_pvals else None
     
     # --- Heterogeneity Metrics ---
     
