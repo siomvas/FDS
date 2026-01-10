@@ -21,6 +21,10 @@ from torch.utils.data import DataLoader
 
 from .base_learner import BaseLearner
 
+# Add parent directories to path for model_factory import
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from fl_training.nvflare_refactor.common.model_factory import get_model
+
 
 class DetectionLearner(BaseLearner):
     """Object detection learner extending BaseLearner.
@@ -96,9 +100,14 @@ class DetectionLearner(BaseLearner):
     def create_model(self) -> nn.Module:
         """Create object detection model architecture.
 
-        Uses existing model_factory.get_model() to instantiate detection models.
-        Handles HPC proxy requirements for pretrained model downloads with try-finally
-        cleanup pattern.
+        Uses existing model_factory.get_model() to instantiate detection models
+        (Faster R-CNN with ResNet-50-FPN backbone). The model factory handles HPC
+        proxy requirements for pretrained model downloads with try-finally cleanup pattern.
+
+        The Faster R-CNN architecture consists of:
+        - Backbone: ResNet-50 with Feature Pyramid Network (FPN) for multi-scale features
+        - Region Proposal Network (RPN): Generates object proposals
+        - ROI Head: Classifies proposals and refines bounding boxes
 
         Returns:
             nn.Module: Detection model ready for training, loaded to self.device
@@ -106,14 +115,40 @@ class DetectionLearner(BaseLearner):
         Raises:
             ValueError: If model_name is invalid (raised by model_factory)
 
+        Config Requirements:
+            - model_name: "fasterrcnn_resnet50"
+            - num_classes: Number of object classes (e.g., 80 for COCO)
+
         Examples:
-            >>> learner = DetectionLearner(...)
+            >>> config = {
+            ...     "model_name": "fasterrcnn_resnet50",
+            ...     "num_classes": 80,
+            ...     "lr": 0.001,
+            ...     "local_epochs": 1,
+            ...     "batch_size": 4,
+            ...     "amp_enabled": False
+            ... }
+            >>> learner = DetectionLearner(
+            ...     data_path="outputs/splits.json",
+            ...     model_name="fasterrcnn_resnet50",
+            ...     config=config
+            ... )
             >>> model = learner.create_model()
             >>> print(type(model).__name__)
             'FasterRCNN'
+
+        Note:
+            HPC proxy handling is done inside model_factory and models.detection,
+            so no manual proxy management is needed here.
         """
-        # TODO: Implement in Task 2
-        pass
+        # Create model using existing model_factory
+        # The factory handles HPC proxy setup/cleanup for pretrained weights
+        model = get_model(self.model_name, self.num_classes)
+
+        # Move model to device
+        model = model.to(self.device)
+
+        return model
 
     def train_epoch(
         self,

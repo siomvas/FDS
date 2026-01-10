@@ -22,6 +22,7 @@ from models.classification import (
     get_vit_b16_pretrained
 )
 from models.segmentation import get_deeplabv3_resnet50
+from models.detection import get_fasterrcnn_resnet50
 
 
 class ModelConfig:
@@ -39,6 +40,10 @@ class ModelConfig:
 
     SEGMENTATION_MODELS = [
         "deeplabv3_resnet50"
+    ]
+
+    DETECTION_MODELS = [
+        "fasterrcnn_resnet50"
     ]
 
     # Default models per dataset
@@ -90,6 +95,9 @@ def get_model(
     Available Segmentation Models:
         - deeplabv3_resnet50: DeepLabV3 with ResNet-50 backbone
 
+    Available Detection Models:
+        - fasterrcnn_resnet50: Faster R-CNN with ResNet-50-FPN backbone
+
     Examples:
         # Classification
         >>> model = get_model("vgg11", num_classes=200)
@@ -97,6 +105,9 @@ def get_model(
 
         # Segmentation
         >>> model = get_model("deeplabv3_resnet50", num_classes=150)
+
+        # Detection
+        >>> model = get_model("fasterrcnn_resnet50", num_classes=80)
     """
     model_name = model_name.lower()
 
@@ -126,10 +137,16 @@ def get_model(
     elif model_name == "deeplabv3_resnet50":
         model = get_deeplabv3_resnet50(num_classes=num_classes)
 
+    # Detection models
+    elif model_name == "fasterrcnn_resnet50":
+        pretrained = kwargs.get("pretrained", True)
+        model = get_fasterrcnn_resnet50(num_classes=num_classes, pretrained=pretrained)
+
     else:
         available_models = (
             ModelConfig.CLASSIFICATION_MODELS +
-            ModelConfig.SEGMENTATION_MODELS
+            ModelConfig.SEGMENTATION_MODELS +
+            ModelConfig.DETECTION_MODELS
         )
         raise ValueError(
             f"Unknown model '{model_name}'. "
@@ -196,7 +213,7 @@ def get_task_type(model_name: str) -> str:
         model_name: Model architecture name
 
     Returns:
-        'classification' or 'segmentation'
+        'classification', 'segmentation', or 'detection'
     """
     model_name = model_name.lower()
 
@@ -204,6 +221,8 @@ def get_task_type(model_name: str) -> str:
         return "classification"
     elif model_name in ModelConfig.SEGMENTATION_MODELS:
         return "segmentation"
+    elif model_name in ModelConfig.DETECTION_MODELS:
+        return "detection"
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
