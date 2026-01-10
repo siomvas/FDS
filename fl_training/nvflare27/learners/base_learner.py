@@ -9,7 +9,8 @@ Architecture Decision: Separate Learners with shared BaseLearner (Phase 0 - Opti
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
+import json
 
 import torch
 import torch.nn as nn
@@ -19,6 +20,7 @@ from nvflare.client.tracking import LogWriterName
 
 # Existing FDS imports
 from fl_training.nvflare_refactor.common.gradient_tracker import ClientGradientTracker
+from fl_training.nvflare27.common.data_factory import FDSDataFactory
 
 
 class BaseLearner(ABC):
@@ -201,10 +203,105 @@ class BaseLearner(ABC):
             )
             flare.send(output_model)
 
-    def _load_data(self):
-        """Load training and validation data.
+    def _load_data(self) -> Tuple[DataLoader, Optional[DataLoader]]:
+        """Load training and validation data using FDSDataFactory.
 
-        Placeholder - will integrate with data_factory in Plan 01-04.
-        Subclasses can override for task-specific data loading.
+        Extracts configuration from self.config, loads DatasetSplits JSON file,
+        and creates PyTorch DataLoaders using FDSDataFactory.
+
+        Required config keys:
+            - splits_path (str): Path to DatasetSplits JSON file
+            - task_type (str): "classification", "segmentation", or "detection"
+            - batch_size (int, optional): Batch size (default: 32)
+            - num_workers (int, optional): Data loading workers (default: 4)
+
+        Returns:
+            Tuple of (train_loader, val_loader)
+            - val_loader may be None if no validation data available
+
+        Raises:
+            ValueError: If required config keys missing
+            FileNotFoundError: If splits_path doesn't exist
+            KeyError: If client_idx not found in DatasetSplits
+
+        Examples:
+            >>> # In subclass __init__
+            >>> self.config = {
+            ...     "splits_path": "outputs/splits.json",
+            ...     "task_type": "classification",
+            ...     "batch_size": 64,
+            ...     "num_workers": 8
+            ... }
+            >>> train_loader, val_loader = self._load_data()
         """
-        raise NotImplementedError("Data loading will be integrated with data_factory in Plan 01-04")
+        # Extract required configuration
+        splits_path = self.config.get("splits_path")
+        task_type = self.config.get("task_type")
+        batch_size = self.config.get("batch_size", 32)
+        num_workers = self.config.get("num_workers", 4)
+
+        # Validate required configuration
+        if not splits_path:
+            raise ValueError(
+                "Missing required config key 'splits_path'. "
+                "Expected config to contain path to DatasetSplits JSON file. "
+                "Example: config['splits_path'] = 'outputs/splits.json'"
+            )
+
+        if not task_type:
+            raise ValueError(
+                "Missing required config key 'task_type'. "
+                "Expected one of: ['classification', 'segmentation', 'detection']. "
+                "Example: config['task_type'] = 'classification'"
+            )
+
+        # Validate splits file exists
+        splits_path = Path(splits_path)
+        if not splits_path.exists():
+            raise FileNotFoundError(
+                f"DatasetSplits file not found: {splits_path}\n"
+                f"To generate splits, use a splitter:\n"
+                f"  from partitioning import RandomSplitter\n"
+                f"  splitter = RandomSplitter(train_dataset, val_dataset, n_clients=10, ...)\n"
+                f"  splitter.store_client_splits('{splits_path}')"
+            )
+
+        # Load DatasetSplits from JSON
+        with open(splits_path, "r") as f:
+            splits_dict = json.load(f)
+
+        # Extract client index from NVFlare site name
+        # Site name format: "site-1", "site-2", etc. (1-indexed)
+        # Convert to 0-indexed client_idx for DatasetSplits
+        site_name = flare.get_site_name()
+        try:
+            # Parse "site-X" format
+            if site_name.startswith("site-"):
+                site_num = int(site_name.split("-")[1])
+                client_idx = site_num - 1  # Convert to 0-indexed
+            else:
+                # Fallback: try direct integer conversion
+                client_idx = int(site_name)
+        except (ValueError, IndexError) as e:
+            raise ValueError(
+                f"Failed to parse client_idx from site_name '{site_name}'. "
+                f"Expected format: 'site-1', 'site-2', etc. Error: {e}"
+            )
+
+        # Create DataLoaders using FDSDataFactory
+        train_loader, val_loader = FDSDataFactory.create_dataloaders(
+            splits_dict=splits_dict,
+            client_idx=client_idx,
+            task_type=task_type,
+            batch_size=batch_size,
+            num_workers=num_workers
+        )
+
+        # Log data loading info
+        train_samples = len(train_loader.dataset)
+        val_samples = len(val_loader.dataset) if val_loader else 0
+        print(f"[{self.client_id}] Data loaded from '{splits_path}'")
+        print(f"[{self.client_id}] Client {client_idx}: {train_samples} train samples, {val_samples} val samples")
+        print(f"[{self.client_id}] Task type: {task_type}, Batch size: {batch_size}")
+
+        return train_loader, val_loader
