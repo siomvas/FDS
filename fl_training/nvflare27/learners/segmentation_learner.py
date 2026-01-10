@@ -84,10 +84,40 @@ class SegmentationLearner(BaseLearner):
     def create_model(self) -> nn.Module:
         """Create DeepLabV3 ResNet50 segmentation model.
 
+        Uses existing deeplabv3_resnet50 from models.segmentation with HPC proxy handling.
+        Model outputs a dictionary with 'out' key containing logits per pixel.
+
         Returns:
             nn.Module: DeepLabV3 model ready for training, loaded to self.device
+
+        Notes:
+            - Uses HPC proxy for pretrained weight downloads
+            - DeepLabV3 forward pass returns dict with 'out' key
+            - Model expects input shape (N, 3, H, W)
+            - Output shape (N, num_classes, H, W) - logits per pixel
+            - For ADE20K: num_classes=151 (150 semantic classes + 1 background)
+
+        Examples:
+            >>> learner = SegmentationLearner(...)
+            >>> model = learner.create_model()
+            >>> outputs = model(images)
+            >>> logits = outputs['out']  # Extract segmentation logits
+            >>> print(logits.shape)  # (N, 151, H, W)
         """
-        pass  # TODO: Implement in Task 2
+        # Set HPC proxy for pretrained model downloads
+        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+
+        try:
+            # Create DeepLabV3 model using existing model function
+            model = deeplabv3_resnet50(pretrained=True, num_classes=self.num_classes)
+        finally:
+            # Always clear proxy after model creation
+            os.environ.pop('https_proxy', None)
+
+        # Move model to device
+        model = model.to(self.device)
+
+        return model
 
     def train_epoch(
         self,
