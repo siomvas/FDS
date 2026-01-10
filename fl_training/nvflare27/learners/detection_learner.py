@@ -159,30 +159,94 @@ class DetectionLearner(BaseLearner):
     ) -> Dict[str, float]:
         """Execute one training epoch with detection-specific logic.
 
-        Implements Faster R-CNN training with RPN and detection losses. Supports
-        automatic mixed precision (AMP) if enabled via config. Logs progress
-        every 10 batches.
+        Implements Faster R-CNN training with RPN and detection losses. In training mode,
+        Faster R-CNN returns a dictionary with four loss components:
+        - loss_classifier: Classification loss for detected objects
+        - loss_box_reg: Bounding box regression loss
+        - loss_objectness: RPN objectness loss (object vs background)
+        - loss_rpn_box_reg: RPN box regression loss
+
+        The total loss is the sum of all components. Supports automatic mixed precision
+        (AMP) if enabled via config. Logs progress every 10 batches.
 
         Args:
-            model: Detection model to train
+            model: Detection model to train (Faster R-CNN)
             train_loader: Training data loader (from FDSDataFactory)
             optimizer: Optimizer instance (from BaseLearner)
             epoch: Current epoch number (0-indexed)
 
         Returns:
-            Dict with keys:
-                - "loss_classifier": Classification loss
-                - "loss_box_reg": Bounding box regression loss
-                - "loss_objectness": RPN objectness loss
-                - "loss_rpn_box_reg": RPN box regression loss
-                - "total_loss": Sum of all losses
+            Dict with key:
+                - "loss": Average total loss over epoch
+
+        Expected batch format:
+            {
+                "image": FloatTensor(N, 3, H, W),
+                "targets": List[Dict] where each dict has:
+                    - "boxes": FloatTensor(K, 4) in (x1, y1, x2, y2) format
+                    - "labels": LongTensor(K) with class labels (1-indexed)
+            }
 
         Examples:
             >>> metrics = learner.train_epoch(model, train_loader, optimizer, epoch=0)
-            >>> print(f"Total Loss: {metrics['total_loss']:.4f}")
+            >>> print(f"Total Loss: {metrics['loss']:.4f}")
         """
-        # TODO: Implement in Plan 05-02 (detection training loop)
-        pass
+        # Set model to training mode
+        model.train()
+
+        # Initialize metrics tracking
+        running_total_loss = 0.0
+        total_samples = 0
+
+        # Training loop
+        for batch_idx, batch in enumerate(train_loader):
+            # Extract images and targets from batch dict
+            images = batch["image"].to(self.device)
+            targets = batch["targets"]
+
+            # Move each target dict to device
+            # Each target is a dict with 'boxes' and 'labels' keys
+            targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
+
+            # Zero gradients
+            optimizer.zero_grad()
+
+            # Forward pass with optional AMP
+            if self.scaler is not None:
+                # AMP enabled: use autocast for forward pass
+                with torch.cuda.amp.autocast():
+                    # Faster R-CNN returns dict with losses in training mode
+                    loss_dict = model(images, targets)
+                    # Sum all loss components for total loss
+                    total_loss = sum(loss for loss in loss_dict.values())
+
+                # Backward pass with gradient scaling
+                self.scaler.scale(total_loss).backward()
+                self.scaler.step(optimizer)
+                self.scaler.update()
+            else:
+                # Standard training without AMP
+                loss_dict = model(images, targets)
+                total_loss = sum(loss for loss in loss_dict.values())
+                total_loss.backward()
+                optimizer.step()
+
+            # Track metrics
+            running_total_loss += total_loss.item() * len(images)
+            total_samples += len(images)
+
+            # Log progress every 10 batches
+            if (batch_idx + 1) % 10 == 0:
+                print(
+                    f"[Client {self.client_id}] Epoch {epoch+1}, "
+                    f"Batch {batch_idx+1}/{len(train_loader)}, "
+                    f"Loss: {total_loss.item():.4f}"
+                )
+
+        # Compute average loss with zero-division guard
+        avg_loss = running_total_loss / total_samples if total_samples > 0 else 0.0
+
+        return {"loss": avg_loss}
 
     def evaluate(self, model: nn.Module, val_loader: DataLoader) -> Dict[str, float]:
         """Evaluate model with detection-specific metrics.
