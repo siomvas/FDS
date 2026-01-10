@@ -13,8 +13,8 @@ Architecture
 
 **EmbeddingExtractor** (Abstract Base Class)
     Base class defining the interface for all embedding extractors. Handles
-    common functionality like model loading, batched inference, proxy configuration,
-    and cache integration.
+    common functionality like model loading, batched inference, centralized proxy
+    configuration (via utils.proxy_config), and cache integration.
 
 **Specific Extractors** (Concrete Implementations)
     - **InceptionExtractor**: InceptionV3 (PyTorch, 2048-dim)
@@ -33,7 +33,7 @@ Key Features
 1. **Unified Interface**: All extractors expose `extract_embeddings()` method
 2. **Automatic Caching**: Integrates with CacheManager for persistent storage
 3. **Batched Processing**: Efficient GPU utilization with DataLoader
-4. **Proxy Support**: Downloads models through configurable HTTP proxies
+4. **Centralized Proxy Support**: Downloads models through utils.proxy_config on HPC
 5. **Local Model Storage**: Save/load models from local directories
 6. **Token Selection**: Choose specific tokens (CLS, all, k-last layers)
 7. **Flexible Configuration**: Device selection, batch size, workers
@@ -130,6 +130,7 @@ from tqdm import tqdm
 
 from data_loading.dataset import to_image_dataset
 from embedding.cache_manager import CacheManager
+from utils.proxy_config import hpc_proxy
 
 from transformers import (
     AutoImageProcessor,
@@ -383,17 +384,21 @@ class EmbeddingExtractor(ABC):
         self.processor: Any = None
         self.transform: Any = None
 
-    def _setup_proxy_for_download(self) -> None:
-        if self.proxy:
-            os.environ['https_proxy'] = self.proxy
-
-    def _cleanup_proxy_after_download(self) -> None:
-        os.environ.pop('https_proxy', None)
-
     def _download_model_with_proxy(self, download_func, *args, **kwargs) -> Any:
-        """Wrapper for model downloads with proxy support."""
-        try:
-            self._setup_proxy_for_download()
+        """Wrapper for model downloads with centralized proxy configuration.
+
+        Uses centralized proxy configuration from utils.proxy_config for safe
+        proxy management during model downloads on HPC cluster.
+
+        Args:
+            download_func: Function to call for downloading the model
+            *args: Positional arguments to pass to download_func
+            **kwargs: Keyword arguments to pass to download_func
+
+        Returns:
+            Downloaded model object
+        """
+        with hpc_proxy(self.proxy):
             if self.model_dir:
                 kwargs['local_files_only'] = True
                 model_path = self.model_dir / self.model_name.replace("/", "--")
@@ -402,10 +407,8 @@ class EmbeddingExtractor(ABC):
                     return download_func(str(model_path), *args[1:], **kwargs)
                 else:
                     print(f"Model not found in {model_path}. Will try to download.")
-            
+
             return download_func(*args, **kwargs)
-        finally:
-            self._cleanup_proxy_after_download()
 
     def _save_model_locally(self, model, processor) -> None:
         if self.model_dir:
@@ -1285,11 +1288,8 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
         ])
         
         # Handle potential downloads for kymatio filters with proxy
-        try:
-            self._setup_proxy_for_download()
+        with hpc_proxy(self.proxy):
             self.scattering = Scattering2D(J=self.J, shape=(self.input_size, self.input_size)).to(self.device)
-        finally:
-            self._cleanup_proxy_after_download()
             
         self.model = None
 
