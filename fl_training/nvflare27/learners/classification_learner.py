@@ -131,13 +131,146 @@ class ClassificationLearner(BaseLearner):
     ) -> Dict[str, float]:
         """Execute one training epoch with classification-specific logic.
 
-        TODO: Implement training loop with cross-entropy loss.
+        Implements cross-entropy loss training with accuracy metrics. Supports
+        automatic mixed precision (AMP) if enabled via config. Logs progress
+        every 10 batches.
+
+        Args:
+            model: Classification model to train
+            train_loader: Training data loader (from FDSDataFactory)
+            optimizer: Optimizer instance (from BaseLearner)
+            epoch: Current epoch number (0-indexed)
+
+        Returns:
+            Dict with keys:
+                - "loss": Average loss over epoch
+                - "accuracy": Accuracy as fraction (0.0 to 1.0)
+
+        Examples:
+            >>> metrics = learner.train_epoch(model, train_loader, optimizer, epoch=0)
+            >>> print(f"Loss: {metrics['loss']:.4f}, Acc: {metrics['accuracy']:.4f}")
         """
-        pass
+        # Set model to training mode
+        model.train()
+
+        # Initialize metrics tracking
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        # Create loss function
+        criterion = nn.CrossEntropyLoss()
+
+        # Training loop
+        for batch_idx, batch in enumerate(train_loader):
+            # Extract inputs and labels from batch dict
+            inputs = batch["image"]
+            labels = batch["label"]
+
+            # Move to device
+            inputs = inputs.to(self.device)
+            labels = labels.to(self.device)
+
+            # Zero gradients
+            optimizer.zero_grad()
+
+            # Forward pass with optional AMP
+            if self.scaler is not None:
+                # AMP enabled: use autocast for forward pass
+                with torch.cuda.amp.autocast():
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+
+                # Backward pass with gradient scaling
+                self.scaler.scale(loss).backward()
+                self.scaler.step(optimizer)
+                self.scaler.update()
+            else:
+                # Standard training without AMP
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+            # Track metrics
+            running_loss += loss.item() * inputs.size(0)
+            predictions = outputs.argmax(dim=1)
+            correct += (predictions == labels).sum().item()
+            total += labels.size(0)
+
+            # Log progress every 10 batches
+            if batch_idx % 10 == 0:
+                print(
+                    f"[Client {self.client_id}] Epoch {epoch+1}, "
+                    f"Batch {batch_idx}/{len(train_loader)}, "
+                    f"Loss: {loss.item():.4f}"
+                )
+
+        # Compute epoch metrics
+        accuracy = correct / total if total > 0 else 0.0
+        avg_loss = running_loss / total if total > 0 else 0.0
+
+        return {"loss": avg_loss, "accuracy": accuracy}
 
     def evaluate(self, model: nn.Module, val_loader: DataLoader) -> Dict[str, float]:
         """Evaluate model with classification-specific metrics.
 
-        TODO: Implement evaluation with accuracy and loss metrics.
+        Computes accuracy and loss on validation set. Returns zero metrics if
+        val_loader is None (e.g., when using global validation). Uses torch.no_grad()
+        for efficient inference without gradient computation.
+
+        Args:
+            model: Classification model to evaluate
+            val_loader: Validation data loader (may be None)
+
+        Returns:
+            Dict with keys:
+                - "loss": Average validation loss
+                - "accuracy": Accuracy as fraction (0.0 to 1.0)
+            Returns {"loss": 0.0, "accuracy": 0.0} if val_loader is None
+
+        Examples:
+            >>> metrics = learner.evaluate(model, val_loader)
+            >>> print(f"Val Loss: {metrics['loss']:.4f}, Val Acc: {metrics['accuracy']:.4f}")
         """
-        pass
+        # Handle None val_loader (global validation scenario)
+        if val_loader is None:
+            return {"loss": 0.0, "accuracy": 0.0}
+
+        # Set model to evaluation mode
+        model.eval()
+
+        # Initialize metrics
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        # Create loss function
+        criterion = nn.CrossEntropyLoss()
+
+        # Evaluation loop without gradient computation
+        with torch.no_grad():
+            for batch in val_loader:
+                # Extract inputs and labels from batch dict
+                inputs = batch["image"]
+                labels = batch["label"]
+
+                # Move to device
+                inputs = inputs.to(self.device)
+                labels = labels.to(self.device)
+
+                # Forward pass (no AMP in evaluation)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+
+                # Track metrics
+                running_loss += loss.item() * inputs.size(0)
+                predictions = outputs.argmax(dim=1)
+                correct += (predictions == labels).sum().item()
+                total += labels.size(0)
+
+        # Compute average metrics with zero-division handling
+        accuracy = correct / total if total > 0 else 0.0
+        avg_loss = running_loss / total if total > 0 else 0.0
+
+        return {"loss": avg_loss, "accuracy": accuracy}
