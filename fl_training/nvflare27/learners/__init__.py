@@ -3,5 +3,6 @@
 from .base_learner import BaseLearner
 from .classification_learner import ClassificationLearner
 from .segmentation_learner import SegmentationLearner
+from .detection_learner import DetectionLearner
 
-__all__ = ["BaseLearner", "ClassificationLearner", "SegmentationLearner"]
+__all__ = ["BaseLearner", "ClassificationLearner", "SegmentationLearner", "DetectionLearner"]
