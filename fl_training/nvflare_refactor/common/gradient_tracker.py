@@ -42,6 +42,7 @@ class ClientGradientTracker:
         self.track_per_layer = track_per_layer
         self.track_weight_divergence = track_weight_divergence
         self.initial_weights = None
+        self.epoch_history: List[Dict[str, float]] = []  # For track_epoch accumulation
 
     def store_initial_weights(self, model: nn.Module) -> None:
         """
@@ -167,6 +168,65 @@ class ClientGradientTracker:
             metrics.update(divergence_metrics)
 
         return metrics
+
+    def track_epoch(self, model: nn.Module, epoch: int) -> None:
+        """
+        Track gradient statistics for a single epoch.
+
+        Call this after each training epoch to accumulate metrics across the round.
+
+        Args:
+            model: PyTorch model with gradients computed
+            epoch: Current epoch number (for logging purposes)
+        """
+        # Compute metrics for this epoch
+        epoch_metrics = self.compute_all_metrics(model)
+
+        # Store in history
+        self.epoch_history.append(epoch_metrics)
+
+    def get_round_statistics(self) -> Dict[str, float]:
+        """
+        Aggregate metrics across all epochs in the current round.
+
+        Returns aggregated statistics (mean, max, min) and clears epoch history
+        for the next round.
+
+        Returns:
+            Dictionary of aggregated gradient metrics
+        """
+        if not self.epoch_history:
+            return {}
+
+        # Collect all metric keys from first epoch (assumes consistent keys)
+        all_keys = set()
+        for epoch_metrics in self.epoch_history:
+            all_keys.update(epoch_metrics.keys())
+
+        # Remove per_layer_stats if present (not aggregatable)
+        all_keys.discard("per_layer_stats")
+
+        # Aggregate metrics
+        aggregated = {}
+
+        for key in all_keys:
+            # Extract values for this key across all epochs
+            values = [
+                epoch_metrics[key]
+                for epoch_metrics in self.epoch_history
+                if key in epoch_metrics and not isinstance(epoch_metrics[key], dict)
+            ]
+
+            if values:
+                # Compute statistics
+                aggregated[f"{key}_avg"] = float(np.mean(values))
+                aggregated[f"{key}_max"] = float(np.max(values))
+                aggregated[f"{key}_min"] = float(np.min(values))
+
+        # Clear history for next round
+        self.epoch_history = []
+
+        return aggregated
 
 
 class ServerGradientTracker:
