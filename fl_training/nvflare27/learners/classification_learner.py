@@ -10,7 +10,6 @@ Task-specific responsibilities:
 - Compute accuracy and loss metrics
 """
 
-import os
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -20,6 +19,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .base_learner import BaseLearner
+from utils.proxy_config import hpc_proxy
 
 # Add parent directories to path for model_factory import
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
@@ -92,8 +92,7 @@ class ClassificationLearner(BaseLearner):
         """Create classification model architecture.
 
         Uses existing model_factory.get_model() to instantiate classification models.
-        Handles HPC proxy requirements for pretrained model downloads with try-finally
-        cleanup pattern.
+        Uses centralized proxy configuration for pretrained model downloads on HPC.
 
         Returns:
             nn.Module: Classification model ready for training, loaded to self.device
@@ -107,15 +106,9 @@ class ClassificationLearner(BaseLearner):
             >>> print(type(model).__name__)
             'VGG'
         """
-        # Set HPC proxy for pretrained model downloads
-        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-
-        try:
-            # Create model using existing model_factory
+        # Use centralized proxy configuration for pretrained model downloads
+        with hpc_proxy():
             model = get_model(self.model_name, self.num_classes)
-        finally:
-            # Always clear proxy after model creation
-            os.environ.pop('https_proxy', None)
 
         # Move model to device
         model = model.to(self.device)

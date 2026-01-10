@@ -10,7 +10,6 @@ Task-specific responsibilities:
 - Compute mean Average Precision (mAP) and detection metrics
 """
 
-import os
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -20,6 +19,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .base_learner import BaseLearner
+from utils.proxy_config import hpc_proxy
 
 # Add parent directories to path for model_factory import
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
@@ -101,8 +101,8 @@ class DetectionLearner(BaseLearner):
         """Create object detection model architecture.
 
         Uses existing model_factory.get_model() to instantiate detection models
-        (Faster R-CNN with ResNet-50-FPN backbone). The model factory handles HPC
-        proxy requirements for pretrained model downloads with try-finally cleanup pattern.
+        (Faster R-CNN with ResNet-50-FPN backbone). Uses centralized proxy
+        configuration for pretrained model downloads on HPC.
 
         The Faster R-CNN architecture consists of:
         - Backbone: ResNet-50 with Feature Pyramid Network (FPN) for multi-scale features
@@ -138,11 +138,11 @@ class DetectionLearner(BaseLearner):
             'FasterRCNN'
 
         Note:
-            HPC proxy handling is done inside model_factory and models.detection,
-            so no manual proxy management is needed here.
+            Centralized proxy configuration is handled inside model_factory
+            and models.detection via utils.proxy_config.
         """
         # Create model using existing model_factory
-        # The factory handles HPC proxy setup/cleanup for pretrained weights
+        # The factory uses centralized proxy configuration for pretrained weights
         model = get_model(self.model_name, self.num_classes)
 
         # Move model to device
