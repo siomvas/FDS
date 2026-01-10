@@ -5,9 +5,11 @@ from .aggregator_helpers import (
     aggregator_output_to_dxo,
     extract_client_metrics
 )
+from .data_factory import FDSDataFactory
 
 __all__ = [
     "dxo_list_to_aggregator_input",
     "aggregator_output_to_dxo",
-    "extract_client_metrics"
+    "extract_client_metrics",
+    "FDSDataFactory"
 ]
