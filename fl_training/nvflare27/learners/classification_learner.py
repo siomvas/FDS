@@ -10,6 +10,9 @@ Task-specific responsibilities:
 - Compute accuracy and loss metrics
 """
 
+import os
+import sys
+from pathlib import Path
 from typing import Dict, Any, Optional
 
 import torch
@@ -17,6 +20,10 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .base_learner import BaseLearner
+
+# Add parent directories to path for model_factory import
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from fl_training.nvflare_refactor.common.model_factory import get_model
 
 
 class ClassificationLearner(BaseLearner):
@@ -84,9 +91,36 @@ class ClassificationLearner(BaseLearner):
     def create_model(self) -> nn.Module:
         """Create classification model architecture.
 
-        TODO: Implement model creation using model_factory.
+        Uses existing model_factory.get_model() to instantiate classification models.
+        Handles HPC proxy requirements for pretrained model downloads with try-finally
+        cleanup pattern.
+
+        Returns:
+            nn.Module: Classification model ready for training, loaded to self.device
+
+        Raises:
+            ValueError: If model_name is invalid (raised by model_factory)
+
+        Examples:
+            >>> learner = ClassificationLearner(...)
+            >>> model = learner.create_model()
+            >>> print(type(model).__name__)
+            'VGG'
         """
-        pass
+        # Set HPC proxy for pretrained model downloads
+        os.environ['https_proxy'] = 'http://proxy.example.org:3128'
+
+        try:
+            # Create model using existing model_factory
+            model = get_model(self.model_name, self.num_classes)
+        finally:
+            # Always clear proxy after model creation
+            os.environ.pop('https_proxy', None)
+
+        # Move model to device
+        model = model.to(self.device)
+
+        return model
 
     def train_epoch(
         self,
