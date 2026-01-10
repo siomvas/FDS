@@ -1,0 +1,30 @@
+# FDS Object Detection Experiment Example
+# Task: COCO object detection with YOLO
+
+experiment:
+  name: "coco_detection_baseline"
+  task_type: "detection"
+  dataset: "coco"
+  dataset_splits: "/path/to/coco_splits.json"
+
+federated_learning:
+  num_rounds: 15
+  num_clients: 8
+  aggregator: "fedavg"
+  aggregator_config: {}
+  min_clients: 6
+  wait_time: 20
+
+training:
+  model: "yolov5s"
+  local_epochs: 1
+  batch_size: 8  # Smaller for detection
+  learning_rate: 0.0001
+  optimizer: "adam"
+  amp_enabled: true
+  grad_tracking: false
+  seed: 42
+
+resources:
+  client_gpu_mem: "10GB"  # More memory for detection models
+  server_cpu: 2
