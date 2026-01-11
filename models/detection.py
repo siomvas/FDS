@@ -5,10 +5,10 @@ Provides factory functions for detection models with HPC proxy support for
 pretrained weight downloads. Currently supports Faster R-CNN with ResNet-50-FPN backbone.
 """
 
-import os
 import torch
 import torch.nn as nn
 import torchvision.models.detection as detection_models
+from utils.proxy_config import hpc_proxy
 
 
 def get_fasterrcnn_resnet50(num_classes: int, pretrained: bool = True) -> nn.Module:
@@ -38,8 +38,8 @@ def get_fasterrcnn_resnet50(num_classes: int, pretrained: bool = True) -> nn.Mod
         - Pretrained on COCO dataset (if pretrained=True)
 
     HPC Proxy:
-        Uses HPC proxy for downloading pretrained weights in restricted network environments.
-        Proxy is automatically set and cleaned up with try-finally pattern.
+        Uses centralized proxy configuration for downloading pretrained weights in
+        restricted network environments (HPC cluster).
 
     Examples:
         >>> # COCO detection (80 classes)
@@ -58,11 +58,8 @@ def get_fasterrcnn_resnet50(num_classes: int, pretrained: bool = True) -> nn.Mod
         - labels: Int64Tensor[N] predicted class labels
         - scores: FloatTensor[N] detection confidence scores
     """
-    # Set HPC proxy for pretrained weight downloads
-    os.environ['https_proxy'] = 'http://proxy.example.org:3128'
-
-    try:
-        # Create Faster R-CNN model
+    # Use centralized proxy configuration for pretrained weight downloads
+    with hpc_proxy():
         if pretrained:
             # Load pretrained weights from COCO
             model = detection_models.fasterrcnn_resnet50_fpn(
@@ -75,8 +72,5 @@ def get_fasterrcnn_resnet50(num_classes: int, pretrained: bool = True) -> nn.Mod
                 weights=None,
                 num_classes=num_classes
             )
-    finally:
-        # Always clean up proxy setting
-        os.environ.pop('https_proxy', None)
 
     return model
