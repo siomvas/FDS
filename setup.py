@@ -6,7 +6,7 @@ setup(
     packages=find_packages(),  # This will find all packages with __init__.py
     package_dir={'': '.'},  # Packages are in the root directory
     install_requires=[
-        # Add your dependencies here
+        "pyyaml>=6.0",  # Required for YAML experiment configuration
     ],
     python_requires=">=3.10",
     description="FDS - Federated Dataset Simulation",
