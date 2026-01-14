@@ -12,8 +12,8 @@ def main():
     parser.add_argument("--dataset", type=str, required=True, help="Name of the dataset (key for cache)")
     parser.add_argument("--base_path", type=str, required=True, help="Root path of the dataset")
     parser.add_argument("--model", type=str, default="inception_v3", help="Model identifier (e.g., inception_v3, dinov2-base)")
-    parser.add_argument("--tokens", type=str, default="cls", choices=["cls", "k_last_cls", "k_last_all", "all_last"])
-    parser.add_argument("--k_last", type=int, default=4, help="Number of last layers to consider when using k_last options")
+    parser.add_argument("--tokens", type=str, default="none", choices=["none", "cls", "k_last_cls", "k_last_all", "all_last"])
+    parser.add_argument("--k_last", type=int, default=0, help="Number of last layers to consider when using k_last options")
     parser.add_argument("--cache_dir", type=str, default="/path/to/gtai/FDS/embedding_cache", help="Directory to store embeddings cache")
     parser.add_argument("--batch_size", type=int, default=200)
     parser.add_argument("--proxy", type=str, default='http://proxy.example.org:3128', help="HTTP/HTTPS proxy for downloads")
@@ -44,13 +44,15 @@ def main():
     
     print("Computing embeddings... (This will automatically save to cache)")
     try:
+        tokens = args.tokens if args.tokens != "none" else None
+        k_last = args.k_last if args.k_last > 0 else None
         extractor.extract_embeddings(
             images=images,
             use_cache=True,
             dataset_name=args.dataset,
             base_path=args.base_path,
-            return_which_token=args.tokens,
-            k_last=args.k_last,
+            return_which_token=tokens,
+            k_last=k_last
         )
         print("Embedding extraction and caching completed successfully.")
 

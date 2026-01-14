@@ -166,15 +166,21 @@ class CacheManager:
         If dataset_name is provided, uses a fixed key structure for that dataset
         to allow subset retrieval.
         """
-        # Create a unique key for the configuration
+        # Create a unique key for the configuration, allow for non-transformer models to not have transformer-related params
+        # by only including non-None params.
         config_dict = {
             "model_name": model_name,
-            "pooling_strategy": pooling_strategy,
-            "layers": layers,
-            **kwargs
+            **{k: v for k, v in kwargs.items() if v is not None},
         }
+        if pooling_strategy is not None:
+            config_dict["pooling_strategy"] = pooling_strategy
+        if layers is not None:
+            config_dict["layers"] = layers
+
         # Sort keys for consistency
         config_str = json.dumps(config_dict, sort_keys=True)
+        # Print the config string for verification/debugging
+        print(f"Computing cache key with config: {config_str}")
         config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
 
         if dataset_name:

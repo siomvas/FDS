@@ -113,7 +113,7 @@ def _extract_features(
     use_cache: bool = True,
     cache_dir: str = "/path/to/gtai/FDS/embedding_cache",
     dataset_name: Optional[str] = None,
-    base_path: Optional[str] = None,
+    base_path: Optional[str] = "/path/to/gtai/FDS/",
     proxy: Optional[str] = None,
     **extractor_kwargs: Any,
 ) -> List[np.ndarray]:
@@ -200,6 +200,7 @@ def _extract_features(
         image_paths = [str(item["image"]) for item in dataset]
 
         # Use extractor's extract_embeddings with caching support
+        # print(f"This is called with use_cache={use_cache}, dataset_name={dataset_name}, base_path={base_path} and extractor_kwargs={extractor_kwargs}")
         features = extractor.extract_embeddings(
             images=image_paths,
             use_cache=use_cache,

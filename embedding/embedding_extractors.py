@@ -625,8 +625,8 @@ class InceptionExtractor(EmbeddingExtractor):
         **kwargs: Any,
     ) -> np.ndarray:
 
-        # cache_params = {**kwargs}
-        cache_params = {} # Inception does not have token selection params
+        cache_params = {**kwargs}
+        # cache_params = {} # Inception does not have token selection params
 
         if use_cache and self.cache_manager:
             cached_data = self.cache_manager.get(
@@ -637,10 +637,10 @@ class InceptionExtractor(EmbeddingExtractor):
                 **cache_params
             )
             if cached_data is not None:
-                # print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
+                print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
                 return cached_data
-            # else:
-                # print(f"  ✗ Cache MISS: {self.model_name} - Computing...")
+            else:
+                print(f"  ✗ Cache MISS, Received args {dataset_name}, {base_path}, {self.model_name}, use_cache={use_cache}, cache_params={cache_params} - Computing...")
 
         if not self.model:
             self.load_model()
@@ -661,6 +661,7 @@ class InceptionExtractor(EmbeddingExtractor):
             result = np.concatenate(all_embeddings, axis=0)
 
         if use_cache and self.cache_manager:
+            print("Saving to cache with params:", cache_params)
             self.cache_manager.put(
                 embeddings=result,
                 model_name=self.model_name,

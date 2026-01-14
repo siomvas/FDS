@@ -25,9 +25,7 @@ Usage:
 
 import os
 
-# --- CRITICAL CPU CONSTRAINT ---
-# Must be set BEFORE importing numpy/torch to prevent 5000% CPU spikes.
-# This forces matrix operations to use a sane number of threads.
+# Forces matrix operations to use a sane number of threads.
 os.environ["OMP_NUM_THREADS"] = "8"
 os.environ["MKL_NUM_THREADS"] = "8"
 os.environ["OPENBLAS_NUM_THREADS"] = "8"
@@ -51,7 +49,7 @@ from tqdm import tqdm
 # Project imports - adjust path as needed
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from eval_config import PartitionConfig, MetricResults, EvaluationResult
+from evaluation.eval_config import PartitionConfig, MetricResults, EvaluationResult
 from data_loading.dataset import BaseDataset
 from evaluation import metrics
 
@@ -155,15 +153,23 @@ def load_partition_from_json(
         
         client_data = []
         for img_path in train_paths:
+
+            # For embedding-based partitionings, the partitioning json is already using
+            # a dictionary format with 'image' and 'label' keys. 
+            if isinstance(img_path, dict):
+                assert "image" in img_path and "label" in img_path, \
+                    "Partition JSON dict entries must have 'image' and 'label' keys."
+                item = dataset_map.get(img_path["image"])
+                client_data.append(item)
+                continue
+
             # O(1) Lookup - This connects the partition path to the mapped label
             item = dataset_map.get(img_path)
-            
+
             if item is not None:
                 client_data.append(item)
             else:
-                # Silent skip or warning? Warning is better for debugging.
-                # print(f"Warning: {img_path} in partition but not in dataset map")
-                pass
+                print(f"Warning: {img_path} in partition but not in dataset map")
         
         client_datasets.append(client_data)
     
@@ -263,6 +269,8 @@ def compute_label_metrics(
 
 
 def compute_feature_metrics(
+    dataset_name: str,
+    base_path: str,
     client_datasets: List[List[Dict]],
     feature_model: str = "dinov2-small",
     batch_size: int = 64,
@@ -274,6 +282,8 @@ def compute_feature_metrics(
     results = {}
     
     ext_kwargs = {
+        "dataset_name": dataset_name,
+        "base_path": base_path,
         "model_name": feature_model,
         "batch_size": batch_size,
         "use_cache": use_cache,
@@ -289,10 +299,7 @@ def compute_feature_metrics(
     # --- Distribution Distance Metrics ---
     
     print("    Computing FID...")
-    fid_all = metrics.FID_distance(
-        client_datasets_sub, batch_size=batch_size, return_all=True,
-        use_cache=use_cache, cache_dir=cache_dir
-    )
+    fid_all = metrics.FID_distance(client_datasets_sub, return_all=True, **ext_kwargs)
     results["fid_mean"] = float(np.mean(fid_all))
     results["fid_std"] = float(np.std(fid_all))
     
@@ -359,6 +366,8 @@ def compute_feature_metrics(
 
 
 def compute_all_metrics(
+    dataset_name: str,
+    base_path: str,
     client_datasets: List[List[Dict]],
     has_labels: bool,
     num_classes: int,
@@ -385,7 +394,9 @@ def compute_all_metrics(
     # 3. Feature
     print("  Computing feature metrics...")
     feature_results = compute_feature_metrics(
-        client_datasets,
+        dataset_name=dataset_name,
+        base_path=base_path,
+        client_datasets=client_datasets,
         feature_model=feature_model,
         batch_size=batch_size,
         use_cache=use_cache,
@@ -414,6 +425,7 @@ def evaluate_partition(
     partition_path: Path,
     dataset_map: Dict[str, Dict],
     dataset_name: str,
+    base_path: str,
     output_dir: Path,
     feature_model: str,
     batch_size: int,
@@ -457,6 +469,8 @@ def evaluate_partition(
     
     # Compute
     metrics_obj = compute_all_metrics(
+        dataset_name=dataset_name,
+        base_path=base_path,
         client_datasets=client_datasets,
         has_labels=has_labels,
         num_classes=num_classes,
@@ -486,6 +500,7 @@ def evaluate_all(
     partition_dir: Path,
     dataset_map: Dict[str, Dict],
     dataset_name: str,
+    base_path: str,
     output_dir: Path,
     feature_model: str,
     batch_size: int,
@@ -502,7 +517,7 @@ def evaluate_all(
     for p_path in tqdm(partition_files, desc="Evaluating"):
         try:
             res = evaluate_partition(
-                p_path, dataset_map, dataset_name, output_dir,
+                p_path, dataset_map, dataset_name, base_path, output_dir,
                 feature_model, batch_size, use_cache, cache_dir, subsample, force
             )
             if res: results.append(res)
@@ -562,13 +577,13 @@ def main():
     # 4. Run
     if args.partition:
         evaluate_partition(
-            Path(args.partition), dataset_map, args.dataset, output_dir,
+            Path(args.partition), dataset_map, args.dataset, args.base_path, output_dir,
             args.feature_model, args.batch_size, use_cache, args.cache_dir, 
             args.subsample, args.force
         )
     else:
         evaluate_all(
-            Path(args.partition_dir), dataset_map, args.dataset, output_dir,
+            Path(args.partition_dir), dataset_map, args.dataset, args.base_path, output_dir,
             args.feature_model, args.batch_size, use_cache, args.cache_dir,
             args.force, args.subsample
         )

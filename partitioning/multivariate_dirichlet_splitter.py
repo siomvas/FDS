@@ -166,13 +166,29 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         EmbeddingSplitter: Semantic clustering-based partitioning
     """
 
-    CRITERIA = ["color", "main_object", "size", "location", "time"]
-    CRITERION_TO_DIR = {
+    CRITERIA_tiny = ["color", "main_object", "size", "location", "time"]
+    CRITERION_TO_DIR_tiny = {
         "color": "output_color_train",
         "main_object": "output_main_object_train",
         "size": "output_size_train",
         "location": "output_location_train",
         "time": "output_time_train",
+    }
+    CRITERIA_food = ["color", "main_object", "size", "angle", "lighting"]
+    CRITERION_TO_DIR_food = {
+        "color": "output_color_train",
+        "main_object": "output_main_object_train",
+        "size": "output_size_train",
+        "angle": "output_angle_train",
+        "lighting": "output_lighting_train",
+    }
+    CRITERIA_ade20k = ["color", "main_object", "size", "scene", "light"]
+    CRITERION_TO_DIR_ade20k = {
+        "color": "output_color_train",
+        "main_object": "output_main_object_train",
+        "size": "output_size_train",
+        "scene": "output_scene_train",
+        "light": "output_light_train",
     }
 
     def __init__(
@@ -259,6 +275,23 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             valset_type=valset_type,
             seed=seed,
         )
+
+        # choose criteria based on dataset type
+        if train_dataset.dataset_name in ["tiny_imagenet"]:
+            self.CRITERIA = self.CRITERIA_tiny
+            self.CRITERION_TO_DIR = self.CRITERION_TO_DIR_tiny
+        elif train_dataset.dataset_name in ["food101"]:
+            self.CRITERIA = self.CRITERIA_food
+            self.CRITERION_TO_DIR = self.CRITERION_TO_DIR_food
+        elif train_dataset.dataset_name in ["ade20k"]:
+            self.CRITERIA = self.CRITERIA_ade20k
+            self.CRITERION_TO_DIR = self.CRITERION_TO_DIR_ade20k
+        else:
+            raise ValueError(
+                f"Dataset '{train_dataset.dataset_name}' not supported for "
+                f"MultivariateDirichletSplitter. Supported datasets: "
+                f"tiny_imagenet, food101, ade20k."
+            )
 
         self.cluster_labels_dir = Path(cluster_labels_dir)
         self.min_samples_per_client = min_samples_per_client
