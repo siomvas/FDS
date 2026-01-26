@@ -9,8 +9,8 @@ from data_loading.dataset import BaseDataset
 import math
 import torchvision.transforms as T
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
-from utils.constants import FOOD101, INTERNVL3_38B, LLAMA33_70B, LLAMA31_8B_INSTRUCT, MINICPM26
-from utils.constants import INTERNVL35_8B, INTERNVL3_8B, QWEN3_8B, QWEN3_30B
+from partitioning.vlm.utils.constants import FOOD101, INTERNVL3_38B, LLAMA33_70B, LLAMA31_8B_INSTRUCT, MINICPM26
+from partitioning.vlm.utils.constants import INTERNVL35_8B, INTERNVL3_8B, QWEN3_8B, QWEN3_30B
 
 # used with InternVL3 38B to split models across multiple GPUs
 def split_model(path):
@@ -329,7 +329,7 @@ def load_llm(ver: str = LLAMA33_70B):
     return loader_func()
 
 # Dataset loading
-def load_data(dataset: str, split: str="test"):
+def load_data(dataset: str, split: str="train"):
     """Load dataset based on params set when run script."""
     # split = "val"
     # if dataset == FOOD101:

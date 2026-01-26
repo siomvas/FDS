@@ -4,8 +4,8 @@ import argparse
 from pathlib import Path
 #from dotenv import load_dotenv
 from time import strftime, localtime
-from utils.constants import TINY_IMAGENET, FOOD101, PASCALVOC, ADE20K
-from utils.constants import INTERNVL3_38B, INTERNVL3_8B, LLAMA33_70B, LLAMA31_8B_INSTRUCT , MINICPM26, QWEN3_8B, QWEN3_30B
+from partitioning.vlm.utils.constants import TINY_IMAGENET, FOOD101, PASCALVOC, ADE20K
+from partitioning.vlm.utils.constants import INTERNVL3_38B, INTERNVL3_8B, LLAMA33_70B, LLAMA31_8B_INSTRUCT , MINICPM26, QWEN3_8B, QWEN3_30B
 
 
 def str2bool(v):
@@ -85,7 +85,7 @@ args = parser.parse_args()
 args.home_path = "/path/to/FDS/"
 
 #------ Setting the params ------- #
-args.general_data_dir = f"{args.home_path}/data_partitioning/legacy_vlm/data/"
+args.general_data_dir = f"{args.home_path}/partitioning/vlm/data/"
 args.specific_dataset_dir = args.general_data_dir + args.dataset
 args.output_path = args.specific_dataset_dir + f"/output_{args.criteria}_{args.exp_name}"
 

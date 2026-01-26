@@ -4,11 +4,18 @@ from datasets import Dataset
 from typing import List, Dict, Any
 import logging
 import sys, os
-from utils.argument import args
-from utils import util_loader
-from utils import helper
+#from utils.argument import args
+#from utils import util_loader
+#from utils import helper
+
+from partitioning.vlm.utils.argument import args
+from partitioning.vlm.utils import util_loader
+from partitioning.vlm.utils import helper
+
 from PIL import Image
 from pathlib import Path
+
+# temporary - will delete later
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # import os
@@ -103,7 +110,7 @@ def print_gpu_memory():
 # ------- Main VLM pipeline functions -------------
 # STEP 1: Prepare batch question, questions passed in, read from txt file
 def prepare_batch_questions(data: Dataset,
-                            question: str, max_samples: int = None) -> List[List[Dict[str, Any]]]:
+                            question: str, max_samples: int = None, resume_checkpoint = 0) -> List[List[Dict[str, Any]]]:
     """
     Prepare batch questions in the format expected by MiniCPM.
     
@@ -120,7 +127,9 @@ def prepare_batch_questions(data: Dataset,
     questions = []
     processed_count = 0
 
-    for i in range(len(data.data)):
+    start_index = max(resume_checkpoint, 0)
+
+    for i in range(start_index, len(data.data)):
         if max_samples and processed_count >= max_samples:
             break
         
@@ -367,7 +376,7 @@ def main(model, tokenizer, data: BaseDataset,
     # Prepare questions
     print("Preparing batch question.... ")
     print(f"Question: {question}")
-    prepared_data = prepare_batch_questions(data, question, max_samples)
+    prepared_data = prepare_batch_questions(data, question, max_samples, 16341)
 
     jsonl_path = os.path.expanduser(args.step1_result_path)
     with open(jsonl_path, 'w', encoding='utf-8') as f:
