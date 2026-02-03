@@ -1,44 +1,3 @@
-"""End-to-end experiment orchestration for FDS federated learning.
-
-This script provides a unified CLI for running FL experiments from YAML configuration
-to results collection. It orchestrates the complete workflow:
-    1. Load YAML experiment configuration
-    2. Generate NVFlare job configuration
-    3. Execute FL training (simulator or production mode)
-    4. Collect and organize results (TensorBoard, models, summaries)
-
-Usage:
-    # Run in simulator mode (local testing with 10 clients)
-    python run_experiment.py \\
-        --config classification_experiment.yaml \\
-        --mode simulator \\
-        --workspace ./nvflare_workspace
-
-    # Production mode (multi-node HPC deployment)
-    python run_experiment.py \\
-        --config classification_experiment.yaml \\
-        --mode production \\
-        --workspace /shared/nvflare_workspace
-
-    # Override number of clients from YAML
-    python run_experiment.py \\
-        --config my_experiment.yaml \\
-        --mode simulator \\
-        --num_clients 5
-
-Architecture:
-    - Automates YAML → NVFlare JSON → FL execution → Results pipeline
-    - Supports both simulator (single-machine) and production (multi-node) modes
-    - Organizes results with timestamps for experiment tracking
-    - Integrates with existing config system (FDSExperimentConfig, JobConfigGenerator)
-    - Preserves TensorBoard logs, model checkpoints, and experiment metadata
-
-Dependencies:
-    - fl_training.nvflare27.config.experiment_config
-    - fl_training.nvflare27.config.config_generator
-    - nvflare (installed separately: pip install nvflare~=2.7.0)
-"""
-
 import argparse
 import json
 import shutil
@@ -47,9 +6,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
-
-# Add parent directories to path for FDS imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from fl_training.nvflare27.config.experiment_config import FDSExperimentConfig
 from fl_training.nvflare27.config.config_generator import JobConfigGenerator
@@ -64,136 +20,19 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="FDS Federated Learning Experiment Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Classification experiment in simulator mode
-  python run_experiment.py \\
-      --config config/examples/classification_example.yaml \\
-      --mode simulator \\
-      --workspace ./nvflare_workspace
-
-  # Segmentation experiment with custom client count
-  python run_experiment.py \\
-      --config my_segmentation_exp.yaml \\
-      --mode simulator \\
-      --num_clients 5
-
-  # Production deployment (multi-node HPC)
-  python run_experiment.py \\
-      --config production_exp.yaml \\
-      --mode production \\
-      --workspace /shared/nvflare_prod
-        """
     )
 
+    parser.add_argument("--config", type=str, required=True, help="Path to YAML experiment configuration file")
     parser.add_argument(
-        "--config",
-        type=str,
-        required=True,
-        help="Path to YAML experiment configuration file"
+        "--workspace_dir", type=str, default="./nvflare_workspace", help="NVFlare workspace directory (default: ./nvflare_workspace)"
     )
-    parser.add_argument(
-        "--mode",
-        type=str,
-        required=True,
-        choices=["simulator", "production"],
-        help="Execution mode: simulator (local testing) or production (multi-node deployment)"
-    )
-    parser.add_argument(
-        "--workspace",
-        type=str,
-        default="./nvflare_workspace",
-        help="NVFlare workspace directory (default: ./nvflare_workspace)"
-    )
-    parser.add_argument(
-        "--num_clients",
-        type=int,
-        default=None,
-        help="Override number of clients from YAML config (optional)"
-    )
-    parser.add_argument(
-        "--results_dir",
-        type=str,
-        default="./results",
-        help="Base directory for experiment results (default: ./results)"
-    )
+    parser.add_argument("--num_clients", type=int, default=None, help="Override number of clients from YAML config (optional)")
+    parser.add_argument("--results_dir", type=str, default="./results", help="Base directory for experiment results (default: ./results)")
 
     return parser.parse_args()
 
 
-def check_nvflare_installed() -> bool:
-    """Check if NVFlare is installed and accessible.
-
-    Returns:
-        bool: True if nvflare command is available, False otherwise
-    """
-    try:
-        result = subprocess.run(
-            ["nvflare", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
-
-
-def print_nvflare_install_instructions():
-    """Print installation instructions for NVFlare."""
-    print("\n" + "=" * 80)
-    print("ERROR: NVFlare not found")
-    print("=" * 80)
-    print("\nNVFlare is required to run FL experiments.")
-    print("\nInstallation:")
-    print("  pip install nvflare~=2.7.0")
-    print("\nVerify installation:")
-    print("  nvflare --version")
-    print("\nFor more information, see:")
-    print("  https://nvidia.github.io/NVFlare/")
-    print("=" * 80 + "\n")
-
-
-def load_config(config_path: str) -> FDSExperimentConfig:
-    """Load experiment configuration from YAML file.
-
-    Args:
-        config_path: Path to YAML config file
-
-    Returns:
-        FDSExperimentConfig: Loaded experiment configuration
-
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        yaml.YAMLError: If config file has invalid YAML syntax
-        ValueError: If required configuration fields are missing
-    """
-    config_file = Path(config_path)
-    if not config_file.exists():
-        raise FileNotFoundError(
-            f"Configuration file not found: {config_path}\n"
-            f"Example configs available at: fl_training/nvflare27/config/examples/"
-        )
-
-    try:
-        config = FDSExperimentConfig.from_yaml(config_path)
-        return config
-    except Exception as e:
-        print(f"\nERROR: Failed to load configuration from {config_path}")
-        print(f"Reason: {e}")
-        print("\nPlease check:")
-        print("  1. YAML syntax is valid")
-        print("  2. All required fields are present (experiment, federated_learning, training)")
-        print("  3. Field values match expected types")
-        print("\nSee examples at: fl_training/nvflare27/config/examples/")
-        raise
-
-
-def generate_job_config(
-    config: FDSExperimentConfig,
-    yaml_config_path: str,
-    workspace: Path
-) -> Path:
+def generate_job_config(config: FDSExperimentConfig, yaml_config_path: str, workspace: Path) -> Path:
     """Generate NVFlare job configuration from YAML config.
 
     Args:
@@ -211,10 +50,7 @@ def generate_job_config(
     # Determine client script path (relative to job config location)
     train_script = Path(__file__).parent / "train.py"
     if not train_script.exists():
-        raise FileNotFoundError(
-            f"Client training script not found: {train_script}\n"
-            f"Expected at: fl_training/nvflare27/train.py"
-        )
+        raise FileNotFoundError(f"Client training script not found: {train_script}\n" f"Expected at: fl_training/nvflare27/train.py")
 
     # Create job config output directory
     jobs_dir = workspace / "jobs"
@@ -224,9 +60,7 @@ def generate_job_config(
     generator = JobConfigGenerator()
     try:
         job_config_path = generator.generate(
-            yaml_config_path=yaml_config_path,
-            output_dir=str(jobs_dir),
-            client_script_path=str(train_script)
+            yaml_config_path=yaml_config_path, output_dir=str(jobs_dir), client_script_path=str(train_script)
         )
         return job_config_path
     except Exception as e:
@@ -235,35 +69,13 @@ def generate_job_config(
         raise
 
 
-def run_simulator(
-    job_config_path: Path,
-    workspace: Path,
-    num_clients: int,
-    num_threads: Optional[int] = None
-):
-    """Run FL experiment in NVFlare simulator mode.
+def run_simulator(job_config_path: Path, workspace: Path, num_clients: int, num_threads: Optional[int] = None):
 
-    Args:
-        job_config_path: Path to generated job config JSON
-        workspace: NVFlare workspace directory
-        num_clients: Number of client instances to simulate
-        num_threads: Number of concurrent threads (defaults to num_clients)
-
-    Raises:
-        subprocess.CalledProcessError: If nvflare simulator command fails
-    """
     if num_threads is None:
         num_threads = num_clients
 
     # Build nvflare simulator command
-    cmd = [
-        "nvflare",
-        "simulator",
-        str(job_config_path),
-        "-w", str(workspace),
-        "-n", str(num_clients),
-        "-t", str(num_threads)
-    ]
+    cmd = ["nvflare", "simulator", str(job_config_path), "-w", str(workspace), "-n", str(num_clients), "-t", str(num_threads)]
 
     print(f"\nRunning command: {' '.join(cmd)}\n")
     print("-" * 80)
@@ -281,47 +93,7 @@ def run_simulator(
         raise
 
 
-def print_production_instructions(
-    job_config_path: Path,
-    workspace: Path,
-    config: FDSExperimentConfig
-):
-    """Print instructions for production deployment.
-
-    Args:
-        job_config_path: Path to generated job config
-        workspace: NVFlare workspace directory
-        config: Experiment configuration
-    """
-    print("\n" + "=" * 80)
-    print("PRODUCTION MODE: Manual Deployment Required")
-    print("=" * 80)
-    print("\nJob configuration generated successfully:")
-    print(f"  {job_config_path}")
-    print("\nTo deploy this experiment on multi-node HPC cluster:")
-    print("\n1. **Provision NVFlare infrastructure:**")
-    print("   nvflare provision -p project.yml")
-    print("\n2. **Deploy job to server:**")
-    print(f"   nvflare job submit {job_config_path}")
-    print("\n3. **Start server:**")
-    print("   cd startup && ./start.sh")
-    print("\n4. **Start clients on compute nodes:**")
-    print(f"   # On each of {config.federated_learning.num_clients} nodes:")
-    print("   cd startup/site-N && ./start.sh")
-    print("\n5. **Monitor progress:**")
-    print("   nvflare job list")
-    print("   nvflare job show <job_id>")
-    print("\nFor detailed production setup, see:")
-    print("  https://nvidia.github.io/NVFlare/user_guide/production_deployment.html")
-    print("=" * 80 + "\n")
-
-
-def collect_results(
-    workspace: Path,
-    config: FDSExperimentConfig,
-    results_base_dir: Path,
-    mode: str
-) -> Path:
+def collect_results(workspace: Path, config: FDSExperimentConfig, results_base_dir: Path, mode: str) -> Path:
     """Collect and organize experiment results.
 
     Creates timestamped results directory with:
@@ -395,11 +167,11 @@ def collect_results(
         "timestamp": timestamp,
         "mode": mode,
         "configuration": config.to_dict(),
-        "results_location": str(results_dir)
+        "results_location": str(results_dir),
     }
 
     summary_file = results_dir / "experiment_summary.json"
-    with open(summary_file, 'w') as f:
+    with open(summary_file, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"  ✓ Experiment summary: {summary_file}")
 
@@ -426,19 +198,12 @@ def main():
     print("FDS Federated Learning Experiment Runner")
     print("=" * 80)
 
-    # Step 1: Check NVFlare installation
-    print("\n[1/5] Checking NVFlare installation...")
-    if not check_nvflare_installed():
-        print_nvflare_install_instructions()
-        sys.exit(1)
-    print("  ✓ NVFlare installed")
-
     # Step 2: Load experiment configuration
-    print(f"\n[2/5] Loading experiment config: {args.config}")
+    print(f"\n[1/4] Loading experiment config: {args.config}")
     try:
-        config = load_config(args.config)
-    except Exception:
-        sys.exit(1)
+        config = FDSExperimentConfig.from_yaml(args.config_path)
+    except Exception as e:
+        print("  ✗ Failed to load experiment configuration,", e)
 
     print(f"  ✓ Experiment: {config.experiment.name}")
     print(f"  ✓ Task type: {config.experiment.task_type}")
@@ -450,7 +215,7 @@ def main():
         print(f"  ✓ Overriding num_clients: {args.num_clients}")
 
     # Step 3: Generate NVFlare job configuration
-    print(f"\n[3/5] Generating NVFlare job config...")
+    print(f"\n[2/4] Generating NVFlare job config...")
     workspace = Path(args.workspace)
     try:
         job_config_path = generate_job_config(config, args.config, workspace)
@@ -460,45 +225,30 @@ def main():
     print(f"  ✓ Job config written to: {job_config_path}")
 
     # Step 4: Execute FL experiment
-    if args.mode == "simulator":
-        print(f"\n[4/5] Running FL simulation ({config.federated_learning.num_clients} clients, {config.federated_learning.num_rounds} rounds)...")
-        try:
-            run_simulator(
-                job_config_path,
-                workspace,
-                config.federated_learning.num_clients
-            )
-        except subprocess.CalledProcessError:
-            sys.exit(1)
-        print("-" * 80)
-        print("  ✓ Simulation complete")
 
-        # Step 5: Collect results
-        print("\n[5/5] Collecting results...")
-        results_dir = collect_results(
-            workspace,
-            config,
-            Path(args.results_dir),
-            args.mode
-        )
+    print(
+        f"\n[3/4] Running FL simulation ({config.federated_learning.num_clients} clients, {config.federated_learning.num_rounds} rounds)..."
+    )
+    try:
+        run_simulator(job_config_path, workspace, config.federated_learning.num_clients)
+    except subprocess.CalledProcessError:
+        sys.exit(1)
+    print("-" * 80)
+    print("  ✓ Simulation complete")
 
-        print("\n" + "=" * 80)
-        print("✓ Experiment complete!")
-        print("=" * 80)
-        print(f"\nResults saved to: {results_dir}")
-        print("\nView TensorBoard logs:")
-        print(f"  tensorboard --logdir {results_dir}/tensorboard")
-        print("\nExperiment summary:")
-        print(f"  cat {results_dir}/experiment_summary.json")
-        print("=" * 80 + "\n")
+    # Step 5: Collect results
+    print("\n[4/4] Collecting results...")
+    results_dir = collect_results(workspace, config, Path(args.results_dir), args.mode)
 
-    else:  # production mode
-        print(f"\n[4/5] Production deployment mode")
-        print_production_instructions(job_config_path, workspace, config)
-        print("\n[5/5] Skipping automatic result collection (manual deployment)")
-        print("\nResults will be available at:")
-        print(f"  {workspace}/server/<job_id>/")
-
+    print("\n" + "=" * 80)
+    print("✓ Experiment complete!")
+    print("=" * 80)
+    print(f"\nResults saved to: {results_dir}")
+    print("\nView TensorBoard logs:")
+    print(f"  tensorboard --logdir {results_dir}/tensorboard")
+    print("\nExperiment summary:")
+    print(f"  cat {results_dir}/experiment_summary.json")
+    print("=" * 80 + "\n")
 
 if __name__ == "__main__":
     main()

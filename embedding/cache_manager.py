@@ -180,7 +180,7 @@ class CacheManager:
         # Sort keys for consistency
         config_str = json.dumps(config_dict, sort_keys=True)
         # Print the config string for verification/debugging
-        print(f"Computing cache key with config: {config_str}")
+        # print(f"Computing cache key with config: {config_str}")
         config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
 
         if dataset_name:

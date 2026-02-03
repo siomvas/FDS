@@ -89,7 +89,7 @@ def main(model, tokenizer, inference_batch_size: int = 16):
     
     system_prompt = helper.read_file_to_string(args.step2a_prompt_path)
     system_prompt = system_prompt.replace("[__CRITERION__]", str(args.prompt_label.lower()))
-    system_prompt = system_prompt.replace("[__EXAMPLAR__]", str(args.examplar.lower()))
+    system_prompt = system_prompt.replace("[__EXEMPLAR__]", str(args.exemplar.lower()))
 
     with open(output_path, 'w', encoding='utf-8') as f:
         pass  # Create empty file

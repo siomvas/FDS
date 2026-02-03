@@ -1,0 +1,26 @@
+experiment:
+  name: "tiny_imagenet_fedavg_baseline"
+  task_type: "classification"
+  dataset: "tiny_imagenet"
+  dataset_splits: "/path/to/archive/FDS/benchmark_results/tiny_imagenet/partitions/baselines/dirichlet_n10_alpha0.1_seed42.json"
+
+federated_learning:
+  num_rounds: 10
+  num_clients: 10
+  aggregator: "fedavg"
+  min_clients: 8
+  wait_time: 10
+
+training:
+  model: "resnet18"
+  local_epochs: 1
+  batch_size: 32
+  learning_rate: 0.001
+  optimizer: "adam"
+  amp_enabled: true
+  grad_tracking: true
+  seed: 42
+
+resources:
+  client_gpu_mem: "4GB"
+  server_cpu: 2

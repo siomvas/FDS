@@ -1,9 +1,0 @@
-{
-    "name": "tiny_federated",
-    "deploy_map": {
-        "tiny_federated": [
-            "@ALL"
-        ]
-    },
-    "min_clients": 2
-}

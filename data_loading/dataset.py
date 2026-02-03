@@ -380,6 +380,61 @@ def _load_ade20k(self):
                 else:
                     raise Warning(f"Mask file {mask_file} does not exist")
 
+@BaseDataset.register_dataset("PascalVOC")
+def _load_pascal_voc(self):
+    """Load Pascal VOC 2012 dataset."""
+    valid_splits = ["train", "val"]
+    if self.split not in valid_splits:
+        raise ValueError(f"Invalid split '{self.split}'. Valid options: {valid_splits}")
+
+    data_path: Path = self.base_path / "VOC2012"
+
+    images_dir = data_path / "images" / self.split
+    labels_dir = data_path / "labels" / self.split
+
+    if not images_dir.exists():
+        raise FileNotFoundError(f"Images directory {images_dir} does not exist")
+    if not labels_dir.exists():
+        raise FileNotFoundError(f"Masks directory {labels_dir} does not exist")
+    
+    # image names are read from the names inside the image directory directly
+    img_names = [img_file.stem for img_file in sorted(images_dir.glob("*.jpg"))]
+
+    for img_name in img_names:
+        img_path = images_dir / f"{img_name}.jpg"
+        mask_path = labels_dir / f"{img_name}.png"
+        if img_path.exists() and mask_path.exists():
+            self.data.append(str(img_path))
+            self.labels.append(str(mask_path))
+        else:
+            raise Warning(f"Image or mask for {img_name} does not exist")
+
+@BaseDataset.register_dataset("BDD100K") # Berkeley DeepDrive 100K
+def _load_bdd100k(self):
+    """Load BDD100K dataset."""
+    valid_splits = ["train", "val", "test"]
+    if self.split not in valid_splits:
+        raise ValueError(f"Invalid split '{self.split}'. Valid options: {valid_splits}")
+
+    data_path: Path = self.base_path / "bdd100k"
+
+    images_dir = data_path / "images" / self.split
+    masks_dir = data_path / "segmentation" / self.split
+
+    if not images_dir.exists():
+        raise FileNotFoundError(f"Images directory {images_dir} does not exist")
+    if not masks_dir.exists():
+        raise FileNotFoundError(f"Masks directory {masks_dir} does not exist")
+
+    for img_file in sorted(images_dir.glob("*.jpg")):
+        mask_file = masks_dir / (img_file.stem + ".png")
+        if mask_file.exists():
+            self.data.append(str(img_file))
+            self.labels.append(str(mask_file))
+        else:
+            raise Warning(f"Mask file {mask_file} does not exist")
+
+
 
 if __name__ == "__main__":
 

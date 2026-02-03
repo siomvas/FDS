@@ -32,32 +32,32 @@ parser.add_argument("--exp_name", type=str, default="test")
 if args.dataset == TINY_IMAGENET:
     criteria_choices = ["main_object", "size", "time", "color", "location"]
     # prompt: embedded as a criterion in all prompts
-    # examplar: in step 2a, num_class: embedded in step 2b & 3 for the num of class for clustering
+    # exemplar: in step 2a, num_class: embedded in step 2b & 3 for the num of class for clustering
     criteria_config = {
-        0: {"prompt": "Main Object", "examplar": "Tree", "num_classes": 7},
-        1: {"prompt": "Size and Scale of the main object", "examplar": "Large", "num_classes": 4},
-        2: {"prompt": "Time of day", "examplar": "Morning", "num_classes": 4},
-        3: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
-        4: {"prompt": "Location", "examplar": "Field", "num_classes": 5},
+        0: {"prompt": "Main Object", "exemplar": "Tree", "num_classes": 7},
+        1: {"prompt": "Size and Scale of the main object", "exemplar": "Large", "num_classes": 4},
+        2: {"prompt": "Time of day", "exemplar": "Morning", "num_classes": 4},
+        3: {"prompt": "Dominant Color", "exemplar": "Green", "num_classes": 7},
+        4: {"prompt": "Location", "exemplar": "Field", "num_classes": 5},
     }
 elif args.dataset == FOOD101:
     criteria_choices = ["main_object", "size", "color", "angle", "lighting"]
     criteria_config = {
-        0: {"prompt": "Main Dish", "examplar": "Pancake", "num_classes": 7},
-        1: {"prompt": "Size and Scale of the dish", "examplar": "Big", "num_classes": 8},
-        2: {"prompt": "Dominant color of the dish", "examplar": "Golden-brown", "num_classes": 8},
-        3: {"prompt": "Camera Angle", "examplar": "Overhead", "num_classes": 5},
-        4: {"prompt": "Lighting Intensity", "examplar": "Bright", "num_classes": 5},
+        0: {"prompt": "Main Dish", "exemplar": "Pancake", "num_classes": 7},
+        1: {"prompt": "Size and Scale of the dish", "exemplar": "Big", "num_classes": 8},
+        2: {"prompt": "Dominant color of the dish", "exemplar": "Golden-brown", "num_classes": 8},
+        3: {"prompt": "Camera Angle", "exemplar": "Overhead", "num_classes": 5},
+        4: {"prompt": "Lighting Intensity", "exemplar": "Bright", "num_classes": 5},
     }
 elif args.dataset == ADE20K:
     criteria_choices = ["main_object", "scene", "light", "color", "size", "camera"]
     criteria_config = {
-        0: {"prompt": "Main Object", "examplar": "Tree", "num_classes": 8},
-        1: {"prompt": "Location", "examplar": "Field", "num_classes": 4},
-        2: {"prompt": "Dominant Color", "examplar": "Green", "num_classes": 7},
-        3: {"prompt": "Lighting Intensity", "examplar": "Bright", "num_classes": 4}, #(x)
-        4: {"prompt": "Size of the main object", "examplar": "Large", "num_classes": 5}, #(x)
-        5: {"prompt": "Camera Perspective", "examplar": "Wide-shot", "num_classes": 5},
+        0: {"prompt": "Main Object", "exemplar": "Tree", "num_classes": 8},
+        1: {"prompt": "Location", "exemplar": "Field", "num_classes": 4},
+        2: {"prompt": "Dominant Color", "exemplar": "Green", "num_classes": 7},
+        3: {"prompt": "Lighting Intensity", "exemplar": "Bright", "num_classes": 4}, #(x)
+        4: {"prompt": "Size of the main object", "exemplar": "Large", "num_classes": 5}, #(x)
+        5: {"prompt": "Camera Perspective", "exemplar": "Wide-shot", "num_classes": 5},
     }
 elif args.dataset == PASCALVOC:
     # TODO: CHANGE THIS
@@ -122,16 +122,16 @@ criteria_index = criteria_choices.index(args.criteria)
 config = criteria_config.get(criteria_index, None)
 if config:
     args.prompt_label = config["prompt"]
-    args.examplar = config["examplar"]
+    args.exemplar = config["exemplar"]
     args.num_classes = config["num_classes"]
 else:
     args.prompt_label = None
-    args.examplar = None
+    args.exemplar = None
     args.num_classes = None
 
 print(f"Selected criteria: {args.criteria} (index {criteria_index})")
 print(f"Prompt label: {args.prompt_label}")
-print(f"Examplar: {args.examplar}")
+print(f"Exemplar: {args.exemplar}")
 print(f"Num class: {args.num_classes}")
 
 #--------------------------------------------------------------------------------------

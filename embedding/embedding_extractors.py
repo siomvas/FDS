@@ -504,7 +504,7 @@ class EmbeddingExtractor(ABC):
                 **cache_params
             )
             if cached_data is not None:
-                print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
+                # print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
                 return cached_data
             else:
                 print(f"  ✗ Cache MISS: {self.model_name} - Computing...")
@@ -637,7 +637,7 @@ class InceptionExtractor(EmbeddingExtractor):
                 **cache_params
             )
             if cached_data is not None:
-                print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
+                # print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
                 return cached_data
             else:
                 print(f"  ✗ Cache MISS, Received args {dataset_name}, {base_path}, {self.model_name}, use_cache={use_cache}, cache_params={cache_params} - Computing...")

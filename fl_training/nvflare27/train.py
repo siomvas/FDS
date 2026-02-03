@@ -1,45 +1,6 @@
-"""Client training script for NVFlare 2.7 federated learning.
-
-This script is the entry point for NVFlare ScriptExecutor during FL training.
-It parses command-line arguments, instantiates the appropriate task-specific learner
-(classification, segmentation, or detection), and executes FL training using the
-NVFlare Client API.
-
-Usage:
-    Called automatically by NVFlare ScriptExecutor with arguments from job config:
-
-    python train.py \\
-        --data_path outputs/splits.json \\
-        --model_name resnet18 \\
-        --task_type classification \\
-        --num_classes 200 \\
-        --lr 0.001 \\
-        --local_epochs 1 \\
-        --batch_size 32 \\
-        --amp_enabled \\
-        --grad_tracking \\
-        --seed 42
-
-Architecture:
-    - Task-agnostic entry point supporting all 3 task types
-    - Conditional learner instantiation based on task_type argument
-    - NVFlare Client API integration handled by learner.execute()
-    - HPC proxy configuration for pretrained model downloads
-    - Reproducible seeding for research experiments
-
-Dependencies:
-    - fl_training.nvflare27.learners.classification_learner
-    - fl_training.nvflare27.learners.segmentation_learner
-    - fl_training.nvflare27.learners.detection_learner
-    - nvflare.client (NVFlare Client API)
-"""
-
 import argparse
 import sys
 from pathlib import Path
-
-# Add parent directories to path for FDS imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from fl_training.nvflare27.learners.classification_learner import ClassificationLearner
 from fl_training.nvflare27.learners.segmentation_learner import SegmentationLearner
@@ -47,35 +8,9 @@ from fl_training.nvflare27.learners.detection_learner import DetectionLearner
 
 
 def parse_args():
-    """Parse command-line arguments from NVFlare ScriptExecutor.
-
-    Returns:
-        argparse.Namespace: Parsed arguments with all training configuration
-
-    Raises:
-        SystemExit: If required arguments missing or invalid values provided
-    """
     parser = argparse.ArgumentParser(
         description="FDS NVFlare 2.7 Client Training Script",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Classification training (Tiny ImageNet)
-  python train.py --data_path outputs/splits.json --model_name resnet18 \\
-      --task_type classification --num_classes 200 --lr 0.001 --local_epochs 1 \\
-      --batch_size 32 --amp_enabled --grad_tracking --seed 42
-
-  # Segmentation training (ADE20K)
-  python train.py --data_path outputs/splits.json --model_name deeplabv3_resnet50 \\
-      --task_type segmentation --num_classes 151 --lr 0.001 --local_epochs 1 \\
-      --batch_size 8 --amp_enabled --seed 42
-
-  # Detection training (COCO)
-  python train.py --data_path outputs/splits.json --model_name fasterrcnn_resnet50 \\
-      --task_type detection --num_classes 80 --lr 0.001 --local_epochs 1 \\
-      --batch_size 4 --seed 42
-        """
-    )
+        formatter_class=argparse.RawDescriptionHelpFormatter,)
 
     # Data and model configuration
     parser.add_argument(

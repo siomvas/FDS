@@ -17,7 +17,7 @@ from nvflare.app_common.app_constant import AppConstants
 
 # Existing FDS imports
 from fl_training.nvflare_refactor.common.aggregator_factory import get_aggregator
-from fl_training.nvflare_refactor.common.gradient_tracker import ServerGradientTracker
+from fl_mine.gradient_tracker import ServerGradientTracker
 
 logger = logging.getLogger(__name__)
 

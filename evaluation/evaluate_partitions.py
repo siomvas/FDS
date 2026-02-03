@@ -435,10 +435,21 @@ def evaluate_partition(
     force: bool
 ) -> Optional[EvaluationResult]:
     
-    output_path = get_output_path(partition_path, output_dir)
-    
+    # output_path = get_output_path(partition_path, output_dir)
+
+    # Embedding-based partitions have the embedding model in the parent directory name
+    # e.g., tiny_imagenet/mae-base/cls_mean_k4_mean_norm-true_dr-umap_hdbscan_euclidean_eom_valset-global_seed42.json
+    # and tiny_imagenet/dinov2-base/cls_mean_k4_mean_norm-true_dr-umap_hdbscan_euclidean_eom_valset-global_seed42.json
+    # should produce different output files (not overwrite each other) and not cause skipping
+
+    parent_dir = partition_path.parent.name
+    if parent_dir != "baselines":
+        output_path = output_dir / f"{parent_dir}_{partition_path.stem}_eval.json"
+    else:
+        output_path = output_dir / f"{partition_path.stem}_eval.json"
+
     if output_path.exists() and not force:
-        print(f"  Skipping {partition_path.name} (results exist)")
+        print(f"  Skipping {partition_path.name} (results exist at {output_path.name})")
         return None
     
     print(f"\n{'='*60}")

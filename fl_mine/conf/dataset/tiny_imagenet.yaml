@@ -1,0 +1,16 @@
+# @package _global_
+
+dataset:
+  name: "tiny_imagenet"
+  class_path: data_loading.data_modules.TinyImageNetDataModule
+  dataset_splits: "${oc.env:tiny_imagenet_chosen_split_path}"
+  
+  # Arguments passed to datamodule __init__
+  args:
+    root: "${oc.env:DATASETS_ROOT}/tiny_imagenet"
+    # other dataset specific settings?
+  
+training:
+  task_type: "classification"
+  num_classes: 200
+  loss: cross_entropy

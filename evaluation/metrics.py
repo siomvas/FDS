@@ -985,14 +985,50 @@ def knn_separability(dataset_list, k=5, return_all=False, **kwargs):
         labels.append(torch.full((t.size(0),), idx, device=device, dtype=torch.long))        
     X = torch.cat(all_features, dim=0)
     y = torch.cat(labels, dim=0)
-    dists = torch.cdist(X, X, p=2)
-    dists.fill_diagonal_(float('inf'))  # Exclude self in nearest neighbors
-    knn_indices = dists.topk(k, dim=1, largest=False).indices  # (N, k)
-    knn_labels = y[knn_indices]  # (N, k)
-    matches = (knn_labels == y.unsqueeze(1)).float()  # (N, k)
-    iso_scores = matches.mean(dim=1)  # (N,)
 
-    return iso_scores.cpu().tolist() if return_all else float(iso_scores.mean().item())
+    del features, labels, all_features
+    torch.cuda.empty_cache()
+    
+    try:
+        dists = torch.cdist(X, X, p=2)
+        dists.fill_diagonal_(float('inf'))  # Exclude self in nearest neighbors
+        knn_indices = dists.topk(k, dim=1, largest=False).indices  # (N, k)
+        knn_labels = y[knn_indices]  # (N, k)
+        matches = (knn_labels == y.unsqueeze(1)).float()  # (N, k)
+        iso_scores = matches.mean(dim=1)  # (N,)
+
+        return iso_scores.cpu().tolist() if return_all else float(iso_scores.mean().item())
+
+    except RuntimeError as e:
+        if 'out of memory' in str(e):
+            print("Warning: CUDA out of memory during k-NN computation. Falling back to batched implementation.")
+            torch.cuda.empty_cache()
+            
+            batch_size = 5000
+            N = X.shape[0]
+            all_scores = []
+            for i in range(0, N, batch_size):
+
+                X_batch = X[i : i + batch_size]
+                dists_batch = torch.cdist(X_batch, X, p=2)
+                # where global_col == i + local_row
+                global_indices = torch.arange(i, i + X_batch.shape[0], device=device).view(-1, 1)
+                dists_batch.scatter_(1, global_indices, float('inf'))
+                knn_indices = dists_batch.topk(k, dim=1, largest=False).indices
+                neighbor_labels = y[knn_indices]
+                query_labels = y[global_indices]
+                
+                matches = (neighbor_labels == query_labels).float()
+                batch_scores = matches.mean(dim=1)
+                all_scores.append(batch_scores)
+                del dists_batch, knn_indices, matches
+
+            final_scores = torch.cat(all_scores)
+
+            if return_all:
+                return final_scores.cpu().tolist()
+            else:
+                return float(final_scores.mean().item())
 
 
 def centroid_distance(dataset_list, return_all=False, **kwargs):
@@ -1148,24 +1184,62 @@ def MMD_rbf_kernel(
         denominator = sq_dists.median() if sq_dists.numel() > 0 else torch.tensor(1.0, device=device)
 
         del combined, sq_dists
+        torch.cuda.empty_cache()
     
     else:
         denominator = torch.tensor(2 * sigma**2, device=device)
 
-    def _rbf_kernel_sum(A, B, exclude_diag):
+    def _rbf_kernel_sum(A, B, exclude_diag) -> float:
         sq_dists = torch.cdist(A, B, p=2.0).pow(2)
         K = torch.exp(-sq_dists / denominator)
         
         if exclude_diag:
             K.fill_diagonal_(0.0)
-        return K.sum()
-    
-    sum_XY = _rbf_kernel_sum(X, Y, exclude_diag=False)
-    sum_XX = _rbf_kernel_sum(X, X, exclude_diag=True)
-    sum_YY = _rbf_kernel_sum(Y, Y, exclude_diag=True)
+        return K.sum().item()
+
+    # batched computation of sums for GPUs with less memory
+    def _batched_rbf_kernel_sum(A, B, exclude_diag, batch_size=5000) -> float:
+            total_sum = 0.0
+            n_A = A.shape[0]
+            n_B = B.shape[0]
+            
+            for i in range(0, n_A, batch_size):
+                end_i = min(i + batch_size, n_A)
+                A_chunk = A[i:end_i]
+                for j in range(0, n_B, batch_size):
+                    end_j = min(j + batch_size, n_B)
+                    B_chunk = B[j:end_j]
+
+                    dists_blk = torch.cdist(A_chunk, B_chunk, p=2.0).pow(2)
+                    K_blk = torch.exp(-dists_blk / denominator)
+
+                    if exclude_diag:
+                        # Generate global indices for the current block
+                        rows = torch.arange(i, end_i, device=device).view(-1, 1)
+                        cols = torch.arange(j, end_j, device=device).view(1, -1)
+                        mask = (rows == cols)
+                        K_blk.masked_fill_(mask, 0.0)
+                    
+                    total_sum += K_blk.sum().item()
+                    
+            return total_sum
+
+    # If OOM occurs, try batched computation
+    try:
+        sum_XY = _rbf_kernel_sum(X, Y, exclude_diag=False)
+        sum_XX = _rbf_kernel_sum(X, X, exclude_diag=True)
+        sum_YY = _rbf_kernel_sum(Y, Y, exclude_diag=True)
+    except RuntimeError as e:
+        if 'out of memory' in str(e):
+            torch.cuda.empty_cache()
+            sum_XY = _batched_rbf_kernel_sum(X, Y, exclude_diag=False)
+            sum_XX = _batched_rbf_kernel_sum(X, X, exclude_diag=True)
+            sum_YY = _batched_rbf_kernel_sum(Y, Y, exclude_diag=True)
+        else:
+            raise e
 
     mmd_squared = (sum_XX / (m * (m - 1))) + \
                   (sum_YY / (n * (n - 1))) - \
                   (2 * sum_XY / (m * n))
 
-    return max(0.0, mmd_squared.item())  # ensure non-negative
+    return max(0.0, mmd_squared)
