@@ -3,7 +3,7 @@
 TINY_IMAGENET = "tiny_imagenet"
 FOOD101 = "food101"
 ADE20K = "ade20k"
-PASCALVOC = "pascalvoc"
+PASCALVOC = "PascalVOC"
 
 # model
 INTERNVL3_38B = "internVl3-38B"

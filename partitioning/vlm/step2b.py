@@ -1,12 +1,13 @@
 import torch
 import os
 import json
-from utils import util_loader
 from typing import List
 import logging
 import sys, os
-from utils.argument import args
-from utils import helper
+import logging
+from partitioning.vlm.utils import util_loader
+from partitioning.vlm.utils import helper
+from partitioning.vlm.utils.argument import args
 import string
 
 # ----- Configure logging -----------------

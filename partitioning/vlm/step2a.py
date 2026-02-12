@@ -1,9 +1,9 @@
 import torch, gc
 from typing import List
 import logging
-from utils.argument import args
-from utils import util_loader
-from utils import helper
+from partitioning.vlm.utils import util_loader
+from partitioning.vlm.utils import helper
+from partitioning.vlm.utils.argument import args
 
 # ----- Configure logging -----------------
 logging.basicConfig(level=logging.INFO)

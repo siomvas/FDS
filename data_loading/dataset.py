@@ -402,7 +402,7 @@ def _load_pascal_voc(self):
 
     for img_name in img_names:
         img_path = images_dir / f"{img_name}.jpg"
-        mask_path = labels_dir / f"{img_name}.png"
+        mask_path = labels_dir / f"{img_name}.txt"
         if img_path.exists() and mask_path.exists():
             self.data.append(str(img_path))
             self.labels.append(str(mask_path))

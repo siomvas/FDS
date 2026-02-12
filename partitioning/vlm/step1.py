@@ -376,7 +376,7 @@ def main(model, tokenizer, data: BaseDataset,
     # Prepare questions
     print("Preparing batch question.... ")
     print(f"Question: {question}")
-    prepared_data = prepare_batch_questions(data, question, max_samples, 16341)
+    prepared_data = prepare_batch_questions(data, question, max_samples, 0)
 
     jsonl_path = os.path.expanduser(args.step1_result_path)
     with open(jsonl_path, 'w', encoding='utf-8') as f:
