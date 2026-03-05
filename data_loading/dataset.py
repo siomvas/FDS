@@ -2,8 +2,8 @@ import os
 import json
 from torch.utils.data import Dataset
 import torch
-from typing import Callable, List, Tuple, Dict, Any
-from torch.utils.data import Dataset
+from numbers import Integral
+from typing import Callable, List, Tuple, Dict, Any, Optional
 from pathlib import Path
 from PIL import Image, UnidentifiedImageError
 
@@ -80,7 +80,25 @@ class ClassificationDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         image = Image.open(sample["image"]).convert("RGB")
-        label = self.label_map[sample["label"]] if self.label_map else sample["label"]
+        raw_label = sample["label"]
+
+        if self.label_map:
+            label_key = raw_label if raw_label in self.label_map else str(raw_label)
+            if label_key not in self.label_map:
+                raise KeyError(f"Label '{raw_label}' missing from label_map.")
+            label = self.label_map[label_key]
+        else:
+            if isinstance(raw_label, bool):
+                raise ValueError("Boolean labels are not supported for classification.")
+            if isinstance(raw_label, Integral):
+                label = int(raw_label)
+            elif isinstance(raw_label, str) and raw_label.lstrip("-").isdigit():
+                label = int(raw_label)
+            else:
+                raise ValueError(
+                    "Non-numeric labels require a label_map. "
+                    f"Got label '{raw_label}' of type {type(raw_label).__name__}."
+                )
 
         if self.transform:
             image = self.transform(image)
@@ -135,6 +153,225 @@ class SegmentationDataset(Dataset):
             mask = self.mask_transform(mask)
 
         return image, mask
+
+
+class DetectionDataset(Dataset):
+    """Object detection dataset for image-annotation pairs.
+
+    The dataset supports two sample formats:
+    1. File-based annotations, where a sample contains annotation path keys
+       such as ``label`` or ``annotation_path``.
+    2. Inline annotations, where a sample already contains ``boxes`` and ``labels``.
+
+    File-based annotations are expected as whitespace-separated text rows with
+    at least 5 values per row. Supported coordinate formats:
+    - ``class xc yc w h`` normalized to [0, 1] (YOLO-style)
+    - ``class x1 y1 x2 y2`` absolute pixel coordinates
+    - ``class x y w h`` absolute pixel coordinates
+    """
+
+    _annotation_keys = (
+        "annotation",
+        "annotation_path",
+        "label_path",
+        "bbox_path",
+        "target_path",
+        "label",
+    )
+    _pascal_voc_label_to_id = {
+        "aeroplane": 0,
+        "bicycle": 1,
+        "bird": 2,
+        "boat": 3,
+        "bottle": 4,
+        "bus": 5,
+        "car": 6,
+        "cat": 7,
+        "chair": 8,
+        "cow": 9,
+        "diningtable": 10,
+        "dog": 11,
+        "horse": 12,
+        "motorbike": 13,
+        "person": 14,
+        "pottedplant": 15,
+        "sheep": 16,
+        "sofa": 17,
+        "train": 18,
+        "tvmonitor": 19,
+    }
+
+    def __init__(
+        self,
+        split_data: List[Dict[str, Any]],
+        transform=None,
+        label_offset: int = 1,
+        box_format: str = "auto",
+    ):
+        self.samples = split_data
+        self.transform = transform
+        self.label_offset = int(label_offset)
+        self.box_format = str(box_format).lower()
+
+    def __len__(self):
+        return len(self.samples)
+
+    @staticmethod
+    def _empty_target_tensors() -> Tuple[torch.Tensor, torch.Tensor]:
+        return (
+            torch.zeros((0, 4), dtype=torch.float32),
+            torch.zeros((0,), dtype=torch.int64),
+        )
+
+    def _parse_box(
+        self,
+        values: List[float],
+        image_width: int,
+        image_height: int,
+    ) -> Optional[List[float]]:
+        fmt = self.box_format
+        if fmt == "auto":
+            if all(0.0 <= value <= 1.0 for value in values):
+                fmt = "yolo_xywh_norm"
+            elif values[2] > values[0] and values[3] > values[1]:
+                fmt = "xyxy_abs"
+            else:
+                fmt = "xywh_abs"
+
+        if fmt == "yolo_xywh_norm":
+            xc, yc, w, h = values
+            x1 = (xc - (w / 2.0)) * image_width
+            y1 = (yc - (h / 2.0)) * image_height
+            x2 = (xc + (w / 2.0)) * image_width
+            y2 = (yc + (h / 2.0)) * image_height
+        elif fmt == "xyxy_abs":
+            x1, y1, x2, y2 = values
+        elif fmt == "xywh_abs":
+            x, y, w, h = values
+            x1, y1 = x, y
+            x2, y2 = x + w, y + h
+        else:
+            raise ValueError(f"Unsupported detection box format: {self.box_format}")
+
+        x1 = min(max(float(x1), 0.0), float(image_width))
+        y1 = min(max(float(y1), 0.0), float(image_height))
+        x2 = min(max(float(x2), 0.0), float(image_width))
+        y2 = min(max(float(y2), 0.0), float(image_height))
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return [x1, y1, x2, y2]
+
+    def _resolve_annotation_path(self, sample: Dict[str, Any], image_path: Path) -> Path:
+        for key in self._annotation_keys:
+            raw_path = sample.get(key)
+            if isinstance(raw_path, str) and raw_path.strip():
+                ann_path = Path(raw_path)
+                if not ann_path.is_absolute():
+                    ann_path = (image_path.parent / ann_path).resolve()
+                return ann_path
+
+        raise KeyError(
+            "Detection sample missing annotation path. Expected one of: "
+            f"{self._annotation_keys}."
+        )
+
+    def _parse_annotation_file(
+        self,
+        annotation_path: Path,
+        image_width: int,
+        image_height: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not annotation_path.exists():
+            raise FileNotFoundError(f"Detection annotation file not found: {annotation_path}")
+
+        boxes: List[List[float]] = []
+        labels: List[int] = []
+
+        with open(annotation_path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+
+                tokens = stripped.split()
+                if len(tokens) < 5:
+                    continue
+
+                try:
+                    coords = [float(value) for value in tokens[1:5]]
+                except ValueError:
+                    continue
+
+                class_token = tokens[0].strip().lower()
+                try:
+                    class_id = int(float(class_token))
+                except ValueError:
+                    if class_token not in self._pascal_voc_label_to_id:
+                        continue
+                    class_id = self._pascal_voc_label_to_id[class_token]
+                class_id += self.label_offset
+
+                box = self._parse_box(coords, image_width=image_width, image_height=image_height)
+                if box is None:
+                    continue
+
+                boxes.append(box)
+                labels.append(class_id)
+
+        if not boxes:
+            return self._empty_target_tensors()
+
+        return (
+            torch.tensor(boxes, dtype=torch.float32),
+            torch.tensor(labels, dtype=torch.int64),
+        )
+
+    def _parse_inline_annotations(self, sample: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor]:
+        boxes = sample.get("boxes")
+        labels = sample.get("labels")
+
+        if boxes is None or labels is None:
+            return self._empty_target_tensors()
+
+        boxes_tensor = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4)
+        labels_tensor = torch.as_tensor(labels, dtype=torch.int64).reshape(-1)
+        if self.label_offset != 0 and labels_tensor.numel() > 0:
+            labels_tensor = labels_tensor + self.label_offset
+        return boxes_tensor, labels_tensor
+
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        image_path = Path(sample["image"])
+        image = Image.open(image_path).convert("RGB")
+        image_width, image_height = image.size
+
+        if "boxes" in sample and "labels" in sample:
+            boxes, labels = self._parse_inline_annotations(sample)
+        else:
+            annotation_path = self._resolve_annotation_path(sample, image_path=image_path)
+            boxes, labels = self._parse_annotation_file(
+                annotation_path=annotation_path,
+                image_width=image_width,
+                image_height=image_height,
+            )
+
+        area = torch.zeros((boxes.shape[0],), dtype=torch.float32)
+        if boxes.numel() > 0:
+            area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+
+        target = {
+            "boxes": boxes,
+            "labels": labels,
+            "image_id": torch.tensor([idx], dtype=torch.int64),
+            "iscrowd": torch.zeros((labels.shape[0],), dtype=torch.int64),
+            "area": area,
+        }
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, target
 
 
 class BaseDataset(Dataset):

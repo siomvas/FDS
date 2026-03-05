@@ -7,7 +7,7 @@ apply transforms, and create dataloaders for FL training.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import json
 import pickle
 
@@ -18,6 +18,7 @@ import torchvision.transforms as T
 from data_loading.dataset import (
     ClassificationDataset,
     SegmentationDataset,
+    DetectionDataset,
 )
 
 
@@ -81,6 +82,39 @@ class BaseDataModule(ABC):
         else:
             raise ValueError(f"Unsupported split file format: {split_path.suffix}")
 
+    @staticmethod
+    def _is_int_like(value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        if isinstance(value, str):
+            return value.lstrip("-").isdigit()
+        return False
+
+    def _resolve_label_map(self, splits: Dict) -> Optional[Dict[str, int]]:
+        """Build a deterministic global label map when labels are non-numeric."""
+        if self.label_map is not None:
+            return self.label_map
+
+        labels: List[Any] = []
+        for client_split in splits.get("clients", {}).values():
+            for key in ("train", "val"):
+                for sample in client_split.get(key, []):
+                    labels.append(sample.get("label"))
+        for sample in splits.get("global_val") or []:
+            labels.append(sample.get("label"))
+
+        labels = [label for label in labels if label is not None]
+        if not labels:
+            return None
+
+        unique_labels = sorted(set(labels), key=lambda x: str(x))
+        if all(self._is_int_like(label) for label in unique_labels):
+            return None
+
+        return {str(label): idx for idx, label in enumerate(unique_labels)}
+
     def get_client_data(self, splits: Dict) -> Tuple[List[Dict], List[Dict]]:
         """
         Extract train and validation data for the specified client or central mode.
@@ -142,6 +176,10 @@ class BaseDataModule(ABC):
         """Load data and create datasets."""
         pass
 
+    def get_collate_fn(self):
+        """Optional dataloader collate function override."""
+        return None
+
     @property
     def train_dataloader(self) -> DataLoader:
         """Get training dataloader."""
@@ -156,6 +194,7 @@ class BaseDataModule(ABC):
                 num_workers=self.num_workers,
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=self.num_workers > 0,
+                collate_fn=self.get_collate_fn(),
             )
 
         return self._train_dataloader
@@ -174,6 +213,7 @@ class BaseDataModule(ABC):
                 num_workers=self.num_workers,
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=self.num_workers > 0,
+                collate_fn=self.get_collate_fn(),
             )
 
         return self._val_dataloader
@@ -223,6 +263,7 @@ class TinyImageNetDataModule(BaseDataModule):
     def setup(self):
         """Load data and create datasets."""
         splits = self.load_splits()
+        self.label_map = self._resolve_label_map(splits)
         train_data, val_data = self.get_client_data(splits)
         train_transform = self.get_train_transform()
         val_transform = self.get_val_transform()
@@ -281,6 +322,7 @@ class Food101DataModule(BaseDataModule):
         """Load data and create datasets."""
 
         splits = self.load_splits()
+        self.label_map = self._resolve_label_map(splits)
         train_data, val_data = self.get_client_data(splits)
         train_transform = self.get_train_transform()
         val_transform = self.get_val_transform()
@@ -332,8 +374,9 @@ class ADE20KDataModule(BaseDataModule):
 
     def get_train_transform(self) -> T.Compose:
         """Training transforms for images."""
+        image_size = int(self.image_size) if self.image_size is not None else 512
         return T.Compose([
-            T.Resize((self.image_size, self.image_size)),
+            T.Resize((image_size, image_size)),
             T.RandomHorizontalFlip(),
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
             T.ToTensor(),
@@ -345,8 +388,9 @@ class ADE20KDataModule(BaseDataModule):
 
     def get_val_transform(self) -> T.Compose:
         """Validation transforms for images."""
+        image_size = int(self.image_size) if self.image_size is not None else 512
         return T.Compose([
-            T.Resize((self.image_size, self.image_size)),
+            T.Resize((image_size, image_size)),
             T.ToTensor(),
             T.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -356,10 +400,64 @@ class ADE20KDataModule(BaseDataModule):
 
     def get_mask_transform(self) -> T.Compose:
         """Transforms for segmentation masks (no normalization)."""
+        image_size = int(self.image_size) if self.image_size is not None else 512
         return T.Compose([
-            T.Resize((self.image_size, self.image_size), interpolation=T.InterpolationMode.NEAREST),
-            T.ToTensor(),
+            T.Resize((image_size, image_size), interpolation=T.InterpolationMode.NEAREST),
+            # Keep discrete class ids (0-255) without scaling to [0, 1].
+            T.PILToTensor(),
         ])
+
+
+class PascalVOCDataModule(BaseDataModule):
+    """Data module for Pascal VOC object detection."""
+
+    def __init__(
+        self,
+        *args,
+        detection_label_offset: int = 1,
+        detection_box_format: str = "auto",
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.detection_label_offset = int(detection_label_offset)
+        self.detection_box_format = str(detection_box_format).lower()
+
+    def setup(self):
+        splits = self.load_splits()
+        train_data, val_data = self.get_client_data(splits)
+        train_transform = self.get_train_transform()
+        val_transform = self.get_val_transform()
+
+        self.train_dataset = DetectionDataset(
+            split_data=train_data,
+            transform=train_transform,
+            label_offset=self.detection_label_offset,
+            box_format=self.detection_box_format,
+        )
+
+        if val_data:
+            self.val_dataset = DetectionDataset(
+                split_data=val_data,
+                transform=val_transform,
+                label_offset=self.detection_label_offset,
+                box_format=self.detection_box_format,
+            )
+
+    def get_train_transform(self) -> T.Compose:
+        # Keep tensor conversion only. Torchvision detection backends handle
+        # normalization and multi-scale image sizes internally.
+        return T.Compose([T.ToTensor()])
+
+    def get_val_transform(self) -> T.Compose:
+        return T.Compose([T.ToTensor()])
+
+    @staticmethod
+    def _detection_collate_fn(batch):
+        images, targets = zip(*batch)
+        return list(images), list(targets)
+
+    def get_collate_fn(self):
+        return self._detection_collate_fn
 
 
 # ============================================================================
@@ -384,7 +482,7 @@ def get_datamodule(
     Factory function to create data modules by dataset name.
 
     Args:
-        dataset_name: Name of dataset ("tiny_imagenet", "food101", "ade20k")
+        dataset_name: Name of dataset ("tiny_imagenet", "food101", "ade20k", "pascal_voc")
         data_dir: Root data directory
         split_file: Path to split JSON/PKL file
         client_idx: Client index for federated mode
@@ -412,6 +510,8 @@ def get_datamodule(
         "tiny_imagenet": TinyImageNetDataModule,
         "food101": Food101DataModule,
         "ade20k": ADE20KDataModule,
+        "pascal_voc": PascalVOCDataModule,
+        "pascalvoc": PascalVOCDataModule,
     }
 
     if dataset_name.lower() not in datamodules:

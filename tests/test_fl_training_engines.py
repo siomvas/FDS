@@ -1,0 +1,133 @@
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
+from fl_training.engines.segmentation import SegmentationEngine
+from fl_training.engines.detection import DetectionEngine
+from fl_training.models.factory import create_model
+
+
+class _DictSegModel(nn.Module):
+    """Torchvision-style segmentation output: {'out': logits}."""
+
+    def __init__(self, num_classes: int):
+        super().__init__()
+        self.head = nn.Conv2d(3, num_classes, kernel_size=1)
+
+    def forward(self, x):
+        return {"out": self.head(x)}
+
+
+class _DummyDetectionModel(nn.Module):
+    """Lightweight detection model compatible with torchvision-style calls."""
+
+    def __init__(self):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, images, targets=None):
+        if isinstance(images, list):
+            if targets is not None:
+                loss = torch.stack([img.float().mean() for img in images]).abs().mean()
+                return {"loss_total": (self.scale * 0.0) + loss}
+            return [
+                {
+                    "boxes": torch.tensor([[0.0, 0.0, 1.0, 1.0]], device=images[0].device),
+                    "scores": torch.tensor([0.95], device=images[0].device),
+                }
+                for _ in images
+            ]
+        raise TypeError("Unexpected input format")
+
+
+def test_segmentation_engine_supports_dict_outputs():
+    cfg = {
+        "training": {
+            "steps_or_epochs": "steps",
+            "num_classes": 3,
+            "ignore_index": 255,
+            "loss": "cross_entropy",
+            "optim_resume": "resume",
+            "amp_enabled": False,
+            "grad_clipping_type": "none",
+            "grad_clipping_value": 0.0,
+            "local_steps": 2,
+            "lr": 1e-3,
+            "scheduler": "none",
+        },
+        "optimizer": {"class_name": "Adam", "args": {}},
+        "fed": {"rounds": 1},
+    }
+
+    engine = SegmentationEngine(_DictSegModel(num_classes=3), cfg, torch.device("cpu"))
+    loader = DataLoader(
+        TensorDataset(torch.randn(4, 3, 16, 16), torch.randint(0, 3, (4, 16, 16))),
+        batch_size=2,
+    )
+
+    train_metrics = engine.train_one_round(loader)
+    val_metrics = engine.evaluate(loader)
+
+    assert train_metrics["num_steps_current_round"] == 2.0
+    assert "train_loss" in train_metrics
+    assert "val_loss" in val_metrics
+
+
+def test_detection_engine_smoke():
+    cfg = {
+        "training": {
+            "steps_or_epochs": "steps",
+            "optim_resume": "resume",
+            "amp_enabled": False,
+            "grad_clipping_type": "none",
+            "grad_clipping_value": 0.0,
+            "local_steps": 2,
+            "lr": 1e-3,
+            "scheduler": "none",
+            "detection_score_threshold": 0.5,
+        },
+        "optimizer": {"class_name": "Adam", "args": {}},
+        "fed": {"rounds": 1},
+    }
+
+    engine = DetectionEngine(_DummyDetectionModel(), cfg, torch.device("cpu"))
+    base_loader = DataLoader(
+        TensorDataset(
+            torch.randn(4, 3, 16, 16),
+            torch.tensor([[[0.0, 0.0, 1.0, 1.0]]] * 4, dtype=torch.float32),
+            torch.tensor([[1]] * 4, dtype=torch.int64),
+        ),
+        batch_size=2,
+    )
+
+    class WrappedLoader:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def __len__(self):
+            return len(self.wrapped)
+
+        def __iter__(self):
+            for images, boxes, labels in self.wrapped:
+                yield images, {"boxes": boxes, "labels": labels}
+
+    loader = WrappedLoader(base_loader)
+    train_metrics = engine.train_one_round(loader)
+    val_metrics = engine.evaluate(loader)
+
+    assert train_metrics["num_steps_current_round"] == 2.0
+    assert "train_loss" in train_metrics
+    assert "avg_detections" in val_metrics
+
+
+def test_model_factory_torchvision_path():
+    model = create_model(
+        model_cfg={
+            "name": "resnet18",
+            "provider": "torchvision",
+            "args": {"weights": None},
+        },
+        task_type="classification",
+        num_classes=5,
+    )
+    assert isinstance(model, nn.Module)
