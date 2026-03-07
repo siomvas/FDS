@@ -1,29 +1,66 @@
-## VLM pipeline
+## VLM-Based Partitioning
 
-### Run scripts:
-4 scripts for each step: `step1.py`, `step2a.py`, `step2b.py`, `step3.py`. To run full pipeline, use: `full_pipeline.py`
+Located in `partitioning/vlm/`. Uses a multi-step LLM + VLM pipeline to annotate images by a chosen visual criterion (e.g. main object, color, location), then groups images into client partitions based on those annotations.
 
-To run script:
+*Pipeline based on [ICTC](https://github.com/sehyunkwon/ICTC) by Kwon et al.*
 
-`python <script>.py --dataset <data> --criteria <criterion> --exp_name <name_of_experiment> --llama_ver <llama_model> --vlm_model <vlm_model>`
+### Pipeline steps
 
-Default params if not specified:
-* dataset: Tiny ImageNet
-* criteria: Main Object
-* exp_name: test
-* llama_ver: LLaMA 3.3 70B
-* vlm_model: Qwen3-30B
+| Script | Description |
+|--------|-------------|
+| `step1.py` | VLM annotates each image with a raw description for the chosen criterion |
+| `step2a.py` | LLM proposes a set of category labels from the annotations |
+| `step2b.py` | LLM assigns each image to one of the proposed categories |
+| `step3.py` | Groups images by category to form client partitions |
+| `full_pipeline.py` | Runs all steps end-to-end |
 
-### Output: 
-`data/<dataset_name>/<output_criteria_name_of_experiment>`
+### Usage
 
-Example: data/tiny_imagenet/output_main_object_test
+```bash
+python partitioning/vlm/full_pipeline.py \
+  --dataset <dataset> \
+  --criteria <criterion> \
+  --exp_name <name> \
+  --llama_ver <llm_model> \
+  --vlm_model <vlm_model>
+```
 
-### Prompt:
-Prompts for each dataset are set up in .txt files. They are located in: `data/<dataset_name>`. 
+### Arguments
 
-Each step’s prompt is dynamically customized based on the selected criterion. The script automatically embeds the corresponding values from `criteria_config` defined in `utils/argument.py` to make sure that each step uses the appropriate wording for the chosen criterion. 
+| Argument | Default | Choices |
+|----------|---------|---------|
+| `--dataset` | `tiny_imagenet` | `tiny_imagenet`, `food101`, `ade20k`, `pascalvoc` |
+| `--criteria` | `main_object` | see table below |
+| `--exp_name` | `test` | any string |
+| `--llama_ver` | `LLaMA 3.3 70B` | `LLaMA 3.3 70B`, `LLaMA 3.1 8B Instruct` |
+| `--vlm_model` | `Qwen3-30B` | `Qwen3-8B`, `Qwen3-30B`, `InternVL3-8B`, `InternVL3-38B`, `MiniCPM-2.6` |
 
-### Set up: 
-* Model and dataset: In `utils/utils_loader.py`. Edit to user's custom path for VLM/LLM and dataset when run.
-* Arguments settings: In `utils/argument.py`. 
+### Criteria per dataset
+
+| Dataset | Available criteria |
+|---------|-------------------|
+| Tiny ImageNet | `main_object`, `size`, `time`, `color`, `location` |
+| Food-101 | `main_object`, `size`, `color`, `angle`, `lighting` |
+| ADE20K | `main_object`, `scene`, `color`, `light`, `size`, `camera` |
+| PascalVOC | `main_object`, `location`, `color`, `light`, `size`, `camera` |
+
+### Output
+
+Results are saved to:
+```
+partitioning/vlm/data/<dataset>/output_<criteria>_<exp_name>/
+```
+
+Each step writes its own output file (`step1_result.jsonl`, `step2a_result.jsonl`, etc.).
+
+### Setup
+
+Before running, edit the following files to set your local paths:
+
+- **`partitioning/vlm/utils/util_loader.py`** — paths to VLM/LLM model weights and dataset root
+- **`partitioning/vlm/utils/argument.py`** — `args.home_path` (line 91) — set to your local repo path
+
+Prompts for each dataset and step are `.txt` files located at:
+```
+partitioning/vlm/data/<dataset>/step{1,2a,2b,3}_prompt.txt
+```
