@@ -74,7 +74,7 @@ IID splitting with global validation:
     ...     seed=42
     ... )
     >>> splits = splitter.get_client_splits()
-    >>> print(f"Client 0 has {len(splits['clients']['client_0']['train'])} samples")
+    >>> f"Client 0 has {len(splits['clients']['client_0']['train'])} samples"
 
 Non-IID splitting with Dirichlet:
 
@@ -90,7 +90,7 @@ Non-IID splitting with Dirichlet:
     ... )
     >>> splits = splitter.get_client_splits()
     >>> summary = splitter.get_split_summary()
-    >>> print(summary)
+    >>> summary
 
 Semantic clustering-based splitting:
 

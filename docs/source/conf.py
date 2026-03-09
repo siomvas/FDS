@@ -3,54 +3,6 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-import os
-import sys
-
-# Add parent directory to path
-sys.path.insert(0, os.path.abspath('../..'))
-
-# Mock imports BEFORE importing modules (for autosummary)
-from unittest.mock import MagicMock
-
-class Mock(MagicMock):
-    @classmethod
-    def __getattr__(cls, name):
-        return MagicMock()
-
-MOCK_MODULES = [
-    'matplotlib',
-    'matplotlib.pyplot',
-    'scipy',
-    'scipy.stats',
-    'scipy.spatial',
-    'scipy.spatial.distance',
-    'scipy.linalg',
-    'torch',
-    'torch.nn',
-    'torch.nn.functional',
-    'torch.utils',
-    'torch.utils.data',
-    'torchvision',
-    'torchvision.transforms',
-    'torchvision.models',
-    'PIL',
-    'PIL.Image',
-    'numpy',
-    'alibi_detect',
-    'hdbscan',
-    'sklearn',
-    'sklearn.decomposition',
-    'sklearn.cluster',
-    'sklearn.random_projection',
-    'transformers',
-    'timm',
-    'open_clip',
-    'kymatio',
-    'kymatio.numpy',
-]
-
-sys.modules.update((mod_name, Mock()) for mod_name in MOCK_MODULES)
-
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
@@ -67,18 +19,12 @@ extensions = [
     'sphinx.ext.autosummary',    # Summary tables
     'sphinx.ext.napoleon',       # Google/NumPy docstrings
     'sphinx.ext.viewcode',       # Source code links
-    'sphinx.ext.intersphinx',    # Link to other docs
 ]
 
-# Optional: Add sphinx_autodoc_typehints if available
-try:
-    import sphinx_autodoc_typehints
-    extensions.append('sphinx_autodoc_typehints')
-except ImportError:
-    pass  # Type hints will be shown from docstrings instead
-
 templates_path = ['_templates']
-exclude_patterns = []
+exclude_patterns = [
+    'api/generated/embedding*.rst',
+]
 
 # Napoleon settings for Google-style docstrings
 napoleon_google_docstring = True
@@ -96,7 +42,8 @@ napoleon_type_aliases = None
 napoleon_attr_annotations = True
 
 # Autosummary settings
-autosummary_generate = False  # Disable auto-generation to avoid import issues
+autosummary_generate = True
+autosummary_generate_overwrite = True
 autodoc_default_options = {
     'members': True,
     'member-order': 'bysource',
@@ -106,30 +53,19 @@ autodoc_default_options = {
 }
 
 # Suppress warnings for missing references
-suppress_warnings = ['ref.any', 'ref.python']
+suppress_warnings = ['ref.any', 'ref.python', 'autosummary.import_cycle']
 
 # Mock imports for packages that may not be installed
 autodoc_mock_imports = [
-    'matplotlib',
-    'scipy',
-    'torch',
-    'torchvision',
-    'PIL',
-    'numpy',
+    'datasets',
     'alibi_detect',
-    'hdbscan',
-    'sklearn',
-    'transformers',
-    'timm',
     'open_clip',
+    'matplotlib',
+    'matplotlib.cm',
+    'matplotlib.patches',
+    'kymatio',
+    'kymatio.numpy',
 ]
-
-# Intersphinx configuration
-intersphinx_mapping = {
-    'python': ('https://docs.python.org/3', None),
-    'numpy': ('https://numpy.org/doc/stable/', None),
-    'torch': ('https://pytorch.org/docs/stable/', None),
-}
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output

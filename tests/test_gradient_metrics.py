@@ -8,6 +8,7 @@ dynamic heterogeneity during federated learning training.
 import pytest
 import torch
 import numpy as np
+import logging
 from evaluation.gradient_metrics import (
     GradientDiversityMetric,
     compute_gradient_diversity,
@@ -17,6 +18,8 @@ from evaluation.gradient_metrics import (
     compute_pairwise_cosine_similarity,
     compute_pairwise_l2_distance,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -40,9 +43,9 @@ def simple_gradients():
 
 def test_basic_functionality():
     """Test that all metrics can be computed without errors."""
-    print("=" * 70)
-    print("TEST 1: Basic Functionality")
-    print("=" * 70)
+    logger.info("%s", "=" * 70)
+    logger.info("TEST 1: Basic Functionality")
+    logger.info("%s", "=" * 70)
 
     # Create synthetic gradients
     gradients = create_synthetic_gradients(n_clients=5, n_params=100, heterogeneity="moderate")
@@ -51,26 +54,26 @@ def test_basic_functionality():
     for metric_type in ["cosine", "variance", "conflict", "l2", "spectral"]:
         metric = GradientDiversityMetric(metric_type=metric_type)
         diversity = metric.compute(gradients)
-        print(f"{metric_type:12s}: {diversity:.4f}")
+        logger.info("%s: %.4f", metric_type, diversity)
 
-    print("\n✓ All metrics computed successfully\n")
+    logger.info("All metrics computed successfully")
 
 
 def test_heterogeneity_levels():
     """Test that metrics increase with heterogeneity."""
-    print("=" * 70)
-    print("TEST 2: Heterogeneity Sensitivity")
-    print("=" * 70)
+    logger.info("%s", "=" * 70)
+    logger.info("TEST 2: Heterogeneity Sensitivity")
+    logger.info("%s", "=" * 70)
 
     for heterogeneity in ["low", "moderate", "high"]:
-        print(f"\n{heterogeneity.upper()} Heterogeneity:")
+        logger.info("%s heterogeneity", heterogeneity.upper())
         gradients = create_synthetic_gradients(n_clients=5, n_params=100, heterogeneity=heterogeneity)
 
         # Compute cosine diversity
         metric = GradientDiversityMetric(metric_type="variance", normalization="none")
         diversity = metric.compute(gradients)
 
-        print(f"  Cosine diversity: {diversity:.4f}")
+        logger.info("Cosine diversity: %.4f", diversity)
 
         # Check expected ordering
         if heterogeneity == "low":
@@ -78,7 +81,7 @@ def test_heterogeneity_levels():
         elif heterogeneity == "high":
             assert diversity > 5, f"Expected high diversity, got {diversity}"
 
-    print("\n✓ Metrics correctly capture heterogeneity levels\n")
+    logger.info("Metrics correctly capture heterogeneity levels")
 
 
 def test_normalization_strategies():

@@ -1,8 +1,6 @@
 import logging
-from typing import Any, Dict
 import torch.nn as nn
 from transformers import (
-    AutoConfig,
     AutoModelForImageClassification,
     AutoModelForObjectDetection,
     AutoModelForSemanticSegmentation
@@ -10,6 +8,8 @@ from transformers import (
 from utils.proxy_config import hpc_proxy
 
 log = logging.getLogger(__name__)
+
+HF_MODEL_LOAD_ERRORS = (OSError, RuntimeError, ValueError, TypeError)
 
 def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Module:
     """
@@ -49,6 +49,13 @@ def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Mo
             else:
                 raise ValueError(f"Task {task_type} not supported by HF Adapter")
 
-        except OSError as e:
-            log.error(f"Could not load model '{name}' from Hugging Face Hub. Check spelling or internet connection.")
-            raise e
+        except HF_MODEL_LOAD_ERRORS as e:
+            log.error(
+                "Failed to create Hugging Face model '%s' for task '%s': %s",
+                name,
+                task_type,
+                e,
+            )
+            raise RuntimeError(
+                f"Unable to create Hugging Face model '{name}' for task '{task_type}'."
+            ) from e

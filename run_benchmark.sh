@@ -1,35 +1,108 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ==============================================================================
 # FDS Benchmark Pipeline
 # Links generation, evaluation, and reporting into a single workflow.
 #
-# Usage:
-#   ./run_benchmark.sh <dataset_name> [embedding_partitions_dir]
+# Canonical usage:
+#   ./run_benchmark.sh --dataset tiny_imagenet --base_path /path/to/data
 #
-# Example:
-#   ./run_benchmark.sh tiny_imagenet ./embedding_partitions/tiny_imagenet
+# Backward-compatible usage:
+#   ./run_benchmark.sh tiny_imagenet /path/to/embedding_partitions/tiny_imagenet
 # ==============================================================================
 
-set -e  # Exit on error
-set -u  # Exit on undefined variable
+set -euo pipefail
 
-# --- Configuration -----------------------------------------------------------
-DATASET="${1:-tiny_imagenet}"
+DATASET="tiny_imagenet"
+BASE_DATA_PATH="${FDS_BASE_PATH:-}"
+CACHE_DIR="${FDS_CACHE_DIR:-}"
+EMBEDDING_DIR=""
+OUTPUT_ROOT=""
+SEED=42
+DRY_RUN="false"
 
+# Backward-compatible positional args.
+if [[ $# -gt 0 && "${1:-}" != --* ]]; then
+    DATASET="$1"
+    shift
+fi
+if [[ $# -gt 0 && "${1:-}" != --* ]]; then
+    EMBEDDING_DIR="$1"
+    shift
+fi
 
-# Paths - Use environment variables with sensible defaults
-BASE_DATA_PATH="${FDS_BASE_PATH:-/path/to/gtai/FDS}"
-CACHE_DIR="${FDS_CACHE_DIR:-/path/to/gtai/FDS/embedding_cache}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dataset)
+            DATASET="$2"
+            shift 2
+            ;;
+        --base_path)
+            BASE_DATA_PATH="$2"
+            shift 2
+            ;;
+        --cache_dir)
+            CACHE_DIR="$2"
+            shift 2
+            ;;
+        --embedding_dir)
+            EMBEDDING_DIR="$2"
+            shift 2
+            ;;
+        --output)
+            OUTPUT_ROOT="$2"
+            shift 2
+            ;;
+        --seed)
+            SEED="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN="true"
+            shift
+            ;;
+        -h|--help)
+            cat <<'EOF'
+Usage:
+  ./run_benchmark.sh [dataset] [embedding_dir] [options]
 
-# Embedding Partitions Directory is inside BASE_DATA_PATH
-EMBEDDING_DIR="${2:-$BASE_DATA_PATH/embedding_partitions/$DATASET}"
+Options:
+  --dataset <name>         Dataset name (default: tiny_imagenet)
+  --base_path <path>       Dataset root path (or set FDS_BASE_PATH)
+  --cache_dir <path>       Embedding cache path (default: <base_path>/embedding_cache)
+  --embedding_dir <path>   Embedding partitions directory
+  --output <path>          Output root directory (default: ./benchmark_results/<dataset>)
+  --seed <int>             Seed for baseline generation/evaluation (default: 42)
+  --dry-run                Print planned commands without executing
+EOF
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+done
 
-OUTPUT_ROOT="./benchmark_results/$DATASET"
+if [[ -z "${BASE_DATA_PATH}" ]]; then
+    echo "Error: --base_path (or FDS_BASE_PATH) is required." >&2
+    exit 1
+fi
 
-# Derived Paths
-BASELINE_DIR="$OUTPUT_ROOT/partitions/baselines"
-RESULTS_DIR="$OUTPUT_ROOT/evaluation"
-REPORT_FILE="$OUTPUT_ROOT/report.html"
+if [[ -z "${CACHE_DIR}" ]]; then
+    CACHE_DIR="${BASE_DATA_PATH}/embedding_cache"
+fi
+
+if [[ -z "${EMBEDDING_DIR}" ]]; then
+    EMBEDDING_DIR="${BASE_DATA_PATH}/embedding_partitions/${DATASET}"
+fi
+
+if [[ -z "${OUTPUT_ROOT}" ]]; then
+    OUTPUT_ROOT="./benchmark_results/${DATASET}"
+fi
+
+BASELINE_DIR="${OUTPUT_ROOT}/partitions/baselines"
+RESULTS_DIR="${OUTPUT_ROOT}/evaluation"
+REPORT_FILE="${OUTPUT_ROOT}/report.html"
 
 # Evaluation Settings
 FEATURE_MODEL="inception_v3"
@@ -37,9 +110,9 @@ SUBSAMPLE=0
 BATCH_SIZE=100
 
 # VLM Settings
-VLM_LABELS_DIR="partitioning/vlm/data/$DATASET"
+VLM_LABELS_DIR="partitioning/vlm/data/${DATASET}"
 
-# Script Locations
+# Script locations
 GENERATE_BASELINES="scripts/generate_baselines.py"
 EVALUATE_PARTITIONS="evaluation/evaluate_partitions.py"
 GENERATE_REPORT="scripts/generate_report.py"
@@ -51,14 +124,18 @@ YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# ==============================================================================
-# Helper Functions
-# ==============================================================================
-
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[✓]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[⚠]${NC} $1"; }
-log_error() { echo -e "${RED}[✗]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+log_error() { echo -e "${RED}[x]${NC} $1"; }
+
+run_cmd() {
+    log_info "CMD: $*"
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        return 0
+    fi
+    "$@"
+}
 
 check_python_script() {
     if [[ ! -f "$1" ]]; then
@@ -67,147 +144,123 @@ check_python_script() {
     fi
 }
 
-# ==============================================================================
-# Pre-flight Checks
-# ==============================================================================
-
 echo -e "${BLUE}====================================================================${NC}"
 echo -e "${BLUE}FDS Benchmark Pipeline${NC}"
 echo -e "${BLUE}====================================================================${NC}"
+log_info "Dataset:          ${DATASET}"
+log_info "Base Data Path:   ${BASE_DATA_PATH}"
+log_info "Cache Dir:        ${CACHE_DIR}"
+log_info "Embeddings From:  ${EMBEDDING_DIR}"
+log_info "Output Directory: ${OUTPUT_ROOT}"
+log_info "Seed:             ${SEED}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+    log_warn "Dry-run enabled: commands will not execute."
+fi
 echo ""
-log_info "Dataset:          $DATASET"
-log_info "Base Data Path:   $BASE_DATA_PATH"
-log_info "Embeddings From:  $EMBEDDING_DIR"
-log_info "Output Directory: $OUTPUT_ROOT"
-echo ""
 
-check_python_script "$GENERATE_BASELINES"
-check_python_script "$EVALUATE_PARTITIONS"
-check_python_script "$GENERATE_REPORT"
+check_python_script "${GENERATE_BASELINES}"
+check_python_script "${EVALUATE_PARTITIONS}"
+check_python_script "${GENERATE_REPORT}"
 
-mkdir -p "$BASELINE_DIR"
-mkdir -p "$RESULTS_DIR"
-
-# ==============================================================================
-# Step 1: Generate Baselines
-# ==============================================================================
-echo ""
-echo -e "${GREEN}[1/5] Generating Baselines...${NC}"
-
-VLM_ARGS=()
-if [[ -d "$VLM_LABELS_DIR" ]]; then
-    VLM_ARGS=("--cluster_labels_dir" "$VLM_LABELS_DIR")
-    log_info "VLM labels found."
-else
-    log_warn "VLM labels not found at $VLM_LABELS_DIR (skipping VLM)."
+if [[ "${DRY_RUN}" != "true" ]]; then
+    mkdir -p "${BASELINE_DIR}" "${RESULTS_DIR}"
 fi
 
-python "$GENERATE_BASELINES" \
-    --dataset "$DATASET" \
-    --base_path "$BASE_DATA_PATH" \
-    --output_dir "$BASELINE_DIR" \
-    --n_clients 5 10\
-    --alphas 0.1 0.5 \
-    --seeds 42 \
-    "${VLM_ARGS[@]+"${VLM_ARGS[@]}"}"
+echo -e "${GREEN}[1/5] Generating baselines...${NC}"
+VLM_ARGS=()
+if [[ -d "${VLM_LABELS_DIR}" ]]; then
+    VLM_ARGS=("--cluster_labels_dir" "${VLM_LABELS_DIR}")
+    log_info "VLM labels found."
+else
+    log_warn "VLM labels not found at ${VLM_LABELS_DIR} (skipping VLM)."
+fi
 
+run_cmd python "${GENERATE_BASELINES}" \
+    --dataset "${DATASET}" \
+    --base_path "${BASE_DATA_PATH}" \
+    --output "${BASELINE_DIR}" \
+    --n_clients 5 10 \
+    --alphas 0.1 0.5 \
+    --seed "${SEED}" \
+    "${VLM_ARGS[@]}"
 log_success "Baselines generated"
 
-# ==============================================================================
-# Step 2: Evaluate Baselines
-# ==============================================================================
-echo ""
-echo -e "${GREEN}[2/5] Evaluating Baselines...${NC}"
-
-python "$EVALUATE_PARTITIONS" \
-    --partition_dir "$BASELINE_DIR" \
-    --dataset "$DATASET" \
-    --base_path "$BASE_DATA_PATH" \
-    --output_dir "$RESULTS_DIR" \
-    --feature_model "$FEATURE_MODEL" \
-    --subsample "$SUBSAMPLE" \
-    --cache_dir "$CACHE_DIR" \
-    --batch_size "$BATCH_SIZE"
-
+echo -e "${GREEN}[2/5] Evaluating baselines...${NC}"
+run_cmd python "${EVALUATE_PARTITIONS}" \
+    --partition_dir "${BASELINE_DIR}" \
+    --dataset "${DATASET}" \
+    --base_path "${BASE_DATA_PATH}" \
+    --output "${RESULTS_DIR}" \
+    --feature_model "${FEATURE_MODEL}" \
+    --subsample "${SUBSAMPLE}" \
+    --cache_dir "${CACHE_DIR}" \
+    --batch_size "${BATCH_SIZE}" \
+    --seed "${SEED}"
 log_success "Baselines evaluated"
 
-# ==============================================================================
-# Step 3: Evaluate Embeddings
-# ==============================================================================
-echo ""
-echo -e "${GREEN}[3/5] Evaluating Embedding Partitions...${NC}"
-
-if [[ -d "$EMBEDDING_DIR" ]]; then
-    python "$EVALUATE_PARTITIONS" \
-        --partition_dir "$EMBEDDING_DIR" \
-        --dataset "$DATASET" \
-        --base_path "$BASE_DATA_PATH" \
-        --output_dir "$RESULTS_DIR" \
-        --feature_model "$FEATURE_MODEL" \
-        --subsample "$SUBSAMPLE" \
-        --cache_dir "$CACHE_DIR" \
-        --batch_size "$BATCH_SIZE"
-    
+echo -e "${GREEN}[3/5] Evaluating embedding partitions...${NC}"
+if [[ -d "${EMBEDDING_DIR}" ]]; then
+    run_cmd python "${EVALUATE_PARTITIONS}" \
+        --partition_dir "${EMBEDDING_DIR}" \
+        --dataset "${DATASET}" \
+        --base_path "${BASE_DATA_PATH}" \
+        --output "${RESULTS_DIR}" \
+        --feature_model "${FEATURE_MODEL}" \
+        --subsample "${SUBSAMPLE}" \
+        --cache_dir "${CACHE_DIR}" \
+        --batch_size "${BATCH_SIZE}" \
+        --seed "${SEED}"
     log_success "Embedding partitions evaluated"
 else
     log_warn "Embedding directory not found (skipping)"
 fi
 
-# ==============================================================================
-# Step 4: Aggregate Results
-# ==============================================================================
-echo ""
-echo -e "${GREEN}[4/5] Aggregating Results...${NC}"
-
-# FIX: Python script updated to handle FLAT json structure
-python -c "
+echo -e "${GREEN}[4/5] Aggregating results...${NC}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+    log_info "CMD: aggregate evaluation JSONs into ${RESULTS_DIR}/all_results.csv"
+else
+    python - "${RESULTS_DIR}" <<'PY'
 import json
+import logging
 import pandas as pd
 from pathlib import Path
 import sys
 
-results_dir = Path('$RESULTS_DIR')
-json_files = list(results_dir.glob('*_eval.json'))
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger("benchmark.aggregate")
 
+results_dir = Path(sys.argv[1])
+json_files = list(results_dir.glob("*_eval.json"))
 if not json_files:
-    print('No evaluation results found!')
-    sys.exit(0) # Not an error, just empty
+    logger.info("No evaluation results found.")
+    raise SystemExit(0)
 
 rows = []
 for jf in json_files:
     try:
-        with open(jf) as f:
-            data = json.load(f)
-            # FIX: Data is already flat, just append it
-            rows.append(data)
-    except Exception as e:
-        print(f'Skipping corrupt file {jf}: {e}')
+        with open(jf, "r", encoding="utf-8") as f:
+            rows.append(json.load(f))
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        logger.warning("Skipping invalid file %s: %s", jf, exc)
 
 if rows:
-    df = pd.DataFrame(rows)
-    output_path = results_dir / 'all_results.csv'
-    df.to_csv(output_path, index=False)
-    print(f'Aggregated {len(rows)} results into {output_path}')
+    out = results_dir / "all_results.csv"
+    pd.DataFrame(rows).to_csv(out, index=False)
+    logger.info("Aggregated %d results into %s", len(rows), out)
 else:
-    print('No valid results to aggregate.')
-"
+    logger.info("No valid rows to aggregate.")
+PY
+fi
 
-# ==============================================================================
-# Step 5: Generate Report
-# ==============================================================================
-echo ""
-echo -e "${GREEN}[5/5] Generating Interactive Report...${NC}"
-
-if [[ -f "$RESULTS_DIR/all_results.csv" ]]; then
-    python "$GENERATE_REPORT" \
-        --input "$RESULTS_DIR/all_results.csv" \
-        --output "$REPORT_FILE" \
-        --dataset "$DATASET"
-    
-    log_success "Report generated"
-    echo ""
-    echo -e "${BLUE}====================================================================${NC}"
-    echo "Report available at: $REPORT_FILE"
+echo -e "${GREEN}[5/5] Generating report...${NC}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+    log_info "CMD: python ${GENERATE_REPORT} --input ${RESULTS_DIR}/all_results.csv --output ${REPORT_FILE} --dataset ${DATASET}"
+elif [[ -f "${RESULTS_DIR}/all_results.csv" ]]; then
+    run_cmd python "${GENERATE_REPORT}" \
+        --input "${RESULTS_DIR}/all_results.csv" \
+        --output "${REPORT_FILE}" \
+        --dataset "${DATASET}"
+    log_success "Report generated: ${REPORT_FILE}"
 else
     log_error "No results CSV found. Report generation skipped."
     exit 1

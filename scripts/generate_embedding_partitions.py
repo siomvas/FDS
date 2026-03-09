@@ -53,18 +53,20 @@ import signal
 faulthandler.register(signal.SIGUSR1)
 
 import argparse
-import sys
+import logging
+import os
 from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+import numpy as np
 
 from data_loading.dataset import BaseDataset
 from partitioning.embedding_splitter import EmbeddingSplitter
+from utils.cli_common import add_standard_cli_args
+
+log = logging.getLogger(__name__)
 
 
 def parse_args():
+    default_cache_dir = os.environ.get("FDS_CACHE_DIR", str(Path.cwd() / "embedding_cache"))
     parser = argparse.ArgumentParser(
         description="Generate embedding-based federated learning splits",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -73,17 +75,19 @@ def parse_args():
 
     # Dataset arguments
     dataset_group = parser.add_argument_group("Dataset")
-    dataset_group.add_argument(
-        "--dataset",
-        type=str,
-        required=True,
-        help="Dataset name (e.g., tiny_imagenet, food101, ADE20K, etc.)",
-    )
-    dataset_group.add_argument(
-        "--base_path",
-        type=str,
-        required=True,
-        help="Base path to dataset directory",
+    add_standard_cli_args(
+        dataset_group,
+        include_dataset=True,
+        dataset_required=True,
+        include_base_path=True,
+        base_path_required=True,
+        include_output=True,
+        output_required=False,
+        output_default="embedding_splits.json",
+        output_help="Output path for splits JSON file.",
+        include_seed=True,
+        seed_default=42,
+        include_dry_run=True,
     )
     dataset_group.add_argument(
         "--valset_type",
@@ -96,6 +100,24 @@ def parse_args():
         "--mock",
         action="store_true",
         help="Mock mode: use only 1000 samples for quick testing",
+    )
+    dataset_group.add_argument(
+        "--subset_size_train",
+        type=int,
+        default=None,
+        help="Optional deterministic subset size for train split (audit-focused runs).",
+    )
+    dataset_group.add_argument(
+        "--subset_size_val",
+        type=int,
+        default=None,
+        help="Optional deterministic subset size for val split (audit-focused runs).",
+    )
+    dataset_group.add_argument(
+        "--subset_seed",
+        type=int,
+        default=None,
+        help="Seed for deterministic subset selection (defaults to --seed).",
     )
 
     # Model arguments
@@ -123,6 +145,15 @@ def parse_args():
         type=int,
         default=0,
         help="Number of DataLoader worker processes (default: 4). Set to 0 for single-threaded loading.",
+    )
+    model_group.add_argument(
+        "--proxy",
+        type=str,
+        default=None,
+        help=(
+            "Optional proxy forwarded to extractors. "
+            "Set to an empty string to explicitly disable proxy use."
+        ),
     )
     
     # Token extraction arguments
@@ -294,22 +325,10 @@ def parse_args():
     # Output and caching arguments
     output_group = parser.add_argument_group("Output and Caching")
     output_group.add_argument(
-        "--output",
-        type=str,
-        default="embedding_splits.json",
-        help="Output path for splits JSON file (default: embedding_splits.json)",
-    )
-    output_group.add_argument(
         "--cache_dir",
         type=str,
-        default="/path/to/gtai/FDS/embedding_cache",
-        help="Directory for caching embeddings",
-    )
-    output_group.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for reproducibility (default: 42)",
+        default=default_cache_dir,
+        help=f"Directory for caching embeddings (default: {default_cache_dir})",
     )
 
     return parser.parse_args()
@@ -321,12 +340,23 @@ class SubsetDataset:
     def __init__(self, dataset, indices):
         self.dataset = dataset
         self.indices = indices
+        self.dataset_name = getattr(dataset, "dataset_name", None)
+        self.requested_dataset_name = getattr(dataset, "requested_dataset_name", None)
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
         return self.dataset[self.indices[idx]]
+
+
+def _build_subset_indices(dataset_len: int, subset_size: int, seed: int) -> list[int]:
+    if subset_size <= 0:
+        raise ValueError("--subset_size_train/--subset_size_val must be > 0 when provided.")
+    size = min(int(subset_size), int(dataset_len))
+    rng = np.random.default_rng(int(seed))
+    indices = rng.choice(dataset_len, size=size, replace=False)
+    return sorted(indices.tolist())
 
 def build_preprocessing_params(args):
     """Build preprocessing parameters dict from CLI args."""
@@ -391,7 +421,10 @@ def build_token_params(args):
         
         # Set pooling to 'lastk' if not already specified as such and raise warning
         if args.pooling != "lastk":
-            print("⚠️  Warning: Overriding pooling strategy to 'lastk' for k_last_cls or k_last_all token extraction")
+            log.warning(
+                "Overriding pooling strategy to 'lastk' for %s token extraction",
+                args.tokens,
+            )
             args.pooling = "lastk"
 
     return params
@@ -417,70 +450,86 @@ def build_pooling_params(args):
     return params
 
 
-def main():
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
     args = parse_args()
 
-    print("=" * 70)
-    print("Embedding-based Federated Learning Split Generation")
-    print("=" * 70)
-    print(f"\nDataset: {args.dataset}")
-    print(f"Base path: {args.base_path}")
-    print(f"Extractor: {args.extractor}")
-    print(f"Token extraction: {args.tokens}")
-    print(f"Pooling: {args.pooling}")
-    print(f"Normalization: {args.normalize}")
-    print(f"Dimensionality reduction: {args.dim_reduction}")
-    print(f"Clustering: {args.clustering}")
-    print(f"Validation type: {args.valset_type}")
-    print(f"Seed: {args.seed}")
-    print(f"Output: {args.output}")
-    print()
-
-    # Load datasets
-    print("Loading datasets...")
-    train_dataset = BaseDataset(args.dataset, args.base_path, "train")
-    print(f"  Train samples: {len(train_dataset)}")
-
-    val_dataset = None
-    if args.valset_type in ["global", "local"]:
-        val_dataset = BaseDataset(args.dataset, args.base_path, "val")
-        print(f"  Val samples: {len(val_dataset)}")
-
-    # Apply mock mode if enabled
-    if args.mock:
-        MOCK_SAMPLES = 1000
-        print(f"\n⚠️  MOCK MODE: Limiting to {MOCK_SAMPLES} samples for quick testing")
-
-        train_indices = list(range(min(MOCK_SAMPLES, len(train_dataset))))
-        train_dataset = SubsetDataset(train_dataset, train_indices)
-        print(f"  Mock train samples: {len(train_dataset)}")
-
-        if val_dataset is not None:
-            val_size = min(MOCK_SAMPLES // 5, len(val_dataset))  # 20% of mock size
-            val_indices = list(range(val_size))
-            val_dataset = SubsetDataset(val_dataset, val_indices)
-            print(f"  Mock val samples: {len(val_dataset)}")
+    log.info("=" * 70)
+    log.info("Embedding-based Federated Learning Split Generation")
+    log.info("=" * 70)
+    log.info("Dataset=%s base_path=%s extractor=%s clustering=%s", args.dataset, args.base_path, args.extractor, args.clustering)
+    log.info(
+        "tokens=%s pooling=%s normalize=%s dim_reduction=%s valset_type=%s seed=%s output=%s",
+        args.tokens,
+        args.pooling,
+        args.normalize,
+        args.dim_reduction,
+        args.valset_type,
+        args.seed,
+        args.output,
+    )
 
     # Build parameter dicts
     token_params = build_token_params(args)
     pooling_params = build_pooling_params(args)
     preprocessing_params = build_preprocessing_params(args)
     clustering_params = build_clustering_params(args)
-    
-    print("\nToken extraction params:", token_params)
-    print(f"Pooling params: {pooling_params}")
-    print(f"Preprocessing params: {preprocessing_params}")
-    print(f"\nClustering params: {clustering_params}")
-    print()
+
+    log.info("Token extraction params: %s", token_params)
+    log.info("Pooling params: %s", pooling_params)
+    log.info("Preprocessing params: %s", preprocessing_params)
+    log.info("Clustering params: %s", clustering_params)
+
+    if args.dry_run:
+        log.info("[dry-run] Configuration validated. Skipping dataset loading and split generation.")
+        return 0
+
+    # Load datasets
+    log.info("Loading datasets...")
+    train_dataset = BaseDataset(args.dataset, args.base_path, "train")
+    log.info("Train samples: %s", len(train_dataset))
+
+    val_dataset = None
+    if args.valset_type in ["global", "local"]:
+        val_dataset = BaseDataset(args.dataset, args.base_path, "val")
+        log.info("Val samples: %s", len(val_dataset))
+
+    if args.mock and (args.subset_size_train is not None or args.subset_size_val is not None):
+        raise ValueError("--mock cannot be combined with --subset_size_train/--subset_size_val.")
+
+    # Apply deterministic subset mode for tiered audit workflows.
+    if not args.mock and (args.subset_size_train is not None or args.subset_size_val is not None):
+        subset_seed = args.seed if args.subset_seed is None else args.subset_seed
+        if args.subset_size_train is not None:
+            train_indices = _build_subset_indices(len(train_dataset), args.subset_size_train, subset_seed)
+            train_dataset = SubsetDataset(train_dataset, train_indices)
+            log.info("Subset train samples: %s", len(train_dataset))
+        if val_dataset is not None and args.subset_size_val is not None:
+            val_indices = _build_subset_indices(len(val_dataset), args.subset_size_val, subset_seed)
+            val_dataset = SubsetDataset(val_dataset, val_indices)
+            log.info("Subset val samples: %s", len(val_dataset))
+
+    # Apply mock mode if enabled
+    if args.mock:
+        MOCK_SAMPLES = 1000
+        log.warning("MOCK MODE enabled: limiting to %s samples", MOCK_SAMPLES)
+
+        train_indices = list(range(min(MOCK_SAMPLES, len(train_dataset))))
+        train_dataset = SubsetDataset(train_dataset, train_indices)
+        log.info("Mock train samples: %s", len(train_dataset))
+
+        if val_dataset is not None:
+            val_size = min(MOCK_SAMPLES // 5, len(val_dataset))  # 20% of mock size
+            val_indices = list(range(val_size))
+            val_dataset = SubsetDataset(val_dataset, val_indices)
+            log.info("Mock val samples: %s", len(val_dataset))
 
     # Enforce cache disabling in mock mode
     use_cache = not args.mock
     num_workers = 0 if args.mock else args.num_workers
 
     if args.mock:
-        print("⚠️  MOCK MODE: Caching DISABLED (enforced)")
-        print("   Reason: Mock mode uses subset of data, incompatible with full caching")
-        print()
+        log.warning("MOCK MODE: caching disabled (subset data is incompatible with cache reuse).")
 
     # Create splitter
     splitter = EmbeddingSplitter(
@@ -502,56 +551,55 @@ def main():
         device=args.device,
         batch_size=args.batch_size,
         use_cache=use_cache,
+        proxy=args.proxy,
         num_workers=num_workers,
     )
 
     # Compute splits
-    print("Computing client splits...")
-    print()
-    splits = splitter.get_client_splits()
+    log.info("Computing client splits...")
+    splitter.get_client_splits()
 
     # Print summary
-    print()
-    print("=" * 70)
-    print("Split Summary")
-    print("=" * 70)
+    log.info("=" * 70)
+    log.info("Split Summary")
+    log.info("=" * 70)
     summary = splitter.get_split_summary()
-    print(f"Number of clients: {summary['n_clients']}")
-    print(f"Total training samples: {summary['total_train_samples']}")
-    print(f"Validation type: {summary['valset_type']}")
+    log.info("Number of clients: %s", summary["n_clients"])
+    log.info("Total training samples: %s", summary["total_train_samples"])
+    log.info("Validation type: %s", summary["valset_type"])
 
     if summary['valset_type'] == 'global' and 'global_val_samples' in summary:
-        print(f"Global validation samples: {summary['global_val_samples']}")
+        log.info("Global validation samples: %s", summary["global_val_samples"])
     elif summary['valset_type'] == 'local':
-        print(f"Total local validation samples: {summary['total_val_samples']}")
+        log.info("Total local validation samples: %s", summary["total_val_samples"])
 
-    print("\nPer-client sample counts:")
+    log.info("Per-client sample counts:")
     for client_id, sizes in sorted(summary['client_sizes'].items()):
         train_count = sizes['train_samples']
         val_count = sizes['val_samples']
         if val_count > 0:
-            print(f"  {client_id}: {train_count} train, {val_count} val")
+            log.info("%s: %s train, %s val", client_id, train_count, val_count)
         else:
-            print(f"  {client_id}: {train_count} train")
+            log.info("%s: %s train", client_id, train_count)
 
     # Save splits
-    print(f"\nSaving splits to {args.output}...")
+    log.info("Saving splits to %s", args.output)
     splitter.store_client_splits(args.output, format="json")
 
     # Validate splits
-    print("\nValidating splits...")
+    log.info("Validating splits...")
     try:
         splitter.validate_splits()
-        print("✓ All validations passed")
+        log.info("All validations passed.")
     except ValueError as e:
-        print(f"✗ Validation failed: {e}")
-        sys.exit(1)
+        log.error("Validation failed: %s", e)
+        return 1
 
-    print()
-    print("=" * 70)
-    print("✓ Split generation complete!")
-    print("=" * 70)
+    log.info("=" * 70)
+    log.info("Split generation complete.")
+    log.info("=" * 70)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

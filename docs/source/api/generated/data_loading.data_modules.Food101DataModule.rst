@@ -1,7 +1,7 @@
-﻿data\_loading.dm.Food101DataModule
-==================================
+﻿data\_loading.data\_modules.Food101DataModule
+=============================================
 
-.. currentmodule:: data_loading.dm
+.. currentmodule:: data_loading.data_modules
 
 .. autoclass:: Food101DataModule
 
@@ -14,8 +14,8 @@
    .. autosummary::
    
       ~Food101DataModule.__init__
-      ~Food101DataModule.create_label_map
       ~Food101DataModule.get_client_data
+      ~Food101DataModule.get_collate_fn
       ~Food101DataModule.get_train_transform
       ~Food101DataModule.get_val_transform
       ~Food101DataModule.load_splits

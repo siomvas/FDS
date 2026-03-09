@@ -19,6 +19,7 @@ Usage:
 import argparse
 import json
 import uuid
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -28,12 +29,14 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
+from plotly.offline import get_plotlyjs
 from plotly.subplots import make_subplots
 
 # Import metric metadata from shared config
-import sys
-sys.path.insert(0, str(Path(__file__).parent))
 from evaluation.eval_config import METRIC_META
+from utils.cli_common import add_standard_cli_args
+
+log = logging.getLogger(__name__)
 
 # ============================================================================
 # Constants
@@ -95,10 +98,51 @@ METRIC_DISPLAY_NAMES = {
     "feature_variance_mean": "Feature Variance",
 }
 
+LEGACY_COLUMN_ALIASES = {
+    "vendi_score_features": "vendi_score_mean",
+    "coefficient_of_variation": "balance_cv",
+}
+
+METHOD_NAME_ALIASES = {
+    "random": "Random",
+    "dirichlet": "Dirichlet",
+    "vlm": "VLM",
+    "embedding": "Embedding",
+}
+
 
 # ============================================================================
 # Data Loading & Preprocessing
 # ============================================================================
+
+def normalize_method_name(method: Any) -> Any:
+    """Map common method casing variants onto canonical display names."""
+    if not isinstance(method, str):
+        return method
+
+    normalized = method.strip()
+    return METHOD_NAME_ALIASES.get(normalized.lower(), normalized)
+
+
+def normalize_results_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Backfill legacy CSV column names and normalize method labels."""
+    normalized = df.copy()
+
+    for legacy_col, canonical_col in LEGACY_COLUMN_ALIASES.items():
+        if legacy_col not in normalized.columns:
+            continue
+
+        if canonical_col not in normalized.columns:
+            normalized = normalized.rename(columns={legacy_col: canonical_col})
+            continue
+
+        if normalized[canonical_col].isna().all() and normalized[legacy_col].notna().any():
+            normalized[canonical_col] = normalized[legacy_col]
+
+    if "method" in normalized.columns:
+        normalized["method"] = normalized["method"].apply(normalize_method_name)
+
+    return normalized
 
 def load_results(input_path: Path) -> pd.DataFrame:
     """
@@ -124,8 +168,8 @@ def load_results(input_path: Path) -> pd.DataFrame:
     # Ensure method column exists
     if "method" not in df.columns:
         raise ValueError("DataFrame must have 'method' column")
-    
-    return df
+
+    return normalize_results_schema(df)
 
 
 def detect_available_metrics(df: pd.DataFrame) -> Dict[str, List[str]]:
@@ -182,6 +226,9 @@ def cap_outliers(
         outliers = df[metric] > cap_val
         
         if outliers.any():
+            if pd.api.types.is_integer_dtype(df_capped[metric]):
+                df_capped[metric] = df_capped[metric].astype(float)
+
             outlier_notes[metric] = {
                 "cap_value": float(cap_val),
                 "n_capped": int(outliers.sum()),
@@ -208,7 +255,7 @@ def select_best_embedding(
     non_emb = df[~is_embedding].copy()
     emb = df[is_embedding].copy()
     
-    if emb.empty:
+    if emb.empty or not primary_metrics:
         return df, {}
     
     best_rows = []
@@ -235,7 +282,7 @@ def select_best_embedding(
         # Compute rankings within this group
         rankings = compute_rankings_internal(group, primary_metrics)
         
-        if rankings.empty:
+        if rankings.empty or rankings["avg_rank"].isna().all():
             # Fallback: just pick first
             best_idx = group.index[0]
         else:
@@ -347,6 +394,9 @@ def style_ranking_table(rankings_df: pd.DataFrame, metrics: List[str]) -> str:
     1st = gold, 2nd = silver, 3rd = bronze.
     Best avg_rank row highlighted green.
     """
+    if not metrics:
+        return "<p>No comparable summary metrics available for ranking.</p>"
+
     if rankings_df.empty:
         return "<p>No data available for ranking.</p>"
     
@@ -446,8 +496,9 @@ def style_ranking_table(rankings_df: pd.DataFrame, metrics: List[str]) -> str:
 
 def get_method_color(method: str) -> str:
     """Get consistent color for method."""
+    method_lower = str(method).lower()
     for key, color in METHOD_COLORS.items():
-        if key in method:
+        if key.lower() in method_lower:
             return color
     return "#999999"
 
@@ -683,6 +734,7 @@ def fig_to_html(fig: go.Figure, div_id: str) -> str:
         "displayModeBar": True,
         "modeBarButtonsToAdd": [],
         "displaylogo": False,
+        "responsive": True,
     }
     
     html = pio.to_html(
@@ -821,6 +873,40 @@ def render_config_filter(df: pd.DataFrame) -> Tuple[str, List[Tuple]]:
     return filter_html, configs
 
 
+def filter_dataframe_for_config(df: pd.DataFrame, config: Tuple) -> pd.DataFrame:
+    """Return rows matching a config tuple from render_config_filter."""
+    mask = pd.Series(True, index=df.index)
+    if len(config) > 0 and config[0] is not None and "n_clients" in df.columns:
+        mask &= (df["n_clients"] == config[0])
+    if len(config) > 1 and config[1] is not None and "heterogeneity" in df.columns:
+        mask &= (df["heterogeneity"] == config[1])
+    return df[mask]
+
+
+def render_section_per_config(
+    df: pd.DataFrame,
+    configs: List[Tuple],
+    render_fn,
+) -> str:
+    """Render a section once for all configs and once per specific config."""
+    if not configs or len(configs) <= 1:
+        return render_fn(df, None, None)
+
+    html_parts = [f'<div class="config-view" data-config="all">{render_fn(df, None, "all")}</div>']
+
+    for i, config in enumerate(configs):
+        df_filtered = filter_dataframe_for_config(df, config)
+        if df_filtered.empty:
+            continue
+        html_parts.append(
+            f'<div class="config-view" data-config="{i}" style="display: none;">'
+            f'{render_fn(df_filtered, config, i)}'
+            '</div>'
+        )
+
+    return '\n'.join(html_parts)
+
+
 def generate_figures_per_config(
     df: pd.DataFrame,
     metrics: List[str],
@@ -854,14 +940,7 @@ def generate_figures_per_config(
     
     # Add per-config views
     for i, config in enumerate(configs):
-        # Filter df to this config
-        mask = pd.Series(True, index=df.index)
-        if config[0] is not None:
-            mask &= (df["n_clients"] == config[0])
-        if config[1] is not None:
-            mask &= (df["heterogeneity"] == config[1])
-        
-        df_filtered = df[mask]
+        df_filtered = filter_dataframe_for_config(df, config)
         
         if df_filtered.empty:
             continue
@@ -880,6 +959,9 @@ def generate_figures_per_config(
 
 def generate_summary_findings(df: pd.DataFrame, metrics: List[str]) -> str:
     """Generate key findings summary from data, grouped by config."""
+    if not metrics:
+        return "<p>No summary metrics available.</p>"
+
     findings = []
     
     # Determine grouping columns
@@ -953,7 +1035,7 @@ REPORT_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <title>FDS Evaluation Report - {dataset}</title>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script>{plotly_js}</script>
     <style>
         * {{ box-sizing: border-box; }}
         body {{
@@ -1131,10 +1213,29 @@ REPORT_TEMPLATE = '''<!DOCTYPE html>
     {content}
     
     <script>
+        function resizeVisiblePlots(root) {{
+            if (typeof Plotly === "undefined") {{
+                return;
+            }}
+
+            var scope = root || document;
+            window.requestAnimationFrame(function() {{
+                var plots = scope.querySelectorAll('.js-plotly-plot');
+                plots.forEach(function(plot) {{
+                    if (plot.offsetParent !== null) {{
+                        Plotly.Plots.resize(plot);
+                    }}
+                }});
+            }});
+        }}
+
         function toggleAccordion(el) {{
             el.classList.toggle("active");
             var panel = el.nextElementSibling;
             panel.classList.toggle("show");
+            if (panel.classList.contains("show")) {{
+                resizeVisiblePlots(panel);
+            }}
         }}
         
         function switchMetricFigure(select, dropdownId) {{
@@ -1145,7 +1246,10 @@ REPORT_TEMPLATE = '''<!DOCTYPE html>
             }}
             var selected = select.value;
             var target = container.querySelector('[data-metric="' + selected + '"]');
-            if (target) target.style.display = "block";
+            if (target) {{
+                target.style.display = "block";
+                resizeVisiblePlots(target);
+            }}
         }}
         
         // Bug 3 fix: Working config filter function
@@ -1161,6 +1265,7 @@ REPORT_TEMPLATE = '''<!DOCTYPE html>
                     view.style.display = (viewConfig === configValue) ? 'block' : 'none';
                 }}
             }});
+            resizeVisiblePlots(document);
         }}
         
         // Sortable tables
@@ -1187,6 +1292,14 @@ REPORT_TEMPLATE = '''<!DOCTYPE html>
                 rows.forEach(function(row) {{ tbody.appendChild(row); }});
             }});
         }});
+
+        window.addEventListener('load', function() {{
+            resizeVisiblePlots(document);
+        }});
+
+        window.addEventListener('resize', function() {{
+            resizeVisiblePlots(document);
+        }});
     </script>
 </body>
 </html>
@@ -1201,22 +1314,22 @@ def generate_report(
     """
     Generate complete HTML report from evaluation results.
     """
-    print(f"Generating report for {dataset_name}...")
+    log.info("Generating report for %s...", dataset_name)
     
     # Detect available metrics
     available = detect_available_metrics(df)
-    print(f"  Available metrics: {len(available['all'])} total")
+    log.info("Available metrics: %s total", len(available["all"]))
     
     # Handle embedding variants
     df_display, variant_details = select_best_embedding(df, available["primary"])
-    
+
     # Cap outliers
     df_capped, outlier_notes = cap_outliers(df_display, available["all"])
     if outlier_notes:
-        print(f"  Capped outliers in: {list(outlier_notes.keys())}")
+        log.info("Capped outliers in metrics: %s", list(outlier_notes.keys()))
     
     # Compute rankings
-    rankings_df = compute_rankings(df_capped, available["primary"])
+    summary_metrics = available["primary"] or available["all"]
     
     # Build content sections
     content_parts = []
@@ -1225,17 +1338,66 @@ def generate_report(
     config_filter_html, configs = render_config_filter(df_capped)
     if config_filter_html:
         content_parts.append(config_filter_html)
+
+    def build_summary_content(df_section: pd.DataFrame, _config: Optional[Tuple], _suffix: Any) -> str:
+        rankings_df = compute_rankings(df_section, summary_metrics)
+        summary_content = []
+        summary_content.append("<h3>Method Rankings</h3>")
+        summary_content.append(style_ranking_table(rankings_df, summary_metrics))
+        summary_content.append("<h3>Key Findings</h3>")
+        summary_content.append(generate_summary_findings(df_section, summary_metrics))
+        return '\n'.join(summary_content)
+
+    def build_multi_content(df_section: pd.DataFrame, _config: Optional[Tuple], suffix: Any) -> str:
+        multi_content = []
+        div_suffix = "all" if suffix is None else suffix
+
+        if len(available["radar"]) >= 3:
+            fig_radar_chart = fig_radar(df_section, available["radar"])
+            multi_content.append('<h3>Radar Chart (Normalized)</h3>')
+            multi_content.append(
+                f'<div class="figure-container">{fig_to_html(fig_radar_chart, f"radar_{div_suffix}")}</div>'
+            )
+
+        if len(available["all"]) >= 2:
+            fig_parallel = fig_parallel_coordinates(df_section, available["all"][:8])
+            multi_content.append('<h3>Parallel Coordinates</h3>')
+            multi_content.append(
+                f'<div class="figure-container">{fig_to_html(fig_parallel, f"parallel_{div_suffix}")}</div>'
+            )
+
+        return '\n'.join(multi_content)
+
+    def build_appendix_content(df_section: pd.DataFrame, _config: Optional[Tuple], suffix: Any) -> str:
+        figures = {}
+        div_suffix = "all" if suffix is None else suffix
+        for metric in available["appendix"]:
+            fig = fig_grouped_bar(df_section, metric)
+            figures[metric] = fig_to_html(fig, f"bar_appendix_{div_suffix}_{metric}")
+        return f'<div class="figure-container">{render_metric_dropdown(figures, available["appendix"][0])}</div>'
+
+    def build_raw_table_content(df_section: pd.DataFrame, _config: Optional[Tuple], _suffix: Any) -> str:
+        display_cols = ["method"]
+        if "n_clients" in df_section.columns:
+            display_cols.append("n_clients")
+        if "heterogeneity" in df_section.columns:
+            display_cols.append("heterogeneity")
+        display_cols.extend([m for m in available["all"] if m in df_section.columns])
+
+        table_df = df_section[display_cols].copy()
+
+        rename_map = METRIC_DISPLAY_NAMES.copy()
+        rename_map["method"] = "Method"
+        rename_map["n_clients"] = "Clients"
+        rename_map["heterogeneity"] = "α"
+        table_df = table_df.rename(columns=rename_map)
+
+        return table_df.to_html(index=False, classes="ranking-table sortable", float_format="%.4f")
     
     # === Section 1: Executive Summary ===
-    summary_content = []
-    summary_content.append("<h3>Method Rankings</h3>")
-    summary_content.append(style_ranking_table(rankings_df, available["primary"]))
-    summary_content.append("<h3>Key Findings</h3>")
-    summary_content.append(generate_summary_findings(df_capped, available["primary"]))
-    
     content_parts.append(render_accordion(
         "📊 Executive Summary",
-        '\n'.join(summary_content),
+        render_section_per_config(df_capped, configs, build_summary_content),
         expanded=True
     ))
     
@@ -1291,24 +1453,10 @@ def generate_report(
         ))
     
     # === Section 5: Multi-Metric Views ===
-    multi_content = []
-    
-    # Radar chart
-    if len(available["radar"]) >= 3:
-        fig_radar_chart = fig_radar(df_capped, available["radar"])
-        multi_content.append('<h3>Radar Chart (Normalized)</h3>')
-        multi_content.append(f'<div class="figure-container">{fig_to_html(fig_radar_chart, "radar")}</div>')
-    
-    # Parallel coordinates
-    if len(available["all"]) >= 2:
-        fig_parallel = fig_parallel_coordinates(df_capped, available["all"][:8])  # Limit to 8 for readability
-        multi_content.append('<h3>Parallel Coordinates</h3>')
-        multi_content.append(f'<div class="figure-container">{fig_to_html(fig_parallel, "parallel")}</div>')
-    
-    if multi_content:
+    if len(available["radar"]) >= 3 or len(available["all"]) >= 2:
         content_parts.append(render_accordion(
             "📈 Multi-Metric Views",
-            '\n'.join(multi_content),
+            render_section_per_config(df_capped, configs, build_multi_content),
             expanded=False
         ))
     
@@ -1319,54 +1467,33 @@ def generate_report(
         for config_key, variants_df in variant_details.items():
             capped_df, _ = cap_outliers(variants_df, available["all"])
             capped_variant_details[config_key] = capped_df
-        
-        emb_content = render_embedding_details(capped_variant_details, available["primary"])
+
+        def build_embedding_content(_df_section: pd.DataFrame, config: Optional[Tuple], _suffix: Any) -> str:
+            if config is None:
+                scoped_details = capped_variant_details
+            else:
+                scoped_details = {config: capped_variant_details.get(config)} if config in capped_variant_details else {}
+                scoped_details = {k: v for k, v in scoped_details.items() if v is not None}
+            return render_embedding_details(scoped_details, available["primary"])
+
         content_parts.append(render_accordion(
             "🔧 Embedding Variant Details",
-            emb_content,
+            render_section_per_config(df_capped, configs, build_embedding_content),
             expanded=False
         ))
     
     # === Section 7: Appendix (Secondary Metrics) ===
     if available["appendix"]:
-        appendix_content = []
-        
-        figures = {}
-        for metric in available["appendix"]:
-            fig = fig_grouped_bar(df_capped, metric)
-            figures[metric] = fig_to_html(fig, f"bar_appendix_{metric}")
-        
-        appendix_content.append(render_metric_dropdown(figures, available["appendix"][0]))
-        
         content_parts.append(render_accordion(
             "📎 Appendix: Secondary Metrics",
-            f'<div class="figure-container">{chr(10).join(appendix_content)}</div>',
+            render_section_per_config(df_capped, configs, build_appendix_content),
             expanded=False
         ))
     
     # === Section 8: Raw Data Table ===
-    # Select columns to display
-    display_cols = ["method"]
-    if "n_clients" in df_capped.columns:
-        display_cols.append("n_clients")
-    if "heterogeneity" in df_capped.columns:
-        display_cols.append("heterogeneity")
-    display_cols.extend([m for m in available["all"] if m in df_capped.columns])
-    
-    table_df = df_capped[display_cols].copy()
-    
-    # Rename columns
-    rename_map = METRIC_DISPLAY_NAMES.copy()
-    rename_map["method"] = "Method"
-    rename_map["n_clients"] = "Clients"
-    rename_map["heterogeneity"] = "α"
-    table_df = table_df.rename(columns=rename_map)
-    
-    table_html = table_df.to_html(index=False, classes="ranking-table sortable", float_format="%.4f")
-    
     content_parts.append(render_accordion(
         "📋 Raw Data Table (Sortable)",
-        table_html,
+        render_section_per_config(df_capped, configs, build_raw_table_content),
         expanded=False
     ))
     
@@ -1380,6 +1507,7 @@ def generate_report(
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         n_partitions=len(df),
         methods=methods_list,
+        plotly_js=get_plotlyjs(),
         content=content,
     )
     
@@ -1390,14 +1518,15 @@ def generate_report(
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
     
-    print(f"✓ Report saved to {output_path}")
+    log.info("Report saved to %s", output_path)
 
 
 # ============================================================================
 # CLI
 # ============================================================================
 
-def main():
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
     parser = argparse.ArgumentParser(
         description="Generate interactive HTML report from evaluation results",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1419,17 +1548,30 @@ Examples:
     
     parser.add_argument("--input", type=str, required=True,
                         help="Path to CSV or directory containing *_eval.json files")
-    parser.add_argument("--output", type=str, required=True,
-                        help="Output HTML file path")
-    parser.add_argument("--dataset", type=str, default="Unknown",
-                        help="Dataset name for report title")
+    add_standard_cli_args(
+        parser,
+        include_dataset=True,
+        dataset_required=False,
+        dataset_default="Unknown",
+        include_output=True,
+        output_required=True,
+        output_help="Output HTML report file path.",
+        include_dry_run=True,
+    )
     
     args = parser.parse_args()
+
+    if args.dry_run:
+        log.info("[dry-run] Input: %s", args.input)
+        log.info("[dry-run] Dataset: %s", args.dataset)
+        log.info("[dry-run] Output: %s", args.output)
+        log.info("[dry-run] Report generation skipped.")
+        return 0
     
     # Load data
     input_path = Path(args.input)
     df = load_results(input_path)
-    print(f"Loaded {len(df)} evaluation results")
+    log.info("Loaded %s evaluation results", len(df))
     
     # Generate report
     generate_report(
@@ -1437,7 +1579,8 @@ Examples:
         output_path=Path(args.output),
         dataset_name=args.dataset,
     )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

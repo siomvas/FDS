@@ -10,9 +10,66 @@ from omegaconf import DictConfig, OmegaConf
 from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe
 from nvflare.recipe import SimEnv, add_experiment_tracking
 
-from models.factory import create_model
+from fl_training.models.factory import create_model
 
 log = logging.getLogger(__name__)
+
+
+def _normalize_gpu_config(raw_gpu_ids) -> str:
+    """Normalize Hydra/OmegaConf GPU config to NVFlare SimEnv string format."""
+    if OmegaConf.is_config(raw_gpu_ids):
+        raw_gpu_ids = OmegaConf.to_container(raw_gpu_ids, resolve=True)
+
+    if raw_gpu_ids is None:
+        return ""
+    if isinstance(raw_gpu_ids, str):
+        return raw_gpu_ids
+    if isinstance(raw_gpu_ids, (list, tuple)):
+        return ",".join(str(gpu) for gpu in raw_gpu_ids)
+    return str(raw_gpu_ids)
+
+
+class PersistableFactoryModel(nn.Module):
+    """Wrap factory-created models with a constructor that NVFlare can rehydrate."""
+
+    def __init__(
+        self,
+        provider: str = "timm",
+        name: str = "resnet18",
+        task_type: str = "classification",
+        num_classes: int = 1000,
+        model_args_b64: str = "e30=",  # base64url-encoded "{}"
+    ):
+        super().__init__()
+        self.provider = str(provider)
+        self.name = str(name)
+        self.task_type = str(task_type)
+        self.num_classes = int(num_classes)
+        self.model_args_b64 = str(model_args_b64)
+
+        try:
+            json_bytes = base64.urlsafe_b64decode(self.model_args_b64.encode("utf-8"))
+            model_args = json.loads(json_bytes.decode("utf-8"))
+        except (TypeError, ValueError, json.JSONDecodeError) as e:
+            raise ValueError("model_args_b64 must be a base64-encoded JSON object.") from e
+        if not isinstance(model_args, dict):
+            raise ValueError("Decoded model_args_b64 must be a mapping.")
+
+        self._inner_model = create_model(
+            model_cfg={"provider": self.provider, "name": self.name, "args": model_args},
+            task_type=self.task_type,
+            num_classes=self.num_classes,
+        )
+
+    def forward(self, *args, **kwargs):
+        return self._inner_model(*args, **kwargs)
+
+    def state_dict(self, *args, **kwargs):
+        return self._inner_model.state_dict(*args, **kwargs)
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        return self._inner_model.load_state_dict(state_dict, strict=strict)
+
 
 def encode_config(cfg: DictConfig) -> str:
 
@@ -48,8 +105,24 @@ def get_initial_model(cfg: DictConfig) -> nn.Module:
 
     log.info(f"Initializing Server Model via Factory | Task: {task_type} | Classes: {num_classes} | Model Config: {model_cfg}")
 
-    # The factory handles the provider dispatch (timm, hf, smp)
-    return create_model(model_cfg, task_type, num_classes)
+    provider = str(model_cfg.get("provider", "timm"))
+    name = str(model_cfg.get("name"))
+    model_args = model_cfg.get("args", {})
+    if not isinstance(model_args, dict):
+        raise TypeError(f"model.args must be a mapping, got {type(model_args).__name__}.")
+
+    # Use a persistable wrapper so NVFlare can safely reconstruct the model.
+    model_args_b64 = base64.urlsafe_b64encode(
+        json.dumps(model_args, sort_keys=True).encode("utf-8")
+    ).decode("utf-8")
+
+    return PersistableFactoryModel(
+        provider=provider,
+        name=name,
+        task_type=str(task_type),
+        num_classes=int(num_classes),
+        model_args_b64=model_args_b64,
+    )
 
 def run_job(cfg: DictConfig):
     """
@@ -96,7 +169,7 @@ def run_job(cfg: DictConfig):
 
     env = SimEnv(
         num_clients=cfg.fed.n_clients,
-        gpu_config=cfg.system.gpu_ids,
+        gpu_config=_normalize_gpu_config(cfg.system.gpu_ids),
         workspace_root=str(workspace_path)
     )
     run_status = recipe.execute(env=env)

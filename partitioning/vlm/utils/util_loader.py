@@ -1,10 +1,8 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import AutoModel, AutoTokenizer, AutoConfig
 from transformers import Qwen3VLMoeForConditionalGeneration
-import sys
 import torch
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import logging
 from data_loading.dataset import BaseDataset
 import math
 import torchvision.transforms as T
@@ -12,11 +10,13 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from partitioning.vlm.utils.constants import FOOD101, INTERNVL3_38B, LLAMA33_70B, LLAMA31_8B_INSTRUCT, MINICPM26
 from partitioning.vlm.utils.constants import INTERNVL35_8B, INTERNVL3_8B, QWEN3_8B, QWEN3_30B
 
+log = logging.getLogger(__name__)
+
 # used with InternVL3 38B to split models across multiple GPUs
 def split_model(path):
     device_map = {}
     world_size = torch.cuda.device_count()
-    print("Num of GPU: ", world_size)
+    log.info("Num of GPU: %s", world_size)
     config = AutoConfig.from_pretrained(path, trust_remote_code=True)
     num_layers = config.llm_config.num_hidden_layers
     # Since the first GPU will be used for ViT, treat it as half a GPU.
@@ -44,7 +44,7 @@ def split_model(path):
 def analyze_dataset_images(data, sample_size=100):
     """Analyze image dimensions and sizes in dataset"""
     import random
-    from PIL import Image
+    from PIL import Image, UnidentifiedImageError
     
     sample_paths = random.sample(data.data, min(sample_size, len(data.data)))
     
@@ -65,27 +65,28 @@ def analyze_dataset_images(data, sample_size=100):
                 resolutions.append((width, height))
                 aspect_ratios.append(width / height)
                 
-        except Exception as e:
-            print(f"Error with {path}: {e}")
+        except (OSError, ValueError, UnidentifiedImageError) as e:
+            log.warning("Error while analyzing image %s: %s", path, e)
     
     import numpy as np
     
-    print(f"\n=== Dataset Analysis (n={len(resolutions)}) ===")
-    print(f"\nResolutions:")
-    print(f"  Min: {min(resolutions, key=lambda x: x[0]*x[1])}")
-    print(f"  Max: {max(resolutions, key=lambda x: x[0]*x[1])}")
-    print(f"  Avg: {int(np.mean([w*h for w,h in resolutions])**0.5)}×{int(np.mean([w*h for w,h in resolutions])**0.5)}")
+    log.info("=== Dataset Analysis (n=%d) ===", len(resolutions))
+    log.info("Resolutions:")
+    log.info("  Min: %s", min(resolutions, key=lambda x: x[0] * x[1]))
+    log.info("  Max: %s", max(resolutions, key=lambda x: x[0] * x[1]))
+    avg_side = int(np.mean([w * h for w, h in resolutions]) ** 0.5)
+    log.info("  Avg: %dx%d", avg_side, avg_side)
     
-    print(f"\nFile Sizes:")
-    print(f"  Min: {min(file_sizes):.1f} KB")
-    print(f"  Max: {max(file_sizes):.1f} KB")
-    print(f"  Avg: {np.mean(file_sizes):.1f} KB")
-    print(f"  Median: {np.median(file_sizes):.1f} KB")
+    log.info("File Sizes:")
+    log.info("  Min: %.1f KB", min(file_sizes))
+    log.info("  Max: %.1f KB", max(file_sizes))
+    log.info("  Avg: %.1f KB", float(np.mean(file_sizes)))
+    log.info("  Median: %.1f KB", float(np.median(file_sizes)))
     
-    print(f"\nAspect Ratios:")
-    print(f"  Min: {min(aspect_ratios):.2f}")
-    print(f"  Max: {max(aspect_ratios):.2f}")
-    print(f"  Avg: {np.mean(aspect_ratios):.2f}")
+    log.info("Aspect Ratios:")
+    log.info("  Min: %.2f", min(aspect_ratios))
+    log.info("  Max: %.2f", max(aspect_ratios))
+    log.info("  Avg: %.2f", float(np.mean(aspect_ratios)))
     
     # Estimate patches for Qwen
     patches_per_image = []
@@ -101,18 +102,18 @@ def analyze_dataset_images(data, sample_size=100):
         num_patches = best_ratio[0] * best_ratio[1]
         patches_per_image.append(num_patches)
     
-    print(f"\nEstimated Qwen Patches per Image:")
-    print(f"  Min: {min(patches_per_image)} patches")
-    print(f"  Max: {max(patches_per_image)} patches")
-    print(f"  Avg: {np.mean(patches_per_image):.1f} patches")
+    log.info("Estimated Qwen Patches per Image:")
+    log.info("  Min: %d patches", min(patches_per_image))
+    log.info("  Max: %d patches", max(patches_per_image))
+    log.info("  Avg: %.1f patches", float(np.mean(patches_per_image)))
     
-    print(f"\nMemory Estimate for batch_size=6:")
+    log.info("Memory Estimate for batch_size=6:")
     avg_patches = np.mean(patches_per_image)
     total_patches = 6 * avg_patches
     memory_gb = total_patches * (448*448*3*4) / 1024**3
-    print(f"  Total patches: {total_patches:.0f}")
-    print(f"  Raw pixel memory: {memory_gb:.2f} GB")
-    print(f"  With model overhead (3x): {memory_gb*3:.2f} GB")
+    log.info("  Total patches: %.0f", total_patches)
+    log.info("  Raw pixel memory: %.2f GB", memory_gb)
+    log.info("  With model overhead (3x): %.2f GB", memory_gb * 3)
 
 # model and tokenizer
 #----- Load model ----
@@ -160,7 +161,7 @@ def get_model_loader(name: str):
 @register_model(MINICPM26)
 def load_minicpm():
     """Load MiniCPM 2.6"""
-    print(f"Loading {MINICPM26}...")
+    log.info("Loading %s...", MINICPM26)
     model_path = MODEL_PATHS[MINICPM26]
     model = AutoModel.from_pretrained(model_path, trust_remote_code=True, dtype=torch.bfloat16)
     model = model.to(device='cuda', dtype=torch.bfloat16)
@@ -172,7 +173,7 @@ def load_minicpm():
 @register_model(QWEN3_8B)
 def load_qwen_8b():
     """Load Qwen3 VL 8B"""
-    print(f"Loading {QWEN3_8B}...")
+    log.info("Loading %s...", QWEN3_8B)
     model_path = MODEL_PATHS[QWEN3_8B]
     model = Qwen3VLForConditionalGeneration.from_pretrained(model_path,
                                                             dtype=torch.bfloat16,
@@ -190,7 +191,7 @@ def load_qwen_8b():
 @register_model(QWEN3_30B)
 def load_qwen3_30b():
     """Load Qwen3 VL 30B"""
-    print(f"Loading {QWEN3_30B}...")
+    log.info("Loading %s...", QWEN3_30B)
     model_path = MODEL_PATHS[QWEN3_30B]
     model = Qwen3VLMoeForConditionalGeneration.from_pretrained(model_path,
                                                             dtype=torch.bfloat16,
@@ -208,7 +209,7 @@ def load_qwen3_30b():
 @register_model(INTERNVL3_38B)
 def load_internvl3_38b():
     """Load InternVL3-38B with custom device map"""
-    print(f"Loading {INTERNVL3_38B}...")
+    log.info("Loading %s...", INTERNVL3_38B)
     model_path = MODEL_PATHS[INTERNVL3_38B]
     device_map = split_model(model_path)
     
@@ -231,7 +232,7 @@ def load_internvl3_38b():
 @register_model(INTERNVL3_8B)
 def load_internvl3_8b():
     """Load InternVL3-8B with custom device map"""
-    print(f"Loading {INTERNVL3_8B}...")
+    log.info("Loading %s...", INTERNVL3_8B)
     model_path = MODEL_PATHS[INTERNVL3_8B]
     device_map = split_model(model_path)
     
@@ -254,7 +255,7 @@ def load_internvl3_8b():
 @register_model(INTERNVL35_8B)
 def load_internvl3_5_8b():
     """Load InternVL3.5-8B with auto device map"""
-    print(f"Loading {INTERNVL35_8B}...")
+    log.info("Loading %s...", INTERNVL35_8B)
     model_path = MODEL_PATHS[INTERNVL35_8B]
     #device_map = split_model(model_path)
     
@@ -278,7 +279,7 @@ def load_internvl3_5_8b():
 @register_model(LLAMA31_8B_INSTRUCT)
 def load_llama_8b():
     """Load LLaMA 3.1-Instruct 8B"""
-    print(f"Loading {LLAMA31_8B_INSTRUCT}...")
+    log.info("Loading %s...", LLAMA31_8B_INSTRUCT)
     model_path = MODEL_PATHS[LLAMA31_8B_INSTRUCT]
     
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -299,7 +300,7 @@ def load_llama_8b():
 @register_model(LLAMA33_70B)
 def load_llama_70b():
     """Load LLaMA 3.3 70B"""
-    print(f"Loading {LLAMA33_70B}...")
+    log.info("Loading %s...", LLAMA33_70B)
     model_path = MODEL_PATHS[LLAMA33_70B]
     
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -335,7 +336,7 @@ def load_data(dataset: str, split: str="train"):
     # if dataset == FOOD101:
     #     split = "test"
     
-    print("Dataset: ", dataset)
+    log.info("Dataset: %s", dataset)
     data = BaseDataset(dataset, data_path, split)
     return data
 

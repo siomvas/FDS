@@ -6,9 +6,12 @@ uniformly at random, creating balanced, homogeneous client datasets.
 """
 
 import numpy as np
+import logging
 from typing import List
 from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
 from data_loading.dataset import BaseDataset
+
+logger = logging.getLogger(__name__)
 
 
 class RandomSplitter(BaseDatasetSplitter):
@@ -46,7 +49,7 @@ class RandomSplitter(BaseDatasetSplitter):
         ... )
         >>> splits = splitter.get_client_splits()
         >>> summary = splitter.get_split_summary()
-        >>> print(f"Client 0 has {summary['client_sizes']['client_0']['train_samples']} samples")
+        >>> f"Client 0 has {summary['client_sizes']['client_0']['train_samples']} samples"
     """
 
     def __init__(
@@ -83,7 +86,7 @@ class RandomSplitter(BaseDatasetSplitter):
                 - clients: Per-client train/val splits
                 - global_val: Global validation set (if valset_type="global")
         """
-        print("Performing random splitting of the dataset...")
+        logger.info("Performing random splitting of the dataset...")
         # Seed already set in base class init
 
         splits: DatasetSplits = {
@@ -126,7 +129,7 @@ class RandomSplitter(BaseDatasetSplitter):
 
             splits["clients"][client_id] = ClientSplit(train=client_train_data, val=[])
 
-        print("Random splitting with global validation completed.")
+        logger.info("Random splitting with global validation completed.")
         return splits
 
     def _split_with_local_val(self, client_train_indices: List[np.ndarray], splits: DatasetSplits) -> DatasetSplits:
@@ -158,7 +161,7 @@ class RandomSplitter(BaseDatasetSplitter):
             client_val_data = self._load_dataset_samples(self.val_dataset, val_indices.tolist())
 
             splits["clients"][client_id] = ClientSplit(train=client_train_data, val=client_val_data)
-        print("Random splitting with local validation completed.")
+        logger.info("Random splitting with local validation completed.")
         return splits
 
     def _split_without_val(self, client_train_indices: List[np.ndarray], splits: DatasetSplits) -> DatasetSplits:
@@ -175,21 +178,22 @@ class RandomSplitter(BaseDatasetSplitter):
             client_id = f"client_{i}"
             client_train_data = self._load_dataset_samples(self.train_dataset, train_indices.tolist())
             splits["clients"][client_id] = ClientSplit(train=client_train_data, val=[])
-        print("Random splitting without validation completed.")
+        logger.info("Random splitting without validation completed.")
         return splits
 
     
 if __name__ == "__main__":
     # Test the RandomSplitter with Tiny ImageNet
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     train_dataset = BaseDataset("tiny_imagenet", "/path/to/gtai/FDS/", "train")
     val_dataset = BaseDataset("tiny_imagenet", "/path/to/gtai/FDS/", "val")
-    print("Testing with global validation set:")
+    logger.info("Testing with global validation set:")
     splitter = RandomSplitter(train_dataset, val_dataset, n_clients=5, heterogeneity=0.5, valset_type="global", seed=42)
-    print(splitter.get_split_summary())
-    print("\nTesting with local validation sets:")
+    logger.info("Split summary: %s", splitter.get_split_summary())
+    logger.info("Testing with local validation sets:")
     splitter = RandomSplitter(train_dataset, val_dataset, n_clients=5, heterogeneity=0.5, valset_type="local", seed=42)
-    print(splitter.get_split_summary())
-    print("\nTesting without validation sets:")
+    logger.info("Split summary: %s", splitter.get_split_summary())
+    logger.info("Testing without validation sets:")
     splitter = RandomSplitter(train_dataset, None, n_clients=5, heterogeneity=0.5, valset_type="none", seed=42)
-    print(splitter.get_split_summary())
+    logger.info("Split summary: %s", splitter.get_split_summary())
     

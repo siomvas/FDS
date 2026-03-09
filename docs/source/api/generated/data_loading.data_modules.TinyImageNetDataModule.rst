@@ -1,7 +1,7 @@
-﻿data\_loading.dm.TinyImageNetDataModule
-=======================================
+﻿data\_loading.data\_modules.TinyImageNetDataModule
+==================================================
 
-.. currentmodule:: data_loading.dm
+.. currentmodule:: data_loading.data_modules
 
 .. autoclass:: TinyImageNetDataModule
 
@@ -14,8 +14,8 @@
    .. autosummary::
    
       ~TinyImageNetDataModule.__init__
-      ~TinyImageNetDataModule.create_label_map
       ~TinyImageNetDataModule.get_client_data
+      ~TinyImageNetDataModule.get_collate_fn
       ~TinyImageNetDataModule.get_train_transform
       ~TinyImageNetDataModule.get_val_transform
       ~TinyImageNetDataModule.load_splits

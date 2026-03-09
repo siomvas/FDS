@@ -60,6 +60,7 @@ See Also
 docs/RESEARCH_SUMMARY.md : Detailed explanation of metrics and their use cases.
 """
 
+import logging
 import numpy as np
 from torchvision import models, transforms
 import torch
@@ -78,6 +79,8 @@ from embedding.embedding_extractors import ModelRegistry
 from data_loading.dataset import ImageDataset
 
 _GLOBAL_CACHE: Optional[CacheManager] = None
+log = logging.getLogger(__name__)
+ID_ESTIMATION_ERRORS = (RuntimeError, ValueError, TypeError, FloatingPointError, OSError)
 
 
 def get_global_cache(cache_dir: str = "/path/to/gtai/FDS/embedding_cache") -> CacheManager:
@@ -200,7 +203,7 @@ def _extract_features(
         image_paths = [str(item["image"]) for item in dataset]
 
         # Use extractor's extract_embeddings with caching support
-        # print(f"This is called with use_cache={use_cache}, dataset_name={dataset_name}, base_path={base_path} and extractor_kwargs={extractor_kwargs}")
+        # logger.debug(f"This is called with use_cache={use_cache}, dataset_name={dataset_name}, base_path={base_path} and extractor_kwargs={extractor_kwargs}")
         features = extractor.extract_embeddings(
             images=image_paths,
             use_cache=use_cache,
@@ -275,7 +278,7 @@ def JS_divergence(dataset_list, num_classes=None, return_all=False):
         ...     [{"image": "c.jpg", "label": 0}, {"image": "d.jpg", "label": 0}],
         ... ]
         >>> jsd = JS_divergence(client_data, num_classes=2)
-        >>> print(f"JSD: {jsd:.4f}")
+        >>> f"JSD: {jsd:.4f}"
 
     Notes:
         - Higher JSD indicates more heterogeneous label distributions
@@ -323,7 +326,7 @@ def TV_label_distributions(dataset_list, num_classes=None, return_all=False):
         ...     [{"image": "c.jpg", "label": 1}, {"image": "d.jpg", "label": 1}],
         ... ]
         >>> tv = TV_label_distributions(client_data, num_classes=2)
-        >>> print(f"Total Variation: {tv:.4f}")
+        >>> f"Total Variation: {tv:.4f}"
 
     Notes:
         - TV = 0 when distributions are identical
@@ -512,7 +515,7 @@ def MMD(dataset_list, sigma=None, return_all=False, **kwargs):
         ...     [{"image": "img3.jpg", "label": 0}, {"image": "img4.jpg", "label": 0}],
         ... ]
         >>> mmd = MMD(client_data, model_name="dinov2-base", use_cache=True)
-        >>> print(f"MMD: {mmd:.4f}")
+        >>> f"MMD: {mmd:.4f}"
 
     Notes:
         - MMD ≈ 0 when distributions are identical
@@ -549,7 +552,7 @@ def energy_distance_features(dataset_list, return_all=False, **kwargs):
         ...     [{"image": "img3.jpg", "label": 1}, {"image": "img4.jpg", "label": 1}],
         ... ]
         >>> ed = energy_distance_features(client_data, model_name="clip-vit-b-32")
-        >>> print(f"Energy Distance: {ed:.4f}")
+        >>> f"Energy Distance: {ed:.4f}"
 
     Notes:
         - Energy distance = 0 if and only if distributions are identical
@@ -614,7 +617,7 @@ def sliced_wasserstein_distance(dataset_list, return_all=False, **kwargs):
         ...     client_data,
         ...     model_name="siglip-base-patch16-384"
         ... )
-        >>> print(f"Sliced Wasserstein: {swd:.4f}")
+        >>> f"Sliced Wasserstein: {swd:.4f}"
 
     Notes:
         - Uses 500 random projections for approximation
@@ -726,14 +729,14 @@ def KS_multivariate_test(
             pca_temp.fit(all_features)
             cumsum_var = np.cumsum(pca_temp.explained_variance_ratio_)
             n_components = int(np.argmax(cumsum_var >= pca_variance) + 1)
-            print(f"PCA: Using {n_components} components to explain {pca_variance:.1%} variance")
+            log.info("PCA: Using %s components to explain %.1f%% variance", n_components, pca_variance * 100.0)
         else:
             n_components = pca_components
 
         pca = PCA(n_components=n_components)
         pca.fit(all_features)
         features = [pca.transform(f) for f in features]
-        print(f"PCA: Reduced from {all_features.shape[1]} to {n_components} dimensions")
+        log.info("PCA: Reduced from %s to %s dimensions", all_features.shape[1], n_components)
 
     def compute_ks(f1, f2):
         n = f1.shape[1]
@@ -928,8 +931,8 @@ def intrinsic_dimensionality(
         try:
             val = estimator(feat)
             id_estimates.append(val)
-        except Exception as e:
-            print(f"Warning: Failed to estimate ID for dataset {i}: {e}")
+        except ID_ESTIMATION_ERRORS as exc:
+            log.warning("Failed to estimate ID for dataset %s: %s", i, exc)
             id_estimates.append(np.nan)
 
     return id_estimates if return_all else float(np.nanmean(id_estimates))
@@ -1001,7 +1004,9 @@ def knn_separability(dataset_list, k=5, return_all=False, **kwargs):
 
     except RuntimeError as e:
         if 'out of memory' in str(e):
-            print("Warning: CUDA out of memory during k-NN computation. Falling back to batched implementation.")
+            log.warning(
+                "CUDA out of memory during k-NN computation. Falling back to batched implementation."
+            )
             torch.cuda.empty_cache()
             
             batch_size = 5000
@@ -1052,7 +1057,7 @@ def centroid_distance(dataset_list, return_all=False, **kwargs):
         ...     [{"image": "img3.jpg", "label": 0}, {"image": "img4.jpg", "label": 0}],
         ... ]
         >>> cd = centroid_distance(client_data, model_name="mae-base")
-        >>> print(f"Centroid Distance: {cd:.4f}")
+        >>> f"Centroid Distance: {cd:.4f}"
 
     Notes:
         - Higher distance indicates clients have different mean features

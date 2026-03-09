@@ -1,7 +1,10 @@
 # Read from from txt file
 import json
 import re
+import logging
 from typing import List, Dict, Tuple, Any
+
+logger = logging.getLogger(__name__)
 
 # Save batch results to JSONL
 def append_batch_to_jsonl(path: str, data_list: List[Dict[str, Any]]) -> None:
@@ -74,7 +77,7 @@ def load_jsonl(filepath):
             try:
                 data.append(json.loads(line))
             except json.JSONDecodeError as e:
-                print(f"Warning: Skipping invalid JSON on line {line_num}: {e}")
+                logger.warning("Skipping invalid JSON on line %d: %s", line_num, e)
                 continue
         
         return data

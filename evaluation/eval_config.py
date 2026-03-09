@@ -5,9 +5,12 @@ the computation script (evaluate_partitions.py) and visualization script (genera
 """
 import json
 import re
+import logging
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # ============================================================================
 # 1. Configuration Data Classes
@@ -157,8 +160,9 @@ class PartitionConfig:
                     data = json.load(f)
                     if "clients" in data:
                         config.n_clients = len(data["clients"])
-            except Exception:
-                config.n_clients = 0 # Mark as failed/unknown
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                config.n_clients = 0  # Mark as failed/unknown
+                log.warning("Could not infer n_clients from %s: %s", path, exc)
 
         return config
 

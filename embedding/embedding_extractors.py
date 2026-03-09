@@ -58,7 +58,7 @@ Basic usage with automatic caching:
     ...     images=image_paths,
     ...     use_cache=True
     ... )
-    >>> print(embeddings.shape)  # (3, 768)
+    >>> embeddings.shape)  # (3, 768
 
 Using different models:
 
@@ -115,6 +115,7 @@ See Also
 """
 
 from abc import ABC, abstractmethod
+import logging
 from typing import Dict, List, Optional, Type, Union, Any
 import os
 import json
@@ -141,6 +142,8 @@ from transformers import (
     SiglipImageProcessor,
     ViTMAEModel,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ModelRegistry:
@@ -177,7 +180,7 @@ class ModelRegistry:
         List available models:
 
         >>> available = ModelRegistry.list_models()
-        >>> print(available)
+        >>> available
         ['inception_v3', 'dinov2', 'clip', 'siglip', ...]
     """
 
@@ -262,7 +265,7 @@ class ModelRegistry:
 
         Examples:
             >>> models = ModelRegistry.list_models()
-            >>> print(models)
+            >>> models
             ['inception_v3', 'dinov2', 'clip', 'siglip', ...]
         """
         return list(cls._REGISTRY.keys())
@@ -403,10 +406,10 @@ class EmbeddingExtractor(ABC):
                 kwargs['local_files_only'] = True
                 model_path = self.model_dir / self.model_name.replace("/", "--")
                 if model_path.exists():
-                    print(f"Loading model from local directory: {model_path}")
+                    logger.info("Loading model from local directory: %s", model_path)
                     return download_func(str(model_path), *args[1:], **kwargs)
                 else:
-                    print(f"Model not found in {model_path}. Will try to download.")
+                    logger.info("Model not found in %s. Will try to download.", model_path)
 
             return download_func(*args, **kwargs)
 
@@ -417,7 +420,7 @@ class EmbeddingExtractor(ABC):
             model.save_pretrained(str(model_path))
             if processor:
                 processor.save_pretrained(str(model_path))
-            print(f"Model saved locally to: {model_path}")
+            logger.info("Model saved locally to: %s", model_path)
 
     @abstractmethod
     def load_model(self) -> None:
@@ -504,10 +507,10 @@ class EmbeddingExtractor(ABC):
                 **cache_params
             )
             if cached_data is not None:
-                # print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
+                # logger.debug(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
                 return cached_data
             else:
-                print(f"  ✗ Cache MISS: {self.model_name} - Computing...")
+                logger.info("Cache miss for %s; computing embeddings.", self.model_name)
 
         # 2. Compute if not cached
         if not self.model:
@@ -596,7 +599,7 @@ class InceptionExtractor(EmbeddingExtractor):
         super().__init__(model_name="inception_v3", **kwargs)
 
     def load_model(self) -> None:
-        print(f"    Loading InceptionV3 ...")
+        logger.info("Loading InceptionV3.")
         self.transform = transforms.Compose([
             transforms.Resize(299),
             transforms.CenterCrop(299),
@@ -637,10 +640,17 @@ class InceptionExtractor(EmbeddingExtractor):
                 **cache_params
             )
             if cached_data is not None:
-                # print(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
+                # logger.debug(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
                 return cached_data
             else:
-                print(f"  ✗ Cache MISS, Received args {dataset_name}, {base_path}, {self.model_name}, use_cache={use_cache}, cache_params={cache_params} - Computing...")
+                logger.info(
+                    "Cache miss for %s (dataset=%s, base_path=%s, use_cache=%s); computing embeddings.",
+                    self.model_name,
+                    dataset_name,
+                    base_path,
+                    use_cache,
+                )
+                logger.debug("Cache params for %s: %s", self.model_name, cache_params)
 
         if not self.model:
             self.load_model()
@@ -661,7 +671,7 @@ class InceptionExtractor(EmbeddingExtractor):
             result = np.concatenate(all_embeddings, axis=0)
 
         if use_cache and self.cache_manager:
-            print("Saving to cache with params:", cache_params)
+            logger.debug("Saving embeddings to cache for %s with params: %s", self.model_name, cache_params)
             self.cache_manager.put(
                 embeddings=result,
                 model_name=self.model_name,
@@ -716,7 +726,7 @@ class MAEExtractor(EmbeddingExtractor):
         self.hf_model_path = self.VARIANTS[variant]
 
     def load_model(self) -> None:
-        print(f"Loading MAE {self.variant}...")
+        logger.info("Loading MAE %s.", self.variant)
         self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.hf_model_path)
         self.model = self._download_model_with_proxy(ViTMAEModel.from_pretrained, self.hf_model_path)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
@@ -761,7 +771,7 @@ class DINOv2Extractor(EmbeddingExtractor):
         self.variant = variant
         self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
-        print(f"Loading DINOv2 {self.variant}...")
+        logger.info("Loading DINOv2 %s.", self.variant)
         self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.hf_model_path)
         self.model = self._download_model_with_proxy(AutoModel.from_pretrained, self.hf_model_path)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
@@ -810,7 +820,7 @@ class CLIPExtractor(EmbeddingExtractor):
         self.variant = variant
         self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
-        print(f"Loading CLIP {self.variant}...")
+        logger.info("Loading CLIP %s.", self.variant)
         self.processor = self._download_model_with_proxy(CLIPImageProcessor.from_pretrained, self.hf_model_path, use_safetensors=True)
         self.model = self._download_model_with_proxy(CLIPVisionModel.from_pretrained, self.hf_model_path, use_safetensors=True)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
@@ -860,7 +870,7 @@ class SigLIPExtractor(EmbeddingExtractor):
         self.variant = variant
         self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
-        print(f"Loading SigLIP {self.variant}...")
+        logger.info("Loading SigLIP %s.", self.variant)
         self.processor = self._download_model_with_proxy(SiglipImageProcessor.from_pretrained, self.hf_model_path)
         self.model = self._download_model_with_proxy(SiglipVisionModel.from_pretrained, self.hf_model_path)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
@@ -905,7 +915,11 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
             raise ValueError(f"Invalid target size '{variant}' for RawPixelResizerExtractor.")
 
     def load_model(self) -> None:
-        print(f"Using Raw Pixel Resizer with target size {self.target_size}x{self.target_size}...")
+        logger.info(
+            "Using Raw Pixel Resizer with target size %dx%d.",
+            self.target_size,
+            self.target_size,
+        )
         self.transform = transforms.Compose([
             transforms.Resize((self.target_size, self.target_size)),
             transforms.ToTensor(),
@@ -1016,7 +1030,12 @@ class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
         self.transformer: Optional[Any] = None
 
     def load_model(self) -> None:
-        print(f"Using Sparse Random Projection Resizer with target size {self.target_size}x{self.target_size} and target dim {self.target_dim}...")
+        logger.info(
+            "Using Sparse Random Projection Resizer with target size %dx%d and target dim %d.",
+            self.target_size,
+            self.target_size,
+            self.target_dim,
+        )
         from sklearn.random_projection import SparseRandomProjection
         self.transform = transforms.Compose([
             transforms.Resize((self.target_size, self.target_size)),
@@ -1079,7 +1098,7 @@ class SparseRandomProjectionResizerExtractor(EmbeddingExtractor):
             try:
                 projected = self.transformer.transform(flat_batch)
                 all_embeddings.append(projected)
-            except Exception as e:
+            except (AttributeError, RuntimeError, TypeError, ValueError) as e:
                 raise RuntimeError(f"Failed to transform batch with random projection: {e}")
 
         if not all_embeddings:
@@ -1142,7 +1161,7 @@ class UntrainedAutoEncoderExtractor(EmbeddingExtractor):
         self.autoencoder: Optional[nn.Module] = None
 
     def load_model(self) -> None:
-        print(f"Using Untrained AutoEncoder with input size {self.input_size}x{self.input_size}")
+        logger.info("Using Untrained AutoEncoder with input size %dx%d.", self.input_size, self.input_size)
         self.transform = transforms.Compose([
             transforms.Resize((self.input_size, self.input_size)),
             transforms.ToTensor(),
@@ -1280,7 +1299,12 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
         except ImportError:
             raise ImportError("kymatio is required for WaveletScatteringExtractor. Please install it via 'pip install kymatio'.")
         
-        print(f"Using Wavelet Scattering with input size {self.input_size}x{self.input_size} and J={self.J}...")
+        logger.info(
+            "Using Wavelet Scattering with input size %dx%d and J=%d.",
+            self.input_size,
+            self.input_size,
+            self.J,
+        )
 
         self.transform = transforms.Compose([
             transforms.Resize((self.input_size, self.input_size)),

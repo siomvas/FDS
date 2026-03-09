@@ -1,9 +1,6 @@
 import torch
-import os
 import json
 from typing import List
-import logging
-import sys, os
 import logging
 from partitioning.vlm.utils import util_loader
 from partitioning.vlm.utils import helper
@@ -84,7 +81,7 @@ def query_llm(model, tokenizer, prompts: List[str], max_new_tokens: int = 1024) 
         )
     
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    #print("RESPONSE: ", response)
+    # logger.debug("RESPONSE: ", response)
     marker = "Your response:assistant"
     idx = response.find(marker)
     if idx != -1:
@@ -103,7 +100,7 @@ def main(model, tokenizer):
 
     # Usage
     label_counts = post_process(input_file)
-    #print(label_counts)
+    # logger.debug(label_counts)
 
     logger.info(f"Loaded {len(label_counts)} items")
 
@@ -115,7 +112,7 @@ def main(model, tokenizer):
         threshold = 30
     label_counts = dict(sorted({k: v for k, v in label_counts.items() if v > threshold}.items(), key=lambda item: item[1], reverse=True))
 
-    print("Post-processed dictionary: ", label_counts)
+    logger.info("Post-processed dictionary: %s", label_counts)
     
     system_prompt = helper.read_file_to_string(args.step2b_prompt_path)
     system_prompt = system_prompt.replace("[__NUM_CLASSES_CLUSTER__]", str(args.num_classes))
@@ -124,7 +121,7 @@ def main(model, tokenizer):
 
     prompt = build_chat_prompt(model, tokenizer, system_prompt, label_counts, args.num_classes)
     response = query_llm(model, tokenizer, prompt, max_new_tokens=500)
-    print(response)
+    logger.info("Step 2b response: %s", response)
 
     # save results
     with open(args.step2b_result_path, 'w', encoding='utf-8') as file:

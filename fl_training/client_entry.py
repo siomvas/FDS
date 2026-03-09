@@ -1,42 +1,23 @@
 import argparse
 import base64
+import binascii
 import json
 import logging
 import re
-import sys
 import importlib
-from pathlib import Path
 from typing import Dict, Any
 
 import torch
 import nvflare.client as flare
 from nvflare.client.tracking import SummaryWriter
 
-# -----------------------------------------------------------------------------
-# 1. Path Setup for Imports
-# -----------------------------------------------------------------------------
-# We need to ensure we can import:
-# 1. Local modules (models.factory, engines)
-# 2. External modules (data_loading, which is one level up)
-
-# Add current directory (fl_training) to sys.path
-current_dir = Path(__file__).parent.resolve()
-if str(current_dir) not in sys.path:
-    sys.path.append(str(current_dir))
-
-# Add project root (parent of fl_training) to sys.path to allow 'data_loading' import
-project_root = current_dir.parent.resolve()
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
-
-# Now we can safely import local modules
-from models.factory import create_model
-from engines.classification import ClassificationEngine
-from engines.segmentation import SegmentationEngine
-from engines.detection import DetectionEngine
+from fl_training.models.factory import create_model
+from fl_training.engines.classification import ClassificationEngine
+from fl_training.engines.segmentation import SegmentationEngine
+from fl_training.engines.detection import DetectionEngine
 
 # Configure Logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 log = logging.getLogger("ClientEntry")
 
 def decode_payload(payload: str) -> Dict[str, Any]:
@@ -44,11 +25,60 @@ def decode_payload(payload: str) -> Dict[str, Any]:
     Decodes the Base64 configuration payload passed from the Server/Job.
     """
     try:
-        json_str = base64.b64decode(payload).decode("utf-8")
+        json_str = base64.b64decode(payload, validate=True).decode("utf-8")
         return json.loads(json_str)
-    except Exception as e:
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
         log.error("Failed to decode config payload. Ensure base64 string is valid.")
-        raise e
+        raise ValueError("Invalid config payload passed to client entrypoint.") from e
+
+
+def validate_client_config(cfg: Dict[str, Any], task_type: str) -> None:
+    required_sections = ("dataset", "training", "model", "fed")
+    missing = [section for section in required_sections if section not in cfg]
+    if missing:
+        raise ValueError(f"Client config is missing required sections: {missing}")
+
+    dataset_cfg = cfg["dataset"]
+    training_cfg = cfg["training"]
+    fed_cfg = cfg["fed"]
+
+    if not isinstance(dataset_cfg, dict):
+        raise ValueError("Client config 'dataset' section must be a mapping.")
+    if not isinstance(training_cfg, dict):
+        raise ValueError("Client config 'training' section must be a mapping.")
+    if not isinstance(fed_cfg, dict):
+        raise ValueError("Client config 'fed' section must be a mapping.")
+
+    if not isinstance(dataset_cfg.get("class_path"), str) or not dataset_cfg["class_path"].strip():
+        raise ValueError("dataset.class_path must be a non-empty string.")
+
+    dataset_args = dataset_cfg.get("args", {})
+    if not isinstance(dataset_args, dict):
+        raise ValueError("dataset.args must be a mapping.")
+
+    has_split_in_args = "split_file" in dataset_args
+    has_split_in_dataset = "dataset_splits" in dataset_cfg
+    if not (has_split_in_args or has_split_in_dataset):
+        raise ValueError(
+            "Missing dataset split path. Provide dataset.dataset_splits or dataset.args.split_file."
+        )
+
+    if "batch_size" not in training_cfg:
+        raise ValueError("training.batch_size is required.")
+    if "num_classes" not in training_cfg:
+        raise ValueError("training.num_classes is required.")
+    if "rounds" not in fed_cfg:
+        raise ValueError("fed.rounds is required.")
+
+    declared_task = str(training_cfg.get("task_type", "")).lower().strip()
+    requested_task = str(task_type).lower().strip()
+    if declared_task and declared_task != requested_task:
+        raise ValueError(
+            f"Task mismatch: CLI requested '{requested_task}' but config declares '{declared_task}'."
+        )
+
+    if "seed" not in cfg:
+        raise ValueError("Config is missing required 'seed' value.")
 
 def get_data_module(class_path: str, args: Dict[str, Any]):
     """
@@ -60,9 +90,9 @@ def get_data_module(class_path: str, args: Dict[str, Any]):
         module = importlib.import_module(module_path)
         cls = getattr(module, class_name)
         return cls(**args)
-    except (ImportError, AttributeError) as e:
+    except (ImportError, AttributeError, TypeError, ValueError) as e:
         log.error(f"Failed to load DataModule: {class_path}")
-        raise e
+        raise RuntimeError(f"Unable to instantiate DataModule '{class_path}'.") from e
 
 def extract_client_idx(client_name: str) -> int:
     """Convert NVFlare client name to zero-based numeric index."""
@@ -95,13 +125,14 @@ def main():
     parser.add_argument("--task_type", type=str, required=True, help="classification, segmentation, or detection")
     # Note: We can ignore other args like --lr or --epochs if they were passed mostly for display 
     # or fallback, because the truth is in the payload.
-    args, unknown = parser.parse_known_args()
+    args, _ = parser.parse_known_args()
 
 
     # 1. Configuration
     flare_ctx = flare.init()
     client_name = flare.get_site_name(flare_ctx)
     cfg = decode_payload(args.config_payload)
+    validate_client_config(cfg, args.task_type)
     writer = SummaryWriter()
     
     log.info(f"Client {client_name} Started with Task: {args.task_type}")

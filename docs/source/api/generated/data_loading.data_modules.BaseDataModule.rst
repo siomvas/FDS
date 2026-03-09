@@ -1,7 +1,7 @@
-﻿data\_loading.dm.BaseDataModule
-===============================
+﻿data\_loading.data\_modules.BaseDataModule
+==========================================
 
-.. currentmodule:: data_loading.dm
+.. currentmodule:: data_loading.data_modules
 
 .. autoclass:: BaseDataModule
 
@@ -14,8 +14,8 @@
    .. autosummary::
    
       ~BaseDataModule.__init__
-      ~BaseDataModule.create_label_map
       ~BaseDataModule.get_client_data
+      ~BaseDataModule.get_collate_fn
       ~BaseDataModule.get_train_transform
       ~BaseDataModule.get_val_transform
       ~BaseDataModule.load_splits

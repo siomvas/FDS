@@ -15,11 +15,11 @@ Usage:
       --metrics both
 """
 
-import sys
 import os
 import argparse
 import json
 import time
+import logging
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Any
@@ -31,16 +31,25 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from partitioning.random_splitter import RandomSplitter
 from partitioning.dirichlet_splitter import DirichletSplitter
 from partitioning.multivariate_dirichlet_splitter import MultivariateDirichletSplitter
 from partitioning.embedding_splitter import EmbeddingSplitter
-from partitioning.embedding_pipeline.config import get_preset_config
+from partitioning.embedding_utils.config import get_preset_config
 from data_loading.dataset import BaseDataset
 from partitioning.base_splitter import BaseDatasetSplitter, DatasetSplits
 from evaluation import metrics
+
+log = logging.getLogger(__name__)
+
+EXPERIMENT_RUN_ERRORS = (
+    RuntimeError,
+    ValueError,
+    TypeError,
+    KeyError,
+    FileNotFoundError,
+    OSError,
+)
 
 
 # ============================================================================
@@ -220,7 +229,7 @@ def get_or_create_wnid_mapping(dataset_name: str, train_dataset: BaseDataset) ->
             with open(mapping_file, 'r') as f:
                 return json.load(f)
 
-        print(f"  Creating WNID mapping for {dataset_name}...")
+        log.info("Creating WNID mapping for %s...", dataset_name)
         all_labels = sorted(set(train_dataset[i][1] for i in range(len(train_dataset))))
         mapping = {label: idx for idx, label in enumerate(all_labels)}
 
@@ -344,7 +353,7 @@ def compute_feature_metrics(
         "cache_dir": cache_dir
     }
 
-    print("    Computing FID (InceptionV3)...")
+    log.info("Computing FID (InceptionV3)...")
     # FID always uses InceptionV3 regardless of feature_model
     fid_all = metrics.FID_distance(
         client_datasets, batch_size=batch_size, return_all=True,
@@ -353,35 +362,35 @@ def compute_feature_metrics(
     results['fid_mean'] = float(np.mean(fid_all))
     results['fid_std'] = float(np.std(fid_all))
 
-    print(f"    Computing MMD features ({feature_model})...")
+    log.info("Computing MMD features (%s)...", feature_model)
     mmd_all = metrics.MMD(
         client_datasets, return_all=True, **ext_kwargs
     )
     results['mmd_features_mean'] = float(np.mean(mmd_all))
     results['mmd_features_std'] = float(np.std(mmd_all))
 
-    print(f"    Computing Wasserstein distance ({feature_model})...")
+    log.info("Computing Wasserstein distance (%s)...", feature_model)
     wass_all = metrics.sliced_wasserstein_distance(
         client_datasets, return_all=True, **ext_kwargs
     )
     results['wasserstein_mean'] = float(np.mean(wass_all))
     results['wasserstein_std'] = float(np.std(wass_all))
 
-    print(f"    Computing Energy Distance ({feature_model})...")
+    log.info("Computing Energy Distance (%s)...", feature_model)
     ed_all = metrics.energy_distance_features(
         client_datasets, return_all=True, **ext_kwargs
     )
     results['energy_dist_mean'] = float(np.mean(ed_all))
     results['energy_dist_std'] = float(np.std(ed_all))
 
-    print(f"    Computing Feature Variance ({feature_model})...")
+    log.info("Computing Feature Variance (%s)...", feature_model)
     fv_all = metrics.feature_variance(
         client_datasets, return_all=True, **ext_kwargs
     )
     results['feature_variance_mean'] = float(np.mean(fv_all))
     results['feature_variance_std'] = float(np.std(fv_all))
 
-    print(f"    Computing Intrinsic Dimensionality ({feature_model})...")
+    log.info("Computing Intrinsic Dimensionality (%s)...", feature_model)
     id_all = metrics.intrinsic_dimensionality(
         client_datasets, method="two_nn", return_all=True, **ext_kwargs
     )
@@ -391,21 +400,21 @@ def compute_feature_metrics(
         results['id_mean'] = float(np.mean(id_clean))
         results['id_std'] = float(np.std(id_clean))
     
-    print(f"    Computing k-NN Separability ({feature_model})...")
+    log.info("Computing k-NN Separability (%s)...", feature_model)
     knn_all = metrics.knn_separability(
         client_datasets, k=5, return_all=True, **ext_kwargs
     )
     results['knn_sep_mean'] = float(np.mean(knn_all))
     results['knn_sep_std'] = float(np.std(knn_all))
     
-    print(f"    Computing Centroid Distance ({feature_model})...")
+    log.info("Computing Centroid Distance (%s)...", feature_model)
     cd_all = metrics.centroid_distance(
         client_datasets, return_all=True, **ext_kwargs
     )
     results['centroid_dist_mean'] = float(np.mean(cd_all))
     results['centroid_dist_std'] = float(np.std(cd_all))
 
-    print(f"    Computing KS multivariate test ({feature_model})...")
+    log.info("Computing KS multivariate test (%s)...", feature_model)
     ks_all = metrics.KS_multivariate_test(
         client_datasets, pca_variance=0.95, return_all=True, **ext_kwargs
     )
@@ -414,7 +423,7 @@ def compute_feature_metrics(
     min_pvals = [r['min_pvalue'] for r in ks_all]
     results['ks_multivariate_min_pvalue'] = float(np.min(min_pvals)) if min_pvals else 0.0
 
-    print(f"    Computing Vendi score ({feature_model})...")
+    log.info("Computing Vendi score (%s)...", feature_model)
     vendi_all = metrics.vendi_score(
         client_datasets, return_all=True, **ext_kwargs
     )
@@ -473,7 +482,7 @@ def run_experiment(
 
     # Compute label metrics
     if metrics_mode in ["label", "both"]:
-        print("  Computing label metrics...")
+        log.info("Computing label metrics...")
         start_time = time.time()
         label_results = compute_label_metrics(client_datasets, num_classes)
         metric_results.label_metrics_time = time.time() - start_time
@@ -483,7 +492,7 @@ def run_experiment(
 
     # Compute feature metrics
     if metrics_mode in ["feature", "both"]:
-        print("  Computing feature metrics...")
+        log.info("Computing feature metrics...")
         start_time = time.time()
         feature_results = compute_feature_metrics(
             client_datasets_sub,
@@ -578,13 +587,13 @@ def export_results(results: List[ExperimentResult], output_dir: Path):
             "timestamp": datetime.now().isoformat(),
             "results": [r.to_dict() for r in results]
         }, f, indent=2)
-    print(f"✓ Results saved to {json_path}")
+    log.info("Results saved to %s", json_path)
 
     # CSV
     df = results_to_dataframe(results)
     csv_path = output_dir / "results.csv"
     df.to_csv(csv_path, index=False)
-    print(f"✓ Results saved to {csv_path}")
+    log.info("Results saved to %s", csv_path)
 
     return df
 
@@ -717,7 +726,7 @@ def create_visualizations(df: pd.DataFrame, output_dir: Path):
         plots_dir / "balance_cv_comparison.png"
     )
 
-    print(f"✓ Visualizations saved to {plots_dir}")
+    log.info("Visualizations saved to %s", plots_dir)
 
 
 def generate_summary_report(df: pd.DataFrame, output_dir: Path, metrics_mode: str):
@@ -818,7 +827,7 @@ def generate_summary_report(df: pd.DataFrame, output_dir: Path, metrics_mode: st
     with open(report_path, 'w') as f:
         f.write("".join(report))
 
-    print(f"✓ Summary report saved to {report_path}")
+    log.info("Summary report saved to %s", report_path)
 
 
 # ============================================================================
@@ -826,6 +835,9 @@ def generate_summary_report(df: pd.DataFrame, output_dir: Path, metrics_mode: st
 # ============================================================================
 
 def main():
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
     parser = argparse.ArgumentParser(description="Compare data partitioning methods")
     parser.add_argument("--dataset", type=str, default="tiny_imagenet")
     parser.add_argument("--base_path", type=str, default="/path/to/gtai/FDS/")
@@ -847,24 +859,24 @@ def main():
     args = parser.parse_args()
     use_cache = args.use_cache and not args.no_cache
 
-    print("=" * 80)
-    print("PARTITIONING METHODS COMPARISON")
-    print("=" * 80)
-    print(f"Feature Model: {args.feature_model}")
+    log.info("%s", "=" * 80)
+    log.info("PARTITIONING METHODS COMPARISON")
+    log.info("%s", "=" * 80)
+    log.info("Feature Model: %s", args.feature_model)
 
     output_dir = Path(args.output_dir)
 
     # Load datasets
-    print("\nLoading datasets...")
+    log.info("Loading datasets...")
     train_dataset = BaseDataset(args.dataset, args.base_path, "train")
     val_dataset = BaseDataset(args.dataset, args.base_path, "val")
-    print(f"  Training samples: {len(train_dataset)}")
-    print(f"  Validation samples: {len(val_dataset)}")
+    log.info("Training samples: %d", len(train_dataset))
+    log.info("Validation samples: %d", len(val_dataset))
 
     # Get number of classes
     all_labels = set(train_dataset[i][1] for i in range(len(train_dataset)))
     num_classes = len(all_labels)
-    print(f"  Number of classes: {num_classes}")
+    log.info("Number of classes: %d", num_classes)
 
     # WNID mapping
     wnid_mapping = get_or_create_wnid_mapping(args.dataset, train_dataset)
@@ -879,13 +891,13 @@ def main():
         seed=args.seed
     )
 
-    print(f"\nTotal experiments: {len(experiments)}")
+    log.info("Total experiments: %d", len(experiments))
 
     # Run experiments
     results = []
     for exp_config in tqdm(experiments, desc="Running experiments"):
         exp_id = exp_config.get_experiment_id()
-        print(f"\n[{exp_id}]")
+        log.info("[%s]", exp_id)
 
         try:
             result = run_experiment(
@@ -903,24 +915,22 @@ def main():
             )
             results.append(result)
 
-        except Exception as e:
-            print(f"  ✗ Error: {e}")
-            import traceback
-            traceback.print_exc()
+        except EXPERIMENT_RUN_ERRORS:
+            log.exception("Experiment failed: %s", exp_id)
             raise
 
     # Export results
-    print("\n" + "=" * 80)
-    print("EXPORTING RESULTS")
-    print("=" * 80)
+    log.info("%s", "=" * 80)
+    log.info("EXPORTING RESULTS")
+    log.info("%s", "=" * 80)
 
     df = export_results(results, output_dir)
     create_visualizations(df, output_dir)
     generate_summary_report(df, output_dir, args.metrics)
 
-    print("\n" + "=" * 80)
-    print("✓ ALL EXPERIMENTS COMPLETED!")
-    print("=" * 80)
+    log.info("%s", "=" * 80)
+    log.info("ALL EXPERIMENTS COMPLETED")
+    log.info("%s", "=" * 80)
 
 
 if __name__ == "__main__":

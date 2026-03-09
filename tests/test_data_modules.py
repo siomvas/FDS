@@ -179,26 +179,24 @@ class TestImageDataset:
                 processor=Mock()
             )
 
-    def test_corrupt_image_handling(self, corrupt_image_file, capsys):
+    def test_corrupt_image_handling(self, corrupt_image_file):
         """Test that corrupt images are handled gracefully."""
         file_dataset = [{"image": corrupt_image_file}]
         dataset = ImageDataset(file_dataset)
 
-        result = dataset[0]
+        with pytest.warns(RuntimeWarning, match="Skipping unreadable image"):
+            result = dataset[0]
 
         # Should return None for corrupt images
         assert result is None
 
-        # Should print warning
-        captured = capsys.readouterr()
-        assert "Warning" in captured.out or "Skipping" in captured.out
-
-    def test_missing_image_handling(self, capsys):
+    def test_missing_image_handling(self):
         """Test that missing images are handled gracefully."""
         file_dataset = [{"image": "/nonexistent/path.jpg"}]
         dataset = ImageDataset(file_dataset)
 
-        result = dataset[0]
+        with pytest.warns(RuntimeWarning, match="Skipping unreadable image"):
+            result = dataset[0]
 
         # Should return None for missing images
         assert result is None
@@ -282,6 +280,45 @@ class TestSegmentationDataset:
         assert isinstance(img_tensor, torch.Tensor)
         assert isinstance(mask_tensor, torch.Tensor)
 
+    def test_accepts_legacy_label_key(self, temp_images, temp_mask_files):
+        """Legacy split schema with 'label' mask paths remains supported."""
+        split_data = [
+            {"image": temp_images[0], "label": temp_mask_files[0]},
+        ]
+        dataset = SegmentationDataset(split_data)
+
+        img, mask = dataset[0]
+        assert isinstance(img, Image.Image)
+        assert isinstance(mask, Image.Image)
+
+    def test_sync_horizontal_flip_keeps_image_mask_aligned(self, tmp_path):
+        """Synchronized horizontal flip must be applied to both image and mask."""
+        img_path = tmp_path / "img.png"
+        mask_path = tmp_path / "mask.png"
+
+        image = Image.new("RGB", (2, 1))
+        image.putpixel((0, 0), (255, 0, 0))
+        image.putpixel((1, 0), (0, 0, 255))
+        image.save(img_path)
+
+        mask = Image.new("L", (2, 1))
+        mask.putpixel((0, 0), 0)
+        mask.putpixel((1, 0), 255)
+        mask.save(mask_path)
+
+        dataset = SegmentationDataset(
+            split_data=[{"image": str(img_path), "mask_path": str(mask_path)}],
+            transform=T.PILToTensor(),
+            mask_transform=T.PILToTensor(),
+            sync_hflip_prob=1.0,
+        )
+
+        image_tensor, mask_tensor = dataset[0]
+
+        # After deterministic flip (p=1), left pixel should be original right pixel.
+        assert image_tensor[:, 0, 0].tolist() == [0, 0, 255]
+        assert int(mask_tensor[0, 0, 0]) == 255
+
 
 # ============================================================================
 # Test BaseDataset Registry Pattern
@@ -324,6 +361,54 @@ class TestBaseDatasetRegistry:
         """Test that missing base path raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError, match="does not exist"):
             BaseDataset("tiny_imagenet", "/nonexistent/path", "train")
+
+    def test_pascal_voc_alias_normalization(self, tmp_path):
+        """Dataset aliases for Pascal VOC should normalize to canonical registry key."""
+        images_dir = tmp_path / "VOC2012" / "images" / "train"
+        labels_dir = tmp_path / "VOC2012" / "labels" / "train"
+        images_dir.mkdir(parents=True)
+        labels_dir.mkdir(parents=True)
+
+        image_path = images_dir / "sample_0.jpg"
+        Image.new("RGB", (16, 16), color=(255, 255, 255)).save(image_path)
+        (labels_dir / "sample_0.txt").write_text("0 0.5 0.5 0.3 0.3\n", encoding="utf-8")
+
+        dataset = BaseDataset("pascal_voc", str(tmp_path), "train")
+        assert dataset.dataset_name == "PascalVOC"
+        assert len(dataset) == 1
+
+    def test_bdd100k_alias_normalization(self, tmp_path):
+        """Dataset aliases for BDD100K should normalize to canonical registry key."""
+        images_dir = tmp_path / "bdd100k" / "images" / "train"
+        masks_dir = tmp_path / "bdd100k" / "segmentation" / "train"
+        images_dir.mkdir(parents=True)
+        masks_dir.mkdir(parents=True)
+
+        image_path = images_dir / "sample_0.jpg"
+        Image.new("RGB", (16, 16), color=(0, 0, 0)).save(image_path)
+        Image.new("L", (16, 16), color=1).save(masks_dir / "sample_0.png")
+
+        dataset = BaseDataset("bdd100k", str(tmp_path), "train")
+        assert dataset.dataset_name == "BDD100K"
+        assert len(dataset) == 1
+
+    def test_food101_missing_image_emits_warning(self, tmp_path):
+        """Food101 loader warns and skips when metadata references missing images."""
+        food101_root = tmp_path / "food101"
+        meta_dir = food101_root / "meta"
+        images_dir = food101_root / "images"
+        meta_dir.mkdir(parents=True)
+        images_dir.mkdir(parents=True)
+
+        split_file = meta_dir / "train.json"
+        split_payload = {"class_a": ["missing_img"]}
+        with open(split_file, "w", encoding="utf-8") as handle:
+            json.dump(split_payload, handle)
+
+        with pytest.warns(RuntimeWarning, match="does not exist; skipping sample"):
+            dataset = BaseDataset("food101", str(tmp_path), "train")
+
+        assert len(dataset) == 0
 
     def test_get_summary(self, tmp_path):
         """Test dataset summary generation."""
@@ -465,6 +550,48 @@ class TestBaseDataModule:
         assert "Central" in repr_str
         assert "batch_size=128" in repr_str
 
+    def test_segmentation_datamodule_normalizes_legacy_label_schema(self, tmp_path):
+        """ADE20KDataModule converts legacy label masks into canonical mask_path."""
+        train_image = tmp_path / "train_img.jpg"
+        train_mask = tmp_path / "train_mask.png"
+        val_image = tmp_path / "val_img.jpg"
+        val_mask = tmp_path / "val_mask.png"
+
+        Image.new("RGB", (32, 32), color=(0, 128, 255)).save(train_image)
+        Image.new("L", (32, 32), color=10).save(train_mask)
+        Image.new("RGB", (32, 32), color=(255, 128, 0)).save(val_image)
+        Image.new("L", (32, 32), color=20).save(val_mask)
+
+        split_file = tmp_path / "seg_splits.json"
+        with open(split_file, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "clients": {
+                        "client_0": {
+                            "train": [{"image": str(train_image), "label": str(train_mask)}],
+                            "val": [],
+                        }
+                    },
+                    "global_val": [{"image": str(val_image), "label": str(val_mask)}],
+                },
+                f,
+            )
+
+        dm = ADE20KDataModule(
+            data_dir=str(tmp_path),
+            split_file=str(split_file),
+            client_idx=0,
+            batch_size=1,
+            num_workers=0,
+            image_size=32,
+        )
+        dm.setup()
+
+        assert dm.train_dataset is not None
+        assert dm.val_dataset is not None
+        assert dm.train_dataset.samples[0]["mask_path"] == str(train_mask)
+        assert dm.val_dataset.samples[0]["mask_path"] == str(val_mask)
+
 
 # ============================================================================
 # Test Factory Function
@@ -602,12 +729,13 @@ class TestErrorHandling:
         with pytest.raises(FileNotFoundError):
             _ = dataset[0]
 
-    def test_corrupt_image_in_imagedataset(self, corrupt_image_file, capsys):
+    def test_corrupt_image_in_imagedataset(self, corrupt_image_file):
         """Test that ImageDataset handles corrupt images gracefully."""
         file_dataset = [{"image": corrupt_image_file}]
         dataset = ImageDataset(file_dataset)
 
-        result = dataset[0]
+        with pytest.warns(RuntimeWarning, match="Skipping unreadable image"):
+            result = dataset[0]
 
         # Should return None
         assert result is None
@@ -660,6 +788,33 @@ class TestErrorHandling:
 
         # Should raise error when trying to load
         with pytest.raises(FileNotFoundError):
+            dm.load_splits()
+
+    def test_load_splits_rejects_path_only_schema(self, tmp_path):
+        """Training datamodules require mapping samples with at least an image key."""
+        split_file = tmp_path / "path_only.json"
+        with open(split_file, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "clients": {
+                        "client_0": {
+                            "train": ["/tmp/img_0.jpg"],
+                            "val": [],
+                        }
+                    },
+                    "global_val": None,
+                },
+                f,
+            )
+
+        dm = TinyImageNetDataModule(
+            data_dir="./data",
+            split_file=str(split_file),
+            label_map={},
+            client_idx=0,
+        )
+
+        with pytest.raises(ValueError, match="Invalid split sample schema"):
             dm.load_splits()
 
 

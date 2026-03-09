@@ -39,11 +39,7 @@ import tempfile
 import shutil
 from PIL import Image
 from unittest.mock import MagicMock, patch, PropertyMock
-import sys
-import os
 import warnings
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from evaluation import metrics
 

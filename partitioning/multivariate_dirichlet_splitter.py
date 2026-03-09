@@ -93,8 +93,7 @@ Analyzing client preferences:
     >>> for client_id in range(3):
     ...     for criterion in splitter.CRITERIA:
     ...         top_pref = summary[f"{criterion}_top_preferences"][client_id]
-    ...         print(f"Client {client_id} prefers {criterion}={top_pref['label']} "
-    ...               f"({top_pref['preference']:.2f})")
+    ...         f"Client {client_id} prefers {criterion}={top_pref['label']} ({top_pref['preference']:.2f})"
 
 See Also
 --------
@@ -105,6 +104,7 @@ See Also
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -113,6 +113,8 @@ from collections import defaultdict
 
 from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
 from data_loading.dataset import BaseDataset
+
+logger = logging.getLogger(__name__)
 
 
 class MultivariateDirichletSplitter(BaseDatasetSplitter):
@@ -158,7 +160,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         Analyze client preferences after splitting:
 
         >>> summary = splitter.get_preference_summary()
-        >>> print(summary['color_top_preferences'][0])
+        >>> summary['color_top_preferences'][0]
         {'client': 0, 'label': 'warm_colors', 'preference': 0.85}
 
     See Also:
@@ -276,19 +278,30 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             seed=seed,
         )
 
-        # choose criteria based on dataset type
-        if train_dataset.dataset_name in ["tiny_imagenet"]:
+        # Choose criteria based on dataset type. Support both BaseDataset and
+        # lightweight test/mocked datasets that don't expose dataset_name.
+        dataset_name = getattr(train_dataset, "dataset_name", None)
+        if dataset_name is None:
+            dataset_name = getattr(train_dataset, "requested_dataset_name", None)
+        if dataset_name is None:
+            logger.warning(
+                "train_dataset has no dataset_name attribute; defaulting multivariate criteria to tiny_imagenet."
+            )
+            dataset_name = "tiny_imagenet"
+        dataset_name = str(dataset_name).lower()
+
+        if dataset_name in {"tiny_imagenet", "tinyimagenet", "tiny-imagenet"}:
             self.CRITERIA = self.CRITERIA_tiny
             self.CRITERION_TO_DIR = self.CRITERION_TO_DIR_tiny
-        elif train_dataset.dataset_name in ["food101"]:
+        elif dataset_name in {"food101"}:
             self.CRITERIA = self.CRITERIA_food
             self.CRITERION_TO_DIR = self.CRITERION_TO_DIR_food
-        elif train_dataset.dataset_name in ["ade20k"]:
+        elif dataset_name in {"ade20k"}:
             self.CRITERIA = self.CRITERIA_ade20k
             self.CRITERION_TO_DIR = self.CRITERION_TO_DIR_ade20k
         else:
             raise ValueError(
-                f"Dataset '{train_dataset.dataset_name}' not supported for "
+                f"Dataset '{dataset_name}' not supported for "
                 f"MultivariateDirichletSplitter. Supported datasets: "
                 f"tiny_imagenet, food101, ade20k."
             )
@@ -322,7 +335,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             - Populates self.unique_labels: {criterion: [sorted unique labels]}
             - Prints loading progress for each criterion
         """
-        print("Loading cluster labels from JSONL files...")
+        logger.info("Loading cluster labels from JSONL files...")
 
         for criterion in self.CRITERIA:
             criterion_dir = self.cluster_labels_dir / self.CRITERION_TO_DIR[criterion]
@@ -377,8 +390,12 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             unique_labels = sorted(set(criterion_labels.values()))
             self.unique_labels[criterion] = unique_labels
 
-            print(f"  {criterion}: {len(unique_labels)} unique labels, "
-                  f"{len(criterion_labels)} images")
+            logger.info(
+                "%s: %d unique labels, %d images",
+                criterion,
+                len(unique_labels),
+                len(criterion_labels),
+            )
 
     def _sample_client_preferences(self) -> None:
         """Sample client preference vectors from Dirichlet distributions.
@@ -398,7 +415,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         if self.seed is not None:
             np.random.seed(self.seed)
 
-        print(f"\nSampling client preferences with α={self.heterogeneity}...")
+        logger.info("Sampling client preferences with alpha=%.4f...", self.heterogeneity)
 
         # Track statistics across all clients and criteria
         all_max_prefs = []
@@ -425,14 +442,32 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                     label_to_idx = {label: idx for idx, label in enumerate(self.unique_labels[criterion])}
                     top_idx = np.argmax(preferences)
                     top_label = self.unique_labels[criterion][top_idx]
-                    print(f"  Client 0, {criterion}: top={top_label} ({preferences[top_idx]:.3f}), "
-                          f"min={preferences.min():.3f}, std={preferences.std():.3f}")
+                    logger.debug(
+                        "Client 0, %s: top=%s (%.3f), min=%.3f, std=%.3f",
+                        criterion,
+                        top_label,
+                        preferences[top_idx],
+                        preferences.min(),
+                        preferences.std(),
+                    )
 
         # Print aggregate statistics
-        print(f"\n  Preference Statistics Across All Clients:")
-        print(f"    Max preference - Mean: {np.mean(all_max_prefs):.4f}, Std: {np.std(all_max_prefs):.4f}")
-        print(f"    Min preference - Mean: {np.mean(all_min_prefs):.4f}, Std: {np.std(all_min_prefs):.4f}")
-        print(f"    Std deviation - Mean: {np.mean(all_stds):.4f}, Std: {np.std(all_stds):.4f}")
+        logger.info("Preference statistics across all clients:")
+        logger.info(
+            "Max preference - Mean: %.4f, Std: %.4f",
+            float(np.mean(all_max_prefs)),
+            float(np.std(all_max_prefs)),
+        )
+        logger.info(
+            "Min preference - Mean: %.4f, Std: %.4f",
+            float(np.mean(all_min_prefs)),
+            float(np.std(all_min_prefs)),
+        )
+        logger.info(
+            "Std deviation - Mean: %.4f, Std: %.4f",
+            float(np.mean(all_stds)),
+            float(np.std(all_stds)),
+        )
 
     def _get_cluster_label_for_sample(self, image_path: str, criterion: str) -> str:
         """Get the cluster label for a sample under a specific criterion.
@@ -551,17 +586,32 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             client_assignments[assigned_client].append(sample_idx)
 
         # DEBUG: Print statistics
-        print(f"\n  Assignment Statistics (α={self.heterogeneity}):")
+        logger.info("Assignment statistics (alpha=%.4f):", self.heterogeneity)
         if debug_affinities:
             all_affinities = np.array(debug_affinities)
-            print(f"    Affinity scores (first 10 samples):")
-            print(f"      Mean: {all_affinities.mean():.4f}, Std: {all_affinities.std():.4f}")
-            print(f"      Range: [{all_affinities.min():.4f}, {all_affinities.max():.4f}]")
+            logger.info("Affinity scores (first 10 samples):")
+            logger.info(
+                "Mean: %.4f, Std: %.4f",
+                float(all_affinities.mean()),
+                float(all_affinities.std()),
+            )
+            logger.info(
+                "Range: [%.4f, %.4f]",
+                float(all_affinities.min()),
+                float(all_affinities.max()),
+            )
 
             all_probs = np.array(debug_probabilities)
-            print(f"    Softmax probabilities (first 10 samples):")
-            print(f"      Max prob mean: {np.mean(debug_max_probs):.4f}, Std: {np.std(debug_max_probs):.4f}")
-            print(f"      Entropy (avg): {-np.mean([np.sum(p * np.log(p + 1e-10)) for p in all_probs]):.4f}")
+            logger.info("Softmax probabilities (first 10 samples):")
+            logger.info(
+                "Max prob mean: %.4f, Std: %.4f",
+                float(np.mean(debug_max_probs)),
+                float(np.std(debug_max_probs)),
+            )
+            logger.info(
+                "Entropy (avg): %.4f",
+                float(-np.mean([np.sum(p * np.log(p + 1e-10)) for p in all_probs])),
+            )
 
         return client_assignments
 
@@ -626,7 +676,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             # Validate
             if self._validate_assignments(client_assignments):
                 if attempt > 0:
-                    print(f"  Satisfied constraints after {attempt + 1} attempts")
+                    logger.info("Satisfied constraints after %d attempts.", attempt + 1)
                 return client_assignments
 
         # Failed to satisfy constraints
@@ -662,22 +712,30 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
             >>> splits = splitter.get_client_splits()
             >>> client_0_train = splits["clients"]["client_0"]["train"]
-            >>> print(f"Client 0 has {len(client_0_train)} training samples")
+            >>> f"Client 0 has {len(client_0_train)} training samples"
         """
 
         self._load_cluster_labels()
         self._sample_client_preferences()
 
         train_indices = list(range(len(self.train_dataset)))
-        train_paths = [self.train_dataset[i][0] for i in train_indices]  # (path, label)
+        train_paths = [self._coerce_dataset_item_to_sample(self.train_dataset[i])["image"] for i in train_indices]
 
-        print(f"\nPartitioning {len(train_indices)} training samples among {self.n_clients} clients...")
+        logger.info(
+            "Partitioning %d training samples among %d clients...",
+            len(train_indices),
+            self.n_clients,
+        )
 
         train_assignments = self._partition_with_retry(train_indices, train_paths)
 
         samples_per_client = [len(train_assignments[i]) for i in range(self.n_clients)]
-        print(f"Training samples per client: {samples_per_client}")
-        print(f"  Mean: {np.mean(samples_per_client):.1f}, Std: {np.std(samples_per_client):.1f}")
+        logger.info("Training samples per client: %s", samples_per_client)
+        logger.info(
+            "Training distribution mean/std: %.1f / %.1f",
+            float(np.mean(samples_per_client)),
+            float(np.std(samples_per_client)),
+        )
 
         # Handle validation set
         val_assignments = None
@@ -685,14 +743,11 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         if self.valset_type == "global":
             if self.val_dataset is not None:
-                global_val = [
-                    {"image": self.val_dataset[i][0], "label": self.val_dataset[i][1]}
-                    for i in range(len(self.val_dataset))
-                ]
+                global_val = [self._coerce_dataset_item_to_sample(self.val_dataset[i]) for i in range(len(self.val_dataset))]
         elif self.valset_type == "local":
             if self.val_dataset is not None:
                 val_indices = list(range(len(self.val_dataset)))
-                val_paths = [self.val_dataset[i][0] for i in val_indices]
+                val_paths = [self._coerce_dataset_item_to_sample(self.val_dataset[i])["image"] for i in val_indices]
                 val_assignments = self._partition_with_retry(val_indices, val_paths)
 
         # Build ClientSplit structures
@@ -700,18 +755,12 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         for client_id in range(self.n_clients):
             # Training data
-            train_data = [
-                {"image": self.train_dataset[idx][0], "label": self.train_dataset[idx][1]}
-                for idx in train_assignments[client_id]
-            ]
+            train_data = [self._coerce_dataset_item_to_sample(self.train_dataset[idx]) for idx in train_assignments[client_id]]
 
             # Validation data
             val_data = []
             if self.valset_type == "local" and val_assignments is not None:
-                val_data = [
-                    {"image": self.val_dataset[idx][0], "label": self.val_dataset[idx][1]}
-                    for idx in val_assignments[client_id]
-                ]
+                val_data = [self._coerce_dataset_item_to_sample(self.val_dataset[idx]) for idx in val_assignments[client_id]]
 
             clients[f"client_{client_id}"] = {
                 "train": train_data,
@@ -749,19 +798,18 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             Analyze top preferences after splitting:
 
             >>> summary = splitter.get_preference_summary()
-            >>> print(f"Number of clients: {summary['n_clients']}")
-            >>> print(f"Alpha parameter: {summary['heterogeneity']}")
+            >>> f"Number of clients: {summary['n_clients']}"
+            >>> f"Alpha parameter: {summary['heterogeneity']}"
             >>>
             >>> # See client 0's top color preference
             >>> color_prefs = summary['color_top_preferences']
             >>> client_0_color = color_prefs[0]
-            >>> print(f"Client 0 prefers {client_0_color['label']} "
-            ...       f"with weight {client_0_color['preference']:.2f}")
+            >>> f"Client 0 prefers {client_0_color['label']} with weight {client_0_color['preference']:.2f}"
             >>>
             >>> # Analyze specialization: count how many clients prefer each label
             >>> from collections import Counter
             >>> color_counts = Counter(p['label'] for p in color_prefs)
-            >>> print(f"Most common color preference: {color_counts.most_common(1)}")
+            >>> f"Most common color preference: {color_counts.most_common(1)}"
         """
         if not self.client_preferences:
             return {"error": "Preferences not yet sampled. Run get_client_splits() first."}

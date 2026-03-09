@@ -1,0 +1,47 @@
+name: FDS CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quick-pass:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package and extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[partitioning,embedding,evaluation,fl,docs,dev]"
+
+      - name: Compile sweep
+        run: |
+          find . -type f -name '*.py' -not -path '*/__pycache__/*' -print0 | xargs -0 python -m py_compile
+
+      - name: Environment preflight
+        run: ./scripts/preflight_env.sh
+
+      - name: Test collection
+        run: python -m pytest --collect-only -q
+
+      - name: Targeted regression tests
+        run: |
+          python -m pytest -q \
+            tests/test_data_modules.py \
+            tests/test_detection_data_module.py \
+            tests/test_fl_training_engines.py \
+            tests/test_cli_contract.py
+
+      - name: Docs smoke build (non-blocking)
+        continue-on-error: true
+        run: sphinx-build -b html docs/source docs/_build/html --keep-going

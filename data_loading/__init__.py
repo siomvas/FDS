@@ -16,14 +16,14 @@ Components
     - **BaseDataset**: Registry-based loader for standard benchmarks
       (Tiny ImageNet, Food-101, ADE20K)
 
-**Data Modules** (`dm.py`)
+**Data Modules** (`data_modules.py`)
     PyTorch Lightning-inspired data modules for FL training:
 
     - **BaseDataModule**: Abstract base class for federated data loading
-    - **FederatedDataset**: Wrapper dataset for FL client splits
     - **TinyImageNetDataModule**: 64x64 RGB, 200 classes
     - **Food101DataModule**: Variable size RGB, 101 food categories
     - **ADE20KDataModule**: Semantic segmentation, 150 classes
+    - **PascalVOCDataModule**: Object detection dataset module
 
 Key Features
 ------------
@@ -52,9 +52,9 @@ Basic dataset loading with registry:
     ...     base_path="/data/datasets",
     ...     split="train"
     ... )
-    >>> print(f"Dataset size: {len(dataset)}")
+    >>> f"Dataset size: {len(dataset)}"
     >>> img_path, label = dataset[0]
-    >>> print(f"First sample: {img_path}, Label: {label}")
+    >>> f"First sample: {img_path}, Label: {label}"
 
 Register custom dataset:
 
@@ -72,7 +72,7 @@ Register custom dataset:
 
 Federated training with data modules:
 
-    >>> from data_loading.dm import get_datamodule
+    >>> from data_loading.data_modules import get_datamodule
     >>>
     >>> # Client 0 in federated mode
     >>> dm = get_datamodule(
@@ -104,7 +104,7 @@ Centralized training mode:
 
 Custom transforms with data module:
 
-    >>> from data_loading.dm import Food101DataModule
+    >>> from data_loading.data_modules import Food101DataModule
     >>> import torchvision.transforms as T
     >>>
     >>> class CustomFood101DataModule(Food101DataModule):
@@ -131,8 +131,8 @@ Dataset Registry Pattern
 The `BaseDataset` class uses a registry pattern to discover and load datasets:
 
     >>> # List available datasets
-    >>> print(BaseDataset._loaders.keys())
-    dict_keys(['tiny_imagenet', 'food101', 'ade20k'])
+    >>> BaseDataset._loaders.keys()
+    dict_keys(['tiny_imagenet', 'food101', 'ade20k', 'PascalVOC', 'BDD100K'])
     >>>
     >>> # Register new dataset
     >>> @BaseDataset.register_dataset("cifar10")
@@ -144,6 +144,8 @@ Split File Format
 -----------------
 
 Data modules expect split files in the format produced by partitioning splitters:
+
+.. code-block:: json
 
     {
         "clients": {

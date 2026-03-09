@@ -3,11 +3,11 @@
 dataset:
   name: "tiny_imagenet"
   class_path: data_loading.data_modules.TinyImageNetDataModule
-  dataset_splits: "${oc.env:tiny_imagenet_chosen_split_path}"
+  dataset_splits: "${oc.env:tiny_imagenet_chosen_split_path,${hydra:runtime.cwd}/local_artifacts/splits/tiny_imagenet/random_n2_seed42.json}"
   
   # Arguments passed to datamodule __init__
   args:
-    root: "${oc.env:DATASETS_ROOT}/tiny_imagenet"
+    root: "${oc.env:tiny_imagenet_data_root,${hydra:runtime.cwd}/local_data}"
     # other dataset specific settings?
   
 training:

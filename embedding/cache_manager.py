@@ -1,9 +1,12 @@
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class CacheManager:
@@ -88,8 +91,8 @@ class CacheManager:
 
         >>> # Get cache statistics
         >>> info = cache.get_cache_info()
-        >>> print(f"Cache size: {info['total_size_mb']:.2f} MB")
-        >>> print(f"Entries: {info['num_entries']}")
+        >>> f"Cache size: {info['total_size_mb']:.2f} MB"
+        >>> f"Entries: {info['num_entries']}"
         >>>
         >>> # Clear specific model's cache
         >>> cache.clear(model_name="dinov2-base")
@@ -180,7 +183,7 @@ class CacheManager:
         # Sort keys for consistency
         config_str = json.dumps(config_dict, sort_keys=True)
         # Print the config string for verification/debugging
-        # print(f"Computing cache key with config: {config_str}")
+        # logger.debug(f"Computing cache key with config: {config_str}")
         config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
 
         if dataset_name:
@@ -268,8 +271,8 @@ class CacheManager:
                 # Note: np.load with mmap_mode=None loads into memory.
                 self._memory_cache[cache_key] = dict(data)
                 data = self._memory_cache[cache_key]
-            except Exception as e:
-                print(f"Warning: Failed to load cache {cache_key}: {e}")
+            except (OSError, ValueError) as e:
+                logger.warning("Failed to load cache entry %s: %s", cache_key, e)
                 return None
 
         # Retrieve specific data
@@ -318,8 +321,8 @@ class CacheManager:
                 else:
                     return None
 
-        except Exception as e:
-            print(f"Warning: Error processing cached data for {cache_key}: {e}")
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            logger.warning("Error processing cached data for %s: %s", cache_key, e)
             return None
 
     def put(
@@ -401,7 +404,12 @@ class CacheManager:
                 # If it's a list/array, we align it with rel_paths
                 if not isinstance(embeddings, dict):
                     if len(embeddings) != len(rel_paths):
-                        print(f"Warning: Cache put failed. Embeddings {len(embeddings)} != Paths {len(rel_paths)}")
+                        logger.warning(
+                            "Cache put skipped for %s due to length mismatch: embeddings=%d, paths=%d",
+                            cache_key,
+                            len(embeddings),
+                            len(rel_paths),
+                        )
                         return
                     # Create pairs
                     path_emb_pairs = zip(rel_paths, embeddings)
@@ -451,8 +459,8 @@ class CacheManager:
             }
             self._save_metadata()
 
-        except Exception as e:
-            print(f"Warning: Failed to save cache {cache_key}: {e}")
+        except (OSError, TypeError, ValueError, KeyError) as e:
+            logger.warning("Failed to save cache entry %s: %s", cache_key, e)
 
     def clear(self, model_name: Optional[str] = None) -> None:
         if not self.enabled:

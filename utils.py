@@ -14,7 +14,7 @@ def load_weights(model: torch.nn.Module, weights: Dict[str, np.ndarray]) -> torc
             w = weights[var_name]
             try:
                 local_var_dict[var_name] = torch.as_tensor(np.reshape(w, local_var_dict[var_name].shape))
-            except Exception as e:
+            except (TypeError, ValueError, RuntimeError) as e:
                 raise ValueError(f"Convert weight from {var_name} failed with error {str(e)}")
     model.load_state_dict(local_var_dict)
     return model
@@ -26,7 +26,7 @@ def extract_weights(model: torch.nn.Module) -> Dict[str, np.ndarray]:
     for var_name in local_state_dict:
         try:
             local_model_dict[var_name] = local_state_dict[var_name].cpu().numpy()
-        except Exception as e:
+        except (TypeError, ValueError, RuntimeError) as e:
             raise ValueError(f"Convert weight from {var_name} failed with error: {str(e)}")
     return local_model_dict
 
@@ -43,7 +43,7 @@ def seed_everything(seed: int = 42) -> None:
     # torch.backends.cuda.matmul.allow_tf32 = True
     # torch.set_float32_matmul_precision('high')
     os.environ["PYTHONHASHSEED"] = str(seed)
-    # print(f"Random seed set as {seed}")
+    # logger.debug(f"Random seed set as {seed}")
 
 
 def read_json(filename):

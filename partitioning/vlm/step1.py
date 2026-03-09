@@ -3,7 +3,6 @@ import os
 from datasets import Dataset
 from typing import List, Dict, Any
 import logging
-import sys, os
 #from utils.argument import args
 #from utils import util_loader
 #from utils import helper
@@ -13,10 +12,6 @@ from partitioning.vlm.utils import util_loader
 from partitioning.vlm.utils import helper
 
 from PIL import Image
-from pathlib import Path
-
-# temporary - will delete later
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # import os
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -101,11 +96,19 @@ def load_image(image_file, input_size=448, max_num=12):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+PROCESS_BATCH_ERRORS = (
+    RuntimeError,
+    ValueError,
+    TypeError,
+    KeyError,
+    OSError,
+)
+
 def print_gpu_memory():
     for i in range(torch.cuda.device_count()):
         allocated = torch.cuda.memory_allocated(i) / 1024**3
         reserved = torch.cuda.memory_reserved(i) / 1024**3
-        print(f"GPU {i}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        logger.info("GPU %d: %.2fGB allocated, %.2fGB reserved", i, allocated, reserved)
 
 # ------- Main VLM pipeline functions -------------
 # STEP 1: Prepare batch question, questions passed in, read from txt file
@@ -136,7 +139,7 @@ def prepare_batch_questions(data: Dataset,
         image_path = data.data[i] 
         label = data.labels[i]
 
-        #print(f"Type of image_path[{i}]: {type(image_path)}")
+        # logger.debug(f"Type of image_path[{i}]: {type(image_path)}")
         
         questions.append({
             'question': question,
@@ -214,7 +217,7 @@ def process_batch_minicpm(model, tokenizer, batch_data: List[Dict[str, Any]],
                 "original_index": batch_item['index']
             })
             
-    except Exception as e:
+    except PROCESS_BATCH_ERRORS as e:
         logger.error(f"Batch processing failed...: {e}")
         
     return results
@@ -374,8 +377,8 @@ def main(model, tokenizer, data: BaseDataset,
     question = question.replace("[__CRITERION__]", str((args.prompt_label).lower()))
 
     # Prepare questions
-    print("Preparing batch question.... ")
-    print(f"Question: {question}")
+    logger.info("Preparing batch question.")
+    logger.info("Question: %s", question)
     prepared_data = prepare_batch_questions(data, question, max_samples, 0)
 
     jsonl_path = os.path.expanduser(args.step1_result_path)
@@ -431,6 +434,4 @@ if __name__ == "__main__":
     
     # Process dataset
     main(model=model, tokenizer=tokenizer, data=data, max_samples=None, batch_size=4)
-
-
 

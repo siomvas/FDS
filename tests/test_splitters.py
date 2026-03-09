@@ -11,10 +11,6 @@ import tempfile
 import json
 from pathlib import Path
 from typing import List, Dict, Any
-import sys
-import os
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from partitioning import (
     RandomSplitter,
@@ -436,10 +432,7 @@ class TestBaseDatasetSplitter:
         splits = splitter.get_client_splits()
 
         # validate_splits should not raise error for valid splits
-        try:
-            splitter.validate_splits(splits)
-        except Exception as e:
-            pytest.fail(f"validate_splits raised unexpected exception: {e}")
+        splitter.validate_splits(splits)
 
     def test_get_split_summary(self, mock_train_dataset, mock_val_dataset):
         """Test split summary generation."""
@@ -823,10 +816,7 @@ class TestSerializationRoundTrip:
         loaded_splits = splitter.load_splits(str(json_path), format="json")
 
         # Validate loaded splits
-        try:
-            splitter.validate_splits(loaded_splits)
-        except Exception as e:
-            pytest.fail(f"Loaded splits failed validation: {e}")
+        splitter.validate_splits(loaded_splits)
 
 
 # ============================================================================
@@ -912,6 +902,30 @@ class TestCacheInvalidation:
         client_0_train_2 = [s["image"] for s in splits_2["clients"]["client_0"]["train"]]
 
         assert client_0_train_1 == client_0_train_2
+
+
+class TestEmbeddingSplitterContracts:
+    """Contract checks for EmbeddingSplitter constructor behavior."""
+
+    def test_cls_token_strategy_accepts_none_pooling(self, mock_train_dataset, tmp_cache_dir):
+        splitter = EmbeddingSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            extractor_name="dinov2-base",
+            clustering_method="hdbscan",
+            clustering_params={"min_cluster_size": 5, "hdbscan_metric": "euclidean"},
+            token_extraction_strategy="cls",
+            pooling_strategy=None,
+            valset_type="none",
+            seed=42,
+            cache_dir=str(tmp_cache_dir),
+            dataset_name="tiny_imagenet",
+            base_path="/tmp",
+            use_cache=False,
+            num_workers=0,
+        )
+
+        assert splitter.pooling_strategy == "cls"
 
 
 if __name__ == "__main__":

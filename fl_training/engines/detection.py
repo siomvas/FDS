@@ -10,6 +10,16 @@ from torch.amp import autocast, GradScaler
 
 log = logging.getLogger(__name__)
 
+FORWARD_ATTEMPT_ERRORS = (
+    TypeError,
+    ValueError,
+    RuntimeError,
+    AttributeError,
+    KeyError,
+    NotImplementedError,
+    AssertionError,
+)
+
 
 def _recursive_to_device(value: Any, device: torch.device) -> Any:
     if torch.is_tensor(value):
@@ -210,7 +220,7 @@ class DetectionEngine:
                 outputs = attempt()
                 loss = self._loss_from_outputs(outputs)
                 return loss, self._predictions_from_outputs(outputs)
-            except Exception as exc:
+            except FORWARD_ATTEMPT_ERRORS as exc:
                 errors.append(exc)
 
         raise RuntimeError(f"Unable to run detection forward pass with targets. Last error: {errors[-1]}")
@@ -226,7 +236,7 @@ class DetectionEngine:
         for attempt in attempts:
             try:
                 return attempt()
-            except Exception as exc:
+            except FORWARD_ATTEMPT_ERRORS as exc:
                 errors.append(exc)
 
         raise RuntimeError(f"Unable to run detection inference. Last error: {errors[-1]}")

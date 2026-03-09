@@ -7,6 +7,7 @@ federated learning scenarios.
 """
 
 import numpy as np
+import logging
 from typing import List
 import matplotlib.pyplot as plt
 from matplotlib.cm import get_cmap
@@ -16,6 +17,8 @@ from scipy.stats import entropy
 from .base_splitter import DatasetSplits, ClientSplit
 from data_loading.dataset import BaseDataset
 from .random_splitter import RandomSplitter
+
+logger = logging.getLogger(__name__)
 
 
 class DirichletSplitter(RandomSplitter):
@@ -140,7 +143,7 @@ class DirichletSplitter(RandomSplitter):
             "global_val": None,
         }
 
-        train_labels = [self.train_dataset[i][1] for i in range(len(self.train_dataset))]
+        train_labels = [self._extract_label(self.train_dataset, i) for i in range(len(self.train_dataset))]
         unique_labels = sorted(set(train_labels))
 
         client_train_indices = self._partition_with_retry(train_labels, unique_labels, len(self.train_dataset), "train")
@@ -237,7 +240,7 @@ class DirichletSplitter(RandomSplitter):
             raise ValueError("val_dataset must be provided for local validation splitting.")
 
         # Get validation data labels and indices
-        val_labels = [self.val_dataset[i][1] for i in range(len(self.val_dataset))]
+        val_labels = [self._extract_label(self.val_dataset, i) for i in range(len(self.val_dataset))]
         unique_labels = sorted(set(val_labels))
 
         # Partition validation data with retry logic
@@ -415,12 +418,12 @@ class DirichletSplitter(RandomSplitter):
         plt.tight_layout()
         plt.show()
 
-        print("\nDataset Statistics:")
-        print(f"Total clients: {n_clients}")
-        print(f"Total classes: {len(all_labels)}")
-        print(f"Classes shown individually: {len(top_classes)}")
+        logger.info("Dataset statistics:")
+        logger.info("Total clients: %d", n_clients)
+        logger.info("Total classes: %d", len(all_labels))
+        logger.info("Classes shown individually: %d", len(top_classes))
         if other_classes:
-            print(f"Classes grouped as 'Other': {len(other_classes)}")
+            logger.info("Classes grouped as 'Other': %d", len(other_classes))
 
         self._print_heterogeneity_stats(client_label_counts, all_labels)
 
@@ -456,5 +459,6 @@ class DirichletSplitter(RandomSplitter):
 
         if count > 0:
             avg_kl /= count
-            print(f"Average KL divergence between clients: {avg_kl:.3f}")
-            print(f"Heterogeneity level (α={self.heterogeneity}): {'High' if avg_kl > 2.0 else 'Medium' if avg_kl > 1.0 else 'Low'}")
+            logger.info("Average KL divergence between clients: %.3f", avg_kl)
+            level = "High" if avg_kl > 2.0 else "Medium" if avg_kl > 1.0 else "Low"
+            logger.info("Heterogeneity level (alpha=%.4f): %s", self.heterogeneity, level)

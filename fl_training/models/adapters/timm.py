@@ -27,6 +27,6 @@ def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Mo
                 **kwargs
             )
             return model
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError) as e:
             log.error(f"Failed to create timm model '{name}'. Available models: timm.list_models()")
-            raise e
+            raise RuntimeError(f"Unable to create timm model '{name}'.") from e

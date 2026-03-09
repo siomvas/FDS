@@ -35,30 +35,49 @@ os.environ["NUMEXPR_NUM_THREADS"] = "8"
 import argparse
 import json
 import time
-import sys
-import traceback
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
-import sys
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-# Project imports - adjust path as needed
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from evaluation.eval_config import PartitionConfig, MetricResults, EvaluationResult
 from data_loading.dataset import BaseDataset
 from evaluation import metrics
+from utils.cli_common import add_standard_cli_args
+
+log = logging.getLogger(__name__)
+
+PARTITION_LOAD_ERRORS = (
+    FileNotFoundError,
+    json.JSONDecodeError,
+    KeyError,
+    TypeError,
+    ValueError,
+)
+
+PARTITION_EVAL_ERRORS = (
+    RuntimeError,
+    ValueError,
+    TypeError,
+    KeyError,
+    FileNotFoundError,
+    OSError,
+)
 
 
 # ============================================================================
 # Helpers: Label Mapping (Strings -> Integers)
 # ============================================================================
 
-def get_or_create_label_mapping(dataset_name: str, dataset: BaseDataset) -> Optional[Dict[str, int]]:
+def get_or_create_label_mapping(
+    dataset_name: str,
+    dataset: BaseDataset,
+    mapping_dir: Optional[Path] = None,
+) -> Optional[Dict[str, int]]:
     """
     Handle datasets where labels are strings (e.g., Food101 "apple_pie", TinyImageNet "n021...").
     Metrics require integer labels, so we map strings to sorted integers 0..N-1.
@@ -73,24 +92,27 @@ def get_or_create_label_mapping(dataset_name: str, dataset: BaseDataset) -> Opti
         return None  # Already integers, no mapping needed
 
     if isinstance(first_label, str):
-        # Naming convention: {dataset}_label_mapping.json
-        mapping_file = Path("evaluation") / f"{dataset_name}_label_mapping.json"
-        
-        if mapping_file.exists():
-            print(f"  Loading label mapping from {mapping_file}...")
-            with open(mapping_file, 'r') as f:
-                return json.load(f)
+        mapping_file = None
+        if mapping_dir is not None:
+            mapping_file = mapping_dir / f"{dataset_name}_label_mapping.json"
+            if mapping_file.exists():
+                log.info("Loading label mapping from %s...", mapping_file)
+                with open(mapping_file, "r") as f:
+                    return json.load(f)
 
-        print(f"  Creating new integer mapping for string labels ({dataset_name})...")
+        log.info("Creating new integer mapping for string labels (%s)...", dataset_name)
         # Scan entire dataset to find unique labels
         # Note: We sort them to ensure deterministic assignment (0=Apple, 1=Banana...)
         all_labels = sorted(set(dataset[i][1] for i in range(len(dataset))))
         mapping = {label: idx for idx, label in enumerate(all_labels)}
 
-        # Save for future runs so consistency is maintained
-        mapping_file.parent.mkdir(exist_ok=True)
-        with open(mapping_file, 'w') as f:
-            json.dump(mapping, f, indent=2)
+        # Save for future runs only when an explicit persistence directory is configured.
+        if mapping_file is not None:
+            mapping_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(mapping_file, "w") as f:
+                json.dump(mapping, f, indent=2)
+        else:
+            log.info("Label mapping persistence disabled; using in-memory mapping for this run.")
         
         return mapping
 
@@ -103,7 +125,7 @@ def create_dataset_map(dataset: BaseDataset, label_map: Optional[Dict[str, int]]
     Applies string->int mapping if provided.
     """
     dataset_map = {}
-    print("  Building O(1) dataset lookup map...")
+    log.info("Building O(1) dataset lookup map...")
     
     for path, raw_label in tqdm(dataset, desc="Indexing Dataset"):
         # Apply mapping if it exists (Food101/TinyIN), otherwise use raw integer (CIFAR)
@@ -169,7 +191,7 @@ def load_partition_from_json(
             if item is not None:
                 client_data.append(item)
             else:
-                print(f"Warning: {img_path} in partition but not in dataset map")
+                log.warning("%s in partition but not in dataset map", img_path)
         
         client_datasets.append(client_data)
     
@@ -276,7 +298,8 @@ def compute_feature_metrics(
     batch_size: int = 64,
     use_cache: bool = True,
     cache_dir: Optional[str] = None,
-    subsample: int = 0
+    subsample: int = 0,
+    seed: int = 42,
 ) -> Dict[str, Optional[float]]:
     """Compute feature-based distribution metrics using subsampled data."""
     results = {}
@@ -292,33 +315,33 @@ def compute_feature_metrics(
     
     # --- Subsampling ---
     if subsample > 0:
-        client_datasets_sub = subsample_datasets(client_datasets, subsample, seed=42)
+        client_datasets_sub = subsample_datasets(client_datasets, subsample, seed=seed)
     else:
         client_datasets_sub = client_datasets
 
     # --- Distribution Distance Metrics ---
     
-    print("    Computing FID...")
+    log.info("    Computing FID...")
     fid_all = metrics.FID_distance(client_datasets_sub, return_all=True, **ext_kwargs)
     results["fid_mean"] = float(np.mean(fid_all))
     results["fid_std"] = float(np.std(fid_all))
     
-    print(f"    Computing MMD ({feature_model})...")
+    log.info("    Computing MMD (%s)...", feature_model)
     mmd_all = metrics.MMD(client_datasets_sub, return_all=True, **ext_kwargs)
     results["mmd_features_mean"] = float(np.mean(mmd_all))
     results["mmd_features_std"] = float(np.std(mmd_all))
     
-    print(f"    Computing Sliced Wasserstein ({feature_model})...")
+    log.info("    Computing Sliced Wasserstein (%s)...", feature_model)
     wass_all = metrics.sliced_wasserstein_distance(client_datasets_sub, return_all=True, **ext_kwargs)
     results["wasserstein_mean"] = float(np.mean(wass_all))
     results["wasserstein_std"] = float(np.std(wass_all))
     
-    print(f"    Computing Energy Distance ({feature_model})...")
+    log.info("    Computing Energy Distance (%s)...", feature_model)
     ed_all = metrics.energy_distance_features(client_datasets_sub, return_all=True, **ext_kwargs)
     results["energy_dist_mean"] = float(np.mean(ed_all))
     results["energy_dist_std"] = float(np.std(ed_all))
     
-    # print(f"    Computing KS Test ({feature_model})...")
+    # logger.debug(f"    Computing KS Test ({feature_model})...")
     # ks_all = metrics.KS_multivariate_test(
     #     client_datasets_sub, pca_variance=0.95, return_all=True, **ext_kwargs
     # )
@@ -328,24 +351,24 @@ def compute_feature_metrics(
     
     # --- Heterogeneity Metrics ---
     
-    print(f"    Computing k-NN Separability ({feature_model})...")
+    log.info("    Computing k-NN Separability (%s)...", feature_model)
     knn_all = metrics.knn_separability(client_datasets_sub, k=5, return_all=True, **ext_kwargs)
     results["knn_sep_mean"] = float(np.mean(knn_all))
     results["knn_sep_std"] = float(np.std(knn_all))
     
-    print(f"    Computing Centroid Distance ({feature_model})...")
+    log.info("    Computing Centroid Distance (%s)...", feature_model)
     cd_all = metrics.centroid_distance(client_datasets_sub, return_all=True, **ext_kwargs)
     results["centroid_dist_mean"] = float(np.mean(cd_all))
     results["centroid_dist_std"] = float(np.std(cd_all))
     
     # --- Diversity Metrics ---
     
-    print(f"    Computing Vendi Score ({feature_model})...")
+    log.info("    Computing Vendi Score (%s)...", feature_model)
     vendi_all = metrics.vendi_score(client_datasets_sub, return_all=True, **ext_kwargs)
     results["vendi_score_mean"] = float(np.mean(vendi_all))
     results["vendi_score_std"] = float(np.std(vendi_all))
     
-    print(f"    Computing Intrinsic Dimensionality ({feature_model})...")
+    log.info("    Computing Intrinsic Dimensionality (%s)...", feature_model)
     id_all = metrics.intrinsic_dimensionality(
         client_datasets_sub, method="two_nn", return_all=True, **ext_kwargs
     )
@@ -357,7 +380,7 @@ def compute_feature_metrics(
         results["id_mean"] = None
         results["id_std"] = None
     
-    print(f"    Computing Feature Variance ({feature_model})...")
+    log.info("    Computing Feature Variance (%s)...", feature_model)
     fv_all = metrics.feature_variance(client_datasets_sub, return_all=True, **ext_kwargs)
     results["feature_variance_mean"] = float(np.mean(fv_all))
     results["feature_variance_std"] = float(np.std(fv_all))
@@ -375,24 +398,25 @@ def compute_all_metrics(
     batch_size: int,
     use_cache: bool,
     cache_dir: Optional[str],
-    subsample: int = 0
+    subsample: int = 0,
+    seed: int = 42,
 ) -> MetricResults:
     """Combine all metric groups into final results."""
     
     # 1. Balance
-    print("  Computing balance metrics...")
+    log.info("  Computing balance metrics...")
     balance = compute_balance_metrics(client_datasets)
     
     # 2. Label
     label_results = {}
     if has_labels:
-        print("  Computing label metrics...")
+        log.info("  Computing label metrics...")
         label_results = compute_label_metrics(client_datasets, num_classes)
     else:
-        print("  Skipping label metrics (no labels detected)")
+        log.info("  Skipping label metrics (no labels detected)")
     
     # 3. Feature
-    print("  Computing feature metrics...")
+    log.info("  Computing feature metrics...")
     feature_results = compute_feature_metrics(
         dataset_name=dataset_name,
         base_path=base_path,
@@ -401,7 +425,8 @@ def compute_all_metrics(
         batch_size=batch_size,
         use_cache=use_cache,
         cache_dir=cache_dir,
-        subsample=subsample
+        subsample=subsample,
+        seed=seed,
     )
     
     # Flatten everything into the Dataclass
@@ -432,7 +457,8 @@ def evaluate_partition(
     use_cache: bool,
     cache_dir: Optional[str],
     subsample: int,
-    force: bool
+    force: bool,
+    seed: int,
 ) -> Optional[EvaluationResult]:
     
     # output_path = get_output_path(partition_path, output_dir)
@@ -449,11 +475,11 @@ def evaluate_partition(
         output_path = output_dir / f"{partition_path.stem}_eval.json"
 
     if output_path.exists() and not force:
-        print(f"  Skipping {partition_path.name} (results exist at {output_path.name})")
+        log.info("Skipping %s (results exist at %s)", partition_path.name, output_path.name)
         return None
     
-    print(f"\n{'='*60}")
-    print(f"Evaluating: {partition_path.name}")
+    log.info("%s", "=" * 60)
+    log.info("Evaluating: %s", partition_path.name)
     
     start_time = time.time()
     
@@ -464,15 +490,15 @@ def evaluate_partition(
     # Load Data
     try:
         client_datasets = load_partition_from_json(partition_path, dataset_map)
-    except Exception as e:
-        print(f"  Failed to load partition: {e}")
+    except PARTITION_LOAD_ERRORS as e:
+        log.error("Failed to load partition %s: %s", partition_path, e)
         return None
 
     # Update dynamic client count (HDBSCAN)
     if config.n_clients == 0:
         config.n_clients = len(client_datasets)
     
-    print(f"  Loaded {len(client_datasets)} clients, {sum(len(c) for c in client_datasets)} samples")
+    log.info("Loaded %s clients, %s samples", len(client_datasets), sum(len(c) for c in client_datasets))
     
     # Check Labels
     has_labels = detect_has_labels(dataset_name, dataset_map)
@@ -489,7 +515,8 @@ def evaluate_partition(
         batch_size=batch_size,
         use_cache=use_cache,
         cache_dir=cache_dir,
-        subsample=subsample
+        subsample=subsample,
+        seed=seed,
     )
     
     # Save
@@ -502,7 +529,7 @@ def evaluate_partition(
     output_dir.mkdir(parents=True, exist_ok=True)
     with open(output_path, 'w') as f:
         json.dump(result.to_dict(), f, indent=2)
-    print(f"  Saved: {output_path.name} ({time.time() - start_time:.1f}s)")
+    log.info("Saved %s (%.1fs)", output_path.name, time.time() - start_time)
     
     return result
 
@@ -518,23 +545,23 @@ def evaluate_all(
     use_cache: bool,
     cache_dir: Optional[str],
     force: bool,
-    subsample: int
+    subsample: int,
+    seed: int,
 ) -> List[EvaluationResult]:
     
     partition_files = sorted(partition_dir.rglob("*.json"))
-    print(f"Found {len(partition_files)} partitions.")
+    log.info("Found %s partitions.", len(partition_files))
     
     results = []
     for p_path in tqdm(partition_files, desc="Evaluating"):
         try:
             res = evaluate_partition(
                 p_path, dataset_map, dataset_name, base_path, output_dir,
-                feature_model, batch_size, use_cache, cache_dir, subsample, force
+                feature_model, batch_size, use_cache, cache_dir, subsample, force, seed
             )
             if res: results.append(res)
-        except Exception as e:
-            print(f"ERROR: {p_path.name}: {e}")
-            traceback.print_exc()
+        except PARTITION_EVAL_ERRORS:
+            log.exception("Error evaluating %s", p_path.name)
             
     # Aggregate CSV
     if results:
@@ -543,12 +570,13 @@ def evaluate_all(
         df = pd.DataFrame(rows)
         csv_path = output_dir / "all_results.csv"
         df.to_csv(csv_path, index=False)
-        print(f"Aggregate CSV saved to {csv_path}")
+        log.info("Aggregate CSV saved to %s", csv_path)
         
     return results
 
 
-def main():
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
     parser = argparse.ArgumentParser()
     # Inputs
     input_group = parser.add_mutually_exclusive_group(required=True)
@@ -556,48 +584,79 @@ def main():
     input_group.add_argument("--partition_dir", type=str)
     
     # Data & Output
-    parser.add_argument("--dataset", type=str, required=True)
-    parser.add_argument("--base_path", type=str, required=True)
-    parser.add_argument("--output_dir", type=str, required=True)
+    add_standard_cli_args(
+        parser,
+        include_dataset=True,
+        dataset_required=True,
+        include_base_path=True,
+        base_path_required=True,
+        include_output=True,
+        output_required=True,
+        output_help="Directory where evaluation JSON/CSV outputs are written.",
+        include_seed=True,
+        seed_default=42,
+        include_dry_run=True,
+    )
     
     # Config
     parser.add_argument("--feature_model", type=str, default="dinov2-small")
     parser.add_argument("--batch_size", type=int, default=100)
     parser.add_argument("--subsample", type=int, default=0, 
                         help="Max samples per client for feature metrics (0=all)")
-    parser.add_argument("--cache_dir", type=str, default="/path/to/gtai/FDS/embedding_cache")
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=os.environ.get("FDS_CACHE_DIR", str(Path.cwd() / "embedding_cache")),
+    )
+    parser.add_argument(
+        "--label_map_dir",
+        type=str,
+        default=os.environ.get("FDS_LABEL_MAP_DIR"),
+        help="Optional directory for persisted string-label mappings.",
+    )
     parser.add_argument("--no_cache", action="store_true")
     parser.add_argument("--force", action="store_true")
     
     args = parser.parse_args()
+    output_dir = Path(args.output)
+
+    if args.dry_run:
+        target = args.partition if args.partition else args.partition_dir
+        log.info("[dry-run] Evaluation target: %s", target)
+        log.info("[dry-run] Dataset: %s", args.dataset)
+        log.info("[dry-run] Base path: %s", args.base_path)
+        log.info("[dry-run] Output directory: %s", output_dir)
+        return 0
     
     # 1. Load Dataset
-    print(f"Loading {args.dataset} from {args.base_path}...")
+    log.info("Loading %s from %s...", args.dataset, args.base_path)
     dataset = BaseDataset(args.dataset, args.base_path, "train")
     
     # 2. Label Mapping (String -> Int)
-    label_map = get_or_create_label_mapping(args.dataset, dataset)
+    use_cache = not args.no_cache
+    label_map_dir = Path(args.label_map_dir) if args.label_map_dir else None
+    if label_map_dir is None and use_cache and args.cache_dir:
+        label_map_dir = Path(args.cache_dir) / "label_mappings"
+    label_map = get_or_create_label_mapping(args.dataset, dataset, mapping_dir=label_map_dir)
     
     # 3. Create O(1) Map
     dataset_map = create_dataset_map(dataset, label_map)
-    print(f"Map created with {len(dataset_map)} images.")
-    
-    output_dir = Path(args.output_dir)
-    use_cache = not args.no_cache
+    log.info("Map created with %s images.", len(dataset_map))
     
     # 4. Run
     if args.partition:
         evaluate_partition(
             Path(args.partition), dataset_map, args.dataset, args.base_path, output_dir,
             args.feature_model, args.batch_size, use_cache, args.cache_dir, 
-            args.subsample, args.force
+            args.subsample, args.force, args.seed
         )
     else:
         evaluate_all(
             Path(args.partition_dir), dataset_map, args.dataset, args.base_path, output_dir,
             args.feature_model, args.batch_size, use_cache, args.cache_dir,
-            args.force, args.subsample
+            args.force, args.subsample, args.seed
         )
+    return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

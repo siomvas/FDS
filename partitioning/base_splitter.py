@@ -6,12 +6,17 @@ validation set configurations and provides utilities for serialization and valid
 """
 
 from data_loading.dataset import BaseDataset
+import logging
 from typing import Dict, List, Optional, TypedDict, Any
+from collections.abc import Mapping
+from pathlib import Path
 import numpy as np
 import torch
 from abc import ABC, abstractmethod
 import json
 import pickle
+
+logger = logging.getLogger(__name__)
 
 
 class ClientSplit(TypedDict):
@@ -96,7 +101,7 @@ class BaseDatasetSplitter(ABC):
             raise ValueError(f"val_dataset must be provided when valset_type is '{valset_type}'")
 
         if valset_type == "none" and val_dataset is not None:
-            print("Warning: val_dataset provided but valset_type is 'none'. The val_dataset will be ignored.")
+            logger.warning("val_dataset provided while valset_type='none'; val_dataset will be ignored.")
 
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
@@ -158,9 +163,12 @@ class BaseDatasetSplitter(ABC):
             >>> splitter = RandomSplitter(dataset, n_clients=3, ...)
             >>> splits = splitter.get_client_splits()
             >>> client_0_train = splits["clients"]["client_0"]["train"]
-            >>> print(f"Client 0 has {len(client_0_train)} training samples")
+            >>> f"Client 0 has {len(client_0_train)} training samples"
         """
         if self.splits is None:
+            # Re-seed on each fresh computation so two splitter instances with the
+            # same seed remain reproducible regardless of call order.
+            self._set_random_seed(self.seed)
             self.splits = self._compute_client_splits()
         return self.splits  # type: ignore
 
@@ -186,15 +194,16 @@ class BaseDatasetSplitter(ABC):
         """
         splits = self.get_client_splits()
 
-        if format == "json":
+        normalized_format = format.lower()
+        if normalized_format == "json":
             with open(filename, "w") as f:
                 serializable_splits = self._make_serializable(splits)
                 json.dump(serializable_splits, f, indent=2)
-        elif format == "pkl":
+        elif normalized_format in {"pkl", "pickle"}:
             with open(filename, "wb") as f:
                 pickle.dump(splits, f)
         else:
-            raise ValueError(f"Unsupported format '{format}'. Use 'json' or 'pkl'.")
+            raise ValueError(f"Unsupported format '{format}'. Use 'json' or 'pkl'/'pickle'.")
 
     def _make_serializable(self, splits: DatasetSplits) -> DatasetSplits:
         """Convert any non-serializable objects in splits to serializable forms.
@@ -214,18 +223,87 @@ class BaseDatasetSplitter(ABC):
 
         if splits["global_val"] is not None:
             serializable_splits["global_val"] = [
-                {"image": str(sample["image"]), "label": sample["label"]} for sample in splits["global_val"]
+                self._normalize_split_sample(sample) for sample in splits["global_val"]
             ]
 
         for client_id, client_split in splits["clients"].items():
-            serializable_train = [{"image": str(sample["image"]), "label": sample["label"]} for sample in client_split["train"]]
-            serializable_val = [{"image": str(sample["image"]), "label": sample["label"]} for sample in client_split["val"]]
+            serializable_train = [self._normalize_split_sample(sample) for sample in client_split["train"]]
+            serializable_val = [self._normalize_split_sample(sample) for sample in client_split["val"]]
             serializable_splits["clients"][client_id] = ClientSplit(
                 train=serializable_train,
                 val=serializable_val,
             )
 
         return serializable_splits
+
+    @staticmethod
+    def _is_probable_segmentation_mask(path_like: str) -> bool:
+        suffix = Path(path_like).suffix.lower()
+        return suffix in {".png", ".bmp", ".gif", ".tif", ".tiff"}
+
+    @staticmethod
+    def _is_probable_detection_annotation(path_like: str) -> bool:
+        suffix = Path(path_like).suffix.lower()
+        return suffix in {".txt", ".xml", ".json"}
+
+    def _normalize_split_sample(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize a split sample while preserving task-specific fields.
+
+        Keeps additional keys (e.g., boxes/labels for detection) and adds
+        compatibility aliases where possible.
+        """
+        normalized: Dict[str, Any] = {}
+        for key, value in sample.items():
+            if isinstance(value, Path):
+                normalized[key] = str(value)
+            elif isinstance(value, np.generic):
+                normalized[key] = value.item()
+            elif isinstance(value, torch.Tensor):
+                normalized[key] = value.tolist()
+            else:
+                normalized[key] = value
+
+        if "image" not in normalized:
+            raise KeyError("Split sample is missing required 'image' key.")
+
+        normalized["image"] = str(normalized["image"])
+
+        if "mask_path" in normalized:
+            normalized["mask_path"] = str(normalized["mask_path"])
+            # Keep label for backward compatibility with older split consumers.
+            normalized.setdefault("label", normalized["mask_path"])
+
+        label_value = normalized.get("label")
+        if isinstance(label_value, Path):
+            label_value = str(label_value)
+            normalized["label"] = label_value
+
+        if isinstance(label_value, str):
+            if self._is_probable_segmentation_mask(label_value):
+                normalized.setdefault("mask_path", label_value)
+            if self._is_probable_detection_annotation(label_value):
+                normalized.setdefault("annotation_path", label_value)
+
+        return normalized
+
+    def _coerce_dataset_item_to_sample(self, item: Any) -> Dict[str, Any]:
+        if isinstance(item, Mapping):
+            raw_sample = dict(item)
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            raw_sample = {"image": item[0], "label": item[1]}
+        else:
+            raise TypeError(
+                "Dataset item must be a mapping or a tuple/list of (image, label). "
+                f"Got type: {type(item).__name__}"
+            )
+
+        return self._normalize_split_sample(raw_sample)
+
+    def _extract_label(self, dataset: BaseDataset, idx: int) -> Any:
+        sample = self._coerce_dataset_item_to_sample(dataset[idx])
+        if "label" not in sample:
+            raise KeyError(f"Dataset sample at index {idx} is missing 'label'.")
+        return sample["label"]
 
     def _load_dataset_samples(self, dataset: BaseDataset, indices: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         """Load samples from the dataset.
@@ -238,11 +316,11 @@ class BaseDatasetSplitter(ABC):
             List of dictionaries with "image" (path) and "label" keys.
         """
         if indices is not None:
-            return [{"image": str(dataset[idx][0]), "label": dataset[idx][1]} for idx in indices]
+            return [self._coerce_dataset_item_to_sample(dataset[idx]) for idx in indices]
         else:
-            return [{"image": str(dataset[idx][0]), "label": dataset[idx][1]} for idx in range(len(dataset))]
+            return [self._coerce_dataset_item_to_sample(dataset[idx]) for idx in range(len(dataset))]
 
-    def load_client_splits(self, filename: str, format: str = "json") -> None:
+    def load_client_splits(self, filename: str, format: str = "json") -> DatasetSplits:
         """Load previously saved client splits from a file.
 
         Loads splits from disk and stores them in self.splits. The loaded
@@ -261,14 +339,24 @@ class BaseDatasetSplitter(ABC):
             >>> splitter.load_client_splits("splits.json")
             >>> splits = splitter.get_client_splits()
         """
-        if format == "json":
+        normalized_format = format.lower()
+        if normalized_format == "json":
             with open(filename, "r") as f:
                 self.splits = json.load(f)
-        elif format == "pkl":
+        elif normalized_format in {"pkl", "pickle"}:
             with open(filename, "rb") as f:
                 self.splits = pickle.load(f)
         else:
-            raise ValueError(f"Unsupported format '{format}'. Use 'json' or 'pkl'.")
+            raise ValueError(f"Unsupported format '{format}'. Use 'json' or 'pkl'/'pickle'.")
+
+        return self.splits  # type: ignore[return-value]
+
+    # Backward-compatible aliases used by older scripts and tests.
+    def store_splits(self, filename: str, format: str = "json") -> None:
+        self.store_client_splits(filename, format=format)
+
+    def load_splits(self, filename: str, format: str = "json") -> DatasetSplits:
+        return self.load_client_splits(filename, format=format)
 
     def set_heterogeneity(self, heterogeneity: float) -> None:
         """Update the heterogeneity parameter and invalidate cached splits.
@@ -283,8 +371,8 @@ class BaseDatasetSplitter(ABC):
         Raises:
             ValueError: If heterogeneity is not in [0.0, 1.0].
         """
-        if not (0.0 <= heterogeneity <= 1.0):
-            raise ValueError(f"Heterogeneity must be between 0.0 and 1.0, got {heterogeneity}")
+        if heterogeneity < 0.0:
+            raise ValueError(f"Heterogeneity must be non-negative, got {heterogeneity}")
         self.heterogeneity = heterogeneity
         self.splits = None  # Invalidate existing splits
 
@@ -320,8 +408,8 @@ class BaseDatasetSplitter(ABC):
         Example:
             >>> splitter = RandomSplitter(...)
             >>> summary = splitter.get_split_summary()
-            >>> print(f"Total samples: {summary['total_train_samples']}")
-            >>> print(f"Samples per client: {summary['client_sizes']}")
+            >>> f"Total samples: {summary['total_train_samples']}"
+            >>> f"Samples per client: {summary['client_sizes']}"
         """
         splits = self.get_client_splits()
         client_sizes = {}
@@ -350,7 +438,7 @@ class BaseDatasetSplitter(ABC):
 
         return summary
 
-    def validate_splits(self) -> bool:
+    def validate_splits(self, splits: Optional[DatasetSplits] = None) -> bool:
         """Validate that the splits cover the entire dataset without overlap.
 
         Performs comprehensive validation checks:
@@ -374,30 +462,42 @@ class BaseDatasetSplitter(ABC):
             >>> splitter.get_client_splits()
             >>> try:
             ...     splitter.validate_splits()
-            ...     print("Splits are valid!")
+            ...     "Splits are valid!"
             ... except ValueError as e:
-            ...     print(f"Validation failed: {e}")
+            ...     f"Validation failed: {e}"
         """
-        splits = self.get_client_splits()
+        if splits is None:
+            splits = self.get_client_splits()
         if len(splits["clients"]) != self.n_clients:
-            raise ValueError(f"Number of clients in splits ({len(splits['clients'])}) does not match n_clients ({self.n_clients})")
+            raise ValueError(
+                f"Expected {self.n_clients} clients, but got {len(splits['clients'])} in provided splits."
+            )
         
         all_train_paths = set()
         for client_id, split in splits["clients"].items():
             client_train_paths = {sample["image"] for sample in split["train"]}
             if all_train_paths.intersection(client_train_paths):
-                raise ValueError(f"Overlap detected in training data for client {client_id}")
+                raise ValueError(f"Detected overlap in training samples for client {client_id}.")
             all_train_paths.update(client_train_paths)
-        expected_train_paths = {str(self.train_dataset[idx][0]) for idx in range(len(self.train_dataset))}
+        expected_train_paths = {
+            self._coerce_dataset_item_to_sample(self.train_dataset[idx])["image"]
+            for idx in range(len(self.train_dataset))
+        }
         if all_train_paths != expected_train_paths:
             missing = expected_train_paths - all_train_paths
             extra = all_train_paths - expected_train_paths
-            raise ValueError(f"Training data splits do not cover the entire dataset. Missing: {missing}, Extra: {extra}")
+            raise ValueError(
+                "Expected training splits to cover all samples exactly once. "
+                f"Missing: {missing}, Extra: {extra}"
+            )
         
         all_val_paths = set()
         if self.valset_type == "global" and splits["global_val"] is not None and self.val_dataset is not None:
             all_val_paths = {sample["image"] for sample in splits["global_val"]}
-            expected_val_paths = {str(self.val_dataset[idx][0]) for idx in range(len(self.val_dataset))}
+            expected_val_paths = {
+                self._coerce_dataset_item_to_sample(self.val_dataset[idx])["image"]
+                for idx in range(len(self.val_dataset))
+            }
             if all_val_paths != expected_val_paths:
                 missing = expected_val_paths - all_val_paths
                 extra = all_val_paths - expected_val_paths
@@ -406,13 +506,16 @@ class BaseDatasetSplitter(ABC):
             for client_id, split in splits["clients"].items():
                 client_val_paths = {sample["image"] for sample in split["val"]}
                 if all_val_paths.intersection(client_val_paths):
-                    raise ValueError(f"Overlap detected in validation data for client {client_id}")
+                    raise ValueError(f"Detected overlap in validation samples for client {client_id}.")
                 all_val_paths.update(client_val_paths)
-            expected_val_paths = {str(self.val_dataset[idx][0]) for idx in range(len(self.val_dataset))}
+            expected_val_paths = {
+                self._coerce_dataset_item_to_sample(self.val_dataset[idx])["image"]
+                for idx in range(len(self.val_dataset))
+            }
             if all_val_paths != expected_val_paths:
                 missing = expected_val_paths - all_val_paths
                 extra = all_val_paths - expected_val_paths
                 raise ValueError(f"Local validation data splits do not cover the entire validation dataset. Missing: {missing}, Extra: {extra}")
         
-        print("All splits are valid.")
+        logger.info("All splits are valid.")
         return True

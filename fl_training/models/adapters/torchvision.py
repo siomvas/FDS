@@ -77,7 +77,7 @@ def _replace_detection_head(model: nn.Module, num_classes: int, model_name: str)
 
             model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
             return
-        except Exception:
+        except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
             pass
 
     log.warning(
@@ -136,19 +136,28 @@ def _replace_segmentation_head(model: nn.Module, num_classes: int, model_name: s
 
 
 def _resolve_model_fn(name: str, task_type: str) -> Callable:
-    # Task-specific namespaces first, then top-level torchvision.models.
-    candidates = []
-    if task_type == "detection" and hasattr(models, "detection"):
-        candidates.append(models.detection)
-    elif task_type == "segmentation" and hasattr(models, "segmentation"):
-        candidates.append(models.segmentation)
-    candidates.append(models)
+    if task_type == "classification":
+        if hasattr(models, name):
+            return getattr(models, name)
+        raise ValueError(
+            f"Model '{name}' not found in torchvision.models for classification task."
+        )
 
-    for namespace in candidates:
-        if hasattr(namespace, name):
-            return getattr(namespace, name)
+    if task_type == "detection":
+        if hasattr(models, "detection") and hasattr(models.detection, name):
+            return getattr(models.detection, name)
+        raise ValueError(
+            f"Model '{name}' not found in torchvision.models.detection for detection task."
+        )
 
-    raise ValueError(f"Model '{name}' not found for task '{task_type}' in torchvision.models")
+    if task_type == "segmentation":
+        if hasattr(models, "segmentation") and hasattr(models.segmentation, name):
+            return getattr(models.segmentation, name)
+        raise ValueError(
+            f"Model '{name}' not found in torchvision.models.segmentation for segmentation task."
+        )
+
+    raise ValueError(f"Unsupported task type for torchvision adapter: {task_type}")
 
 
 def _instantiate_model(model_fn: Callable, weights, pretrained: bool, kwargs):

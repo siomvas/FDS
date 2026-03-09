@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import pytest
 from torch.utils.data import DataLoader, TensorDataset
 
 from fl_training.engines.segmentation import SegmentationEngine
@@ -131,3 +132,108 @@ def test_model_factory_torchvision_path():
         num_classes=5,
     )
     assert isinstance(model, nn.Module)
+
+
+def test_model_factory_torchvision_detection_path():
+    model = create_model(
+        model_cfg={
+            "name": "fasterrcnn_mobilenet_v3_large_320_fpn",
+            "provider": "torchvision",
+            "args": {"weights": None, "weights_backbone": None},
+        },
+        task_type="detection",
+        num_classes=3,
+    )
+    assert isinstance(model, nn.Module)
+
+
+def test_model_factory_torchvision_segmentation_path():
+    model = create_model(
+        model_cfg={
+            "name": "fcn_resnet50",
+            "provider": "torchvision",
+            "args": {"weights": None, "weights_backbone": None},
+        },
+        task_type="segmentation",
+        num_classes=4,
+    )
+    assert isinstance(model, nn.Module)
+
+
+def test_model_factory_rejects_provider_task_mismatch():
+    with pytest.raises(ValueError, match="does not support task 'segmentation'"):
+        create_model(
+            model_cfg={
+                "name": "resnet18",
+                "provider": "timm",
+                "args": {"pretrained": False},
+            },
+            task_type="segmentation",
+            num_classes=3,
+        )
+
+
+def test_model_factory_rejects_non_mapping_args():
+    with pytest.raises(TypeError, match="model_cfg.args must be a mapping"):
+        create_model(
+            model_cfg={
+                "name": "resnet18",
+                "provider": "torchvision",
+                "args": ["not", "a", "mapping"],
+            },
+            task_type="classification",
+            num_classes=3,
+        )
+
+
+def test_model_factory_rejects_classification_arch_for_detection_task():
+    with pytest.raises(RuntimeError, match="model 'resnet18'"):
+        create_model(
+            model_cfg={
+                "name": "resnet18",
+                "provider": "torchvision",
+                "args": {"weights": None},
+            },
+            task_type="detection",
+            num_classes=3,
+        )
+
+
+def test_model_factory_wraps_adapter_oserror(monkeypatch):
+    from fl_training.models.adapters import timm as timm_adapter
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("network unavailable")
+
+    monkeypatch.setattr(timm_adapter, "create_model", _raise_oserror)
+
+    with pytest.raises(RuntimeError, match="Model factory failed"):
+        create_model(
+            model_cfg={
+                "name": "resnet18",
+                "provider": "timm",
+                "args": {"pretrained": False},
+            },
+            task_type="classification",
+            num_classes=3,
+        )
+
+
+def test_hf_adapter_normalizes_load_error(monkeypatch):
+    hf_adapter = pytest.importorskip("fl_training.models.adapters.hf")
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("temporary network failure")
+
+    monkeypatch.setattr(
+        hf_adapter.AutoModelForImageClassification,
+        "from_pretrained",
+        _raise_oserror,
+    )
+
+    with pytest.raises(RuntimeError, match="Unable to create Hugging Face model"):
+        hf_adapter.create_model(
+            name="google/vit-base-patch16-224",
+            num_classes=3,
+            task_type="classification",
+        )

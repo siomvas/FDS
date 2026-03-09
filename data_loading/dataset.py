@@ -1,11 +1,17 @@
 import os
 import json
+import warnings
+import logging
+import random
 from torch.utils.data import Dataset
 import torch
 from numbers import Integral
 from typing import Callable, List, Tuple, Dict, Any, Optional
 from pathlib import Path
 from PIL import Image, UnidentifiedImageError
+from torchvision.transforms import functional as TF
+
+logger = logging.getLogger(__name__)
 
 
 class ImageDataset(Dataset):
@@ -60,8 +66,11 @@ class ImageDataset(Dataset):
             else:
                 return image
 
-        except (UnidentifiedImageError, OSError, Exception) as e:
-            print(f"[Warning] Skipping corrupt image {path}: {e}")
+        except (UnidentifiedImageError, OSError, ValueError, TypeError) as exc:
+            warnings.warn(
+                f"Skipping unreadable image {path}: {exc}",
+                RuntimeWarning,
+            )
             return None
 
 class ClassificationDataset(Dataset):
@@ -113,7 +122,9 @@ class SegmentationDataset(Dataset):
     classification tasks. Applies transforms to both images and masks.
 
     Args:
-        split_data: List of dicts with 'image' (path) and 'mask_path' (mask path) keys
+        split_data: List of dicts with 'image' (path) and either:
+            - 'mask_path' (canonical key), or
+            - 'label' (legacy compatibility key)
         transform: Optional transform pipeline applied to both image and mask
 
     Returns:
@@ -133,11 +144,20 @@ class SegmentationDataset(Dataset):
         - Transform should handle both images and masks (e.g., synchronized crops)
         - Masks should use nearest-neighbor interpolation for resizing
         - Images are converted to RGB, masks loaded as-is
+        - Legacy split files that store segmentation targets under ``label`` are
+          accepted for backward compatibility.
     """
-    def __init__(self, split_data: List[Dict[str, Any]], transform=None, mask_transform=None):
+    def __init__(
+        self,
+        split_data: List[Dict[str, Any]],
+        transform=None,
+        mask_transform=None,
+        sync_hflip_prob: float = 0.0,
+    ):
         self.samples = split_data  # [{"image": img_path, "label": mask_path}, ...]
         self.transform = transform
         self.mask_transform = mask_transform
+        self.sync_hflip_prob = float(sync_hflip_prob)
     
     def __len__(self):
         return len(self.samples)
@@ -145,7 +165,15 @@ class SegmentationDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         image = Image.open(sample["image"]).convert("RGB")
-        mask = Image.open(sample["mask_path"])
+        mask_path = sample.get("mask_path", sample.get("label"))
+        if mask_path is None:
+            raise KeyError("Segmentation sample must include 'mask_path' or legacy 'label'.")
+        mask = Image.open(mask_path)
+
+        # Apply synchronized geometric augmentation before individual transforms.
+        if self.sync_hflip_prob > 0.0 and random.random() < self.sync_hflip_prob:
+            image = TF.hflip(image)
+            mask = TF.hflip(mask)
 
         if self.transform:
             image = self.transform(image)
@@ -391,12 +419,12 @@ class BaseDataset(Dataset):
     Examples:
         >>> # Load existing dataset
         >>> dataset = BaseDataset("tiny_imagenet", "/data/datasets", "train")
-        >>> print(f"Size: {len(dataset)}")
+        >>> f"Size: {len(dataset)}"
         >>> img_path, label = dataset[0]
         >>>
         >>> # Get dataset summary
         >>> summary = dataset.get_summary()
-        >>> print(f"Classes: {summary['unique_labels']}")
+        >>> f"Classes: {summary['unique_labels']}"
         >>>
         >>> # Register custom dataset
         >>> @BaseDataset.register_dataset("cifar10")
@@ -413,6 +441,16 @@ class BaseDataset(Dataset):
     """
 
     _loaders = {}
+    _dataset_aliases = {
+        "tinyimagenet": "tiny_imagenet",
+        "tiny-imagenet": "tiny_imagenet",
+        "pascal_voc": "PascalVOC",
+        "pascal-voc": "PascalVOC",
+        "pascalvoc": "PascalVOC",
+        "bdd100k": "BDD100K",
+        "bdd_100k": "BDD100K",
+        "bdd-100k": "BDD100K",
+    }
 
     def __init__(self, dataset_name: str, base_path: str, split="train"):
         """Initialize dataset loader.
@@ -426,7 +464,8 @@ class BaseDataset(Dataset):
             FileNotFoundError: If base_path doesn't exist
             ValueError: If dataset_name is not registered
         """
-        self.dataset_name = dataset_name
+        self.requested_dataset_name = dataset_name
+        self.dataset_name = self._normalize_dataset_name(dataset_name)
         self.base_path = Path(base_path)
         self.split = split
         self.data: List[str] = []
@@ -441,11 +480,31 @@ class BaseDataset(Dataset):
             raise FileNotFoundError(f"Base path {self.base_path} does not exist")
 
         if self.dataset_name not in self._loaders:
-            raise ValueError(f"Dataset '{self.dataset_name}' not supported. " f"Available: {list(self._loaders.keys())}")
+            raise ValueError(
+                f"Dataset '{self.requested_dataset_name}' not supported. "
+                f"Available: {list(self._loaders.keys())}"
+            )
 
     def _load_dataset(self):
         loader_func = self._loaders[self.dataset_name]
         loader_func(self)
+
+    @classmethod
+    def _normalize_dataset_name(cls, dataset_name: str) -> str:
+        """Resolve dataset aliases and case-insensitive registry keys."""
+        candidate = dataset_name.strip()
+        if candidate in cls._loaders:
+            return candidate
+
+        lowered = candidate.lower()
+        if lowered in cls._dataset_aliases:
+            return cls._dataset_aliases[lowered]
+
+        for registered in cls._loaders:
+            if registered.lower() == lowered:
+                return registered
+
+        return candidate
 
     @classmethod
     def register_dataset(cls, name: str):
@@ -501,9 +560,9 @@ class BaseDataset(Dataset):
         Examples:
             >>> dataset = BaseDataset("food101", "/data", "train")
             >>> summary = dataset.get_summary()
-            >>> print(f"Dataset: {summary['dataset_name']}")
-            >>> print(f"Samples: {summary['total_samples']}")
-            >>> print(f"Classes: {summary['unique_labels']}")
+            >>> f"Dataset: {summary['dataset_name']}"
+            >>> f"Samples: {summary['total_samples']}"
+            >>> f"Classes: {summary['unique_labels']}"
         """
         return {
             "dataset_name": self.dataset_name,
@@ -588,7 +647,10 @@ def _load_food101(self):
                 self.data.append(str(img_path))
                 self.labels.append(label)
             else:
-                raise Warning(f"Image path {img_path} does not exist")
+                warnings.warn(
+                    f"Image path {img_path} does not exist; skipping sample.",
+                    RuntimeWarning,
+                )
 
 
 @BaseDataset.register_dataset("ade20k")
@@ -615,7 +677,10 @@ def _load_ade20k(self):
                 if mask_file.exists():
                     self.labels.append(str(mask_file))
                 else:
-                    raise Warning(f"Mask file {mask_file} does not exist")
+                    warnings.warn(
+                        f"Mask file {mask_file} does not exist; skipping sample.",
+                        RuntimeWarning,
+                    )
 
 @BaseDataset.register_dataset("PascalVOC")
 def _load_pascal_voc(self):
@@ -644,7 +709,10 @@ def _load_pascal_voc(self):
             self.data.append(str(img_path))
             self.labels.append(str(mask_path))
         else:
-            raise Warning(f"Image or mask for {img_name} does not exist")
+            warnings.warn(
+                f"Image or mask for {img_name} does not exist; skipping sample.",
+                RuntimeWarning,
+            )
 
 @BaseDataset.register_dataset("BDD100K") # Berkeley DeepDrive 100K
 def _load_bdd100k(self):
@@ -669,15 +737,19 @@ def _load_bdd100k(self):
             self.data.append(str(img_file))
             self.labels.append(str(mask_file))
         else:
-            raise Warning(f"Mask file {mask_file} does not exist")
+            warnings.warn(
+                f"Mask file {mask_file} does not exist; skipping sample.",
+                RuntimeWarning,
+            )
 
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
     dataset = BaseDataset("ade20k", "/path/to/gtai/FDS", "train")
-    print(f"Dataset size: {len(dataset)}")
-    print(f"Summary: {dataset.get_summary()}")
+    logger.info("Dataset size: %d", len(dataset))
+    logger.info("Summary: %s", dataset.get_summary())
 
     img_path, label = dataset[0]
-    print(f"First sample - Path: {img_path}, Label: {label}")
+    logger.info("First sample - Path: %s, Label: %s", img_path, label)

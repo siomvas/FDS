@@ -9,16 +9,14 @@ Both tracked automatically and logged to TensorBoard.
 """
 
 from typing import Dict, List, Optional, Any
-from pathlib import Path
-import sys
+import logging
 import torch
 import torch.nn as nn
 import numpy as np
 
-# Add parent directories to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-
 from evaluation.gradient_metrics import GradientDiversityMetric
+
+log = logging.getLogger(__name__)
 
 
 class ClientGradientTracker:
@@ -327,8 +325,8 @@ class ServerGradientTracker:
             try:
                 diversity_score = metric_computer.compute(client_gradients)
                 diversity_metrics[f"{metric_type}_diversity"] = float(diversity_score)
-            except Exception as e:
-                print(f"Warning: Failed to compute {metric_type} diversity: {e}")
+            except (ValueError, RuntimeError, TypeError) as e:
+                log.warning("Failed to compute %s diversity: %s", metric_type, e)
                 diversity_metrics[f"{metric_type}_diversity"] = 0.0
 
         # Also compute number of clients
@@ -391,7 +389,8 @@ def create_gradient_tracker(
 
 if __name__ == "__main__":
     # Example usage and testing
-    print("Testing gradient_tracker.py...")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    log.info("Testing gradient_tracker.py...")
 
     # Create a dummy model
     model = nn.Sequential(
@@ -401,7 +400,7 @@ if __name__ == "__main__":
     )
 
     # Client-side tracking
-    print("\n Client-side tracking:")
+    log.info("Client-side tracking:")
     client_tracker = ClientGradientTracker()
 
     # Store initial weights
@@ -414,10 +413,10 @@ if __name__ == "__main__":
     # Compute metrics
     client_metrics = client_tracker.compute_all_metrics(model)
     for key, value in client_metrics.items():
-        print(f"  {key}: {value:.6f}")
+        log.info("%s: %.6f", key, value)
 
     # Server-side tracking
-    print("\nServer-side tracking:")
+    log.info("Server-side tracking:")
     server_tracker = ServerGradientTracker()
 
     # Simulate multiple clients
@@ -432,6 +431,6 @@ if __name__ == "__main__":
     # Compute diversity
     server_metrics = server_tracker.compute_diversity_metrics(client_grads)
     for key, value in server_metrics.items():
-        print(f"  {key}: {value:.6f}")
+        log.info("%s: %.6f", key, value)
 
-    print("\n✓ Gradient tracker module ready!")
+    log.info("Gradient tracker module ready.")

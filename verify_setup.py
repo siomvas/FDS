@@ -6,48 +6,52 @@ before running the multivariate partitioning evaluation on HPC.
 """
 
 import sys
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 def check_file_exists(path, description):
     """Check if a file exists and print status."""
     path = Path(path)
     if path.exists():
-        print(f"✓ {description}: {path}")
+        logger.info(f"✓ {description}: {path}")
         return True
     else:
-        print(f"✗ {description}: NOT FOUND - {path}")
+        logger.info(f"✗ {description}: NOT FOUND - {path}")
         return False
 
 def check_directory_exists(path, description):
     """Check if a directory exists and print status."""
     path = Path(path)
     if path.exists() and path.is_dir():
-        print(f"✓ {description}: {path}")
+        logger.info(f"✓ {description}: {path}")
         return True
     else:
-        print(f"✗ {description}: NOT FOUND - {path}")
+        logger.info(f"✗ {description}: NOT FOUND - {path}")
         return False
 
 def check_import(module_name):
     """Check if a module can be imported."""
     try:
         __import__(module_name)
-        print(f"✓ {module_name}")
+        logger.info(f"✓ {module_name}")
         return True
     except ImportError:
-        print(f"✗ {module_name} - NOT INSTALLED")
+        logger.info(f"✗ {module_name} - NOT INSTALLED")
         return False
 
 def main():
-    print("=" * 80)
-    print("MULTIVARIATE PARTITIONING SETUP VERIFICATION")
-    print("=" * 80)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logger.info("=" * 80)
+    logger.info("MULTIVARIATE PARTITIONING SETUP VERIFICATION")
+    logger.info("=" * 80)
 
     all_checks_passed = True
 
     # Check implementation files
-    print("\n[1/5] Checking Implementation Files")
-    print("-" * 80)
+    logger.info("\n[1/5] Checking Implementation Files")
+    logger.info("-" * 80)
     checks = [
         ("data_partitioning/multivariate_dirichlet_splitter.py", "Multivariate Splitter"),
         ("data_partitioning/base_splitter.py", "Base Splitter"),
@@ -60,8 +64,8 @@ def main():
             all_checks_passed = False
 
     # Check evaluation scripts
-    print("\n[2/5] Checking Evaluation Scripts")
-    print("-" * 80)
+    logger.info("\n[2/5] Checking Evaluation Scripts")
+    logger.info("-" * 80)
     checks = [
         ("evaluation/test_multivariate_splitter.py", "Test Script"),
         ("evaluation/compare_partitioning_methods.py", "Evaluation Script"),
@@ -73,8 +77,8 @@ def main():
             all_checks_passed = False
 
     # Check cluster label data
-    print("\n[3/5] Checking Cluster Label Data")
-    print("-" * 80)
+    logger.info("\n[3/5] Checking Cluster Label Data")
+    logger.info("-" * 80)
     base_dir = "data_partitioning/legacy_vlm/data/tiny_imagenet"
     criteria_dirs = [
         "output_color_test",
@@ -89,8 +93,8 @@ def main():
             all_checks_passed = False
 
     # Check Python dependencies
-    print("\n[4/5] Checking Python Dependencies")
-    print("-" * 80)
+    logger.info("\n[4/5] Checking Python Dependencies")
+    logger.info("-" * 80)
     required_packages = [
         "numpy",
         "scipy",
@@ -105,8 +109,8 @@ def main():
             all_checks_passed = False
 
     # Check documentation
-    print("\n[5/5] Checking Documentation")
-    print("-" * 80)
+    logger.info("\n[5/5] Checking Documentation")
+    logger.info("-" * 80)
     checks = [
         ("data_partitioning/MULTIVARIATE_USAGE.md", "Usage Guide"),
         ("MULTIVARIATE_IMPLEMENTATION_SUMMARY.md", "Implementation Summary"),
@@ -116,34 +120,34 @@ def main():
             all_checks_passed = False
 
     # Important paths to configure
-    print("\n" + "=" * 80)
-    print("IMPORTANT: Update These Paths for HPC Deployment")
-    print("=" * 80)
-    print("\nIn evaluation/compare_partitioning_methods.py:")
-    print("  - BASE_PATH: Path to TinyImageNet data on HPC")
-    print("  - CLUSTER_LABELS_DIR: Path to VLM cluster labels")
-    print("\nIn evaluation/test_multivariate_splitter.py:")
-    print("  - base_path: Path to TinyImageNet data on HPC")
-    print("  - cluster_labels_dir: Path to VLM cluster labels")
-    print("\nIn examples/multivariate_partitioning_example.py:")
-    print("  - base_path: Path to TinyImageNet data on HPC")
-    print("  - cluster_labels_dir: Path to VLM cluster labels")
+    logger.info("\n" + "=" * 80)
+    logger.info("IMPORTANT: Update These Paths for HPC Deployment")
+    logger.info("=" * 80)
+    logger.info("\nIn evaluation/compare_partitioning_methods.py:")
+    logger.info("  - BASE_PATH: Path to TinyImageNet data on HPC")
+    logger.info("  - CLUSTER_LABELS_DIR: Path to VLM cluster labels")
+    logger.info("\nIn evaluation/test_multivariate_splitter.py:")
+    logger.info("  - base_path: Path to TinyImageNet data on HPC")
+    logger.info("  - cluster_labels_dir: Path to VLM cluster labels")
+    logger.info("\nIn examples/multivariate_partitioning_example.py:")
+    logger.info("  - base_path: Path to TinyImageNet data on HPC")
+    logger.info("  - cluster_labels_dir: Path to VLM cluster labels")
 
     # Final summary
-    print("\n" + "=" * 80)
+    logger.info("\n" + "=" * 80)
     if all_checks_passed:
-        print("✓ ALL CHECKS PASSED!")
-        print("=" * 80)
-        print("\nNext steps:")
-        print("1. Update paths in evaluation scripts for HPC")
-        print("2. Transfer code to HPC")
-        print("3. Run: python evaluation/test_multivariate_splitter.py")
-        print("4. Run: python evaluation/compare_partitioning_methods.py")
+        logger.info("✓ ALL CHECKS PASSED!")
+        logger.info("=" * 80)
+        logger.info("\nNext steps:")
+        logger.info("1. Update paths in evaluation scripts for HPC")
+        logger.info("2. Transfer code to HPC")
+        logger.info("3. Run: python evaluation/test_multivariate_splitter.py")
+        logger.info("4. Run: python evaluation/compare_partitioning_methods.py")
         return 0
     else:
-        print("✗ SOME CHECKS FAILED")
-        print("=" * 80)
-        print("\nPlease resolve the issues above before deploying to HPC.")
+        logger.info("✗ SOME CHECKS FAILED")
+        logger.info("=" * 80)
+        logger.info("\nPlease resolve the issues above before deploying to HPC.")
         return 1
 
 if __name__ == "__main__":

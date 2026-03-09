@@ -43,11 +43,14 @@ EmbeddingConfig : Configuration for selecting pooling strategies.
 """
 
 from abc import ABC, abstractmethod
+import logging
 from typing import Dict, Optional
 import numpy as np
 from scipy.spatial.distance import cdist
-from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import ArpackNoConvergence, eigsh
 from scipy.sparse import csr_matrix
+
+logger = logging.getLogger(__name__)
 
 
 class PoolingStrategy(ABC):
@@ -261,7 +264,13 @@ class LastKLayerPooling(PoolingStrategy):
 
         n_samples, n_layers, n_tokens, embed_dim = layer_embeddings.shape
 
-        print(f"Pooling for {n_samples} samples from {n_layers} layers with {n_tokens} tokens each. Embed dim: {embed_dim}")
+        logger.debug(
+            "Pooling %d samples from %d layers with %d tokens each (embed_dim=%d).",
+            n_samples,
+            n_layers,
+            n_tokens,
+            embed_dim,
+        )
 
         if self.layer_aggregation == "mean":
 
@@ -391,9 +400,10 @@ class SpectralSharpeningPooling(PoolingStrategy):
 
         # Need at least k samples
         if n_samples < self.k:
-            print(
-                f"Warning: Only {n_samples} samples, less than k={self.k}. "
-                "Returning original embeddings."
+            logger.warning(
+                "Only %d samples, less than spectral k=%d; returning original embeddings.",
+                n_samples,
+                self.k,
             )
             return embeddings
 
@@ -435,8 +445,8 @@ class SpectralSharpeningPooling(PoolingStrategy):
 
             return sharpened
 
-        except Exception as e:
-            print(f"Warning: Spectral decomposition failed: {e}. Returning original embeddings.")
+        except (ArpackNoConvergence, RuntimeError, ValueError, FloatingPointError) as e:
+            logger.warning("Spectral decomposition failed: %s. Returning original embeddings.", e)
             return embeddings
 
     def __repr__(self) -> str:

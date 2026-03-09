@@ -73,7 +73,7 @@ Label distribution metrics:
     >>> # Compute label heterogeneity
     >>> jsd = JS_divergence(client_data, num_classes=2)
     >>> tv = TV_label_distributions(client_data, num_classes=2)
-    >>> print(f"JSD: {jsd:.4f}, TV: {tv:.4f}")
+    >>> f"JSD: {jsd:.4f}, TV: {tv:.4f}"
 
 Feature distribution metrics:
 
@@ -118,7 +118,7 @@ Gradient diversity metrics:
     ...     {"layer1.weight": torch.randn(10, 5), "layer2.weight": torch.randn(5, 3)},
     ... ]
     >>> diversity = metric.compute(client_gradients)
-    >>> print(f"Gradient diversity: {diversity:.4f}")
+    >>> f"Gradient diversity: {diversity:.4f}"
 
 Advanced usage with PCA and caching:
 
@@ -132,7 +132,7 @@ Advanced usage with PCA and caching:
     ...     alpha=0.05,
     ...     use_cache=True
     ... )
-    >>> print(f"Reject null: {ks_result['reject_null']}")
+    >>> f"Reject null: {ks_result['reject_null']}"
     >>>
     >>> # Intrinsic dimensionality with GPU acceleration
     >>> id_estimates = intrinsic_dimensionality(

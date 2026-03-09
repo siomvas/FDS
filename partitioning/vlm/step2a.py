@@ -52,7 +52,7 @@ def query_llm_batch(model, tokenizer, prompts: List[str], max_new_tokens: int = 
     responses = []
     for output in outputs:
         response = tokenizer.decode(output, skip_special_tokens=True).strip()
-        #print("RESPONSE: ", response)
+        # logger.debug("RESPONSE: ", response)
         marker = "assistant"  
         idx = response.find(marker)
         if idx != -1:
@@ -61,7 +61,7 @@ def query_llm_batch(model, tokenizer, prompts: List[str], max_new_tokens: int = 
         else:
            response = response.strip()
     
-        print("Cleaned response: ", response)
+        logger.info("Cleaned response: %s", response)
         # Debug blank responses
         if response == "":
             logger.warning(f"Blank response")
@@ -103,7 +103,11 @@ def main(model, tokenizer, inference_batch_size: int = 16):
         prompts = [
             build_chat_prompt(model, tokenizer, system_prompt, item["description"]) for item in batch]
         
-        print(f"Processing batch {i // inference_batch_size + 1}/{(len(data) + inference_batch_size - 1) // inference_batch_size}")
+        logger.info(
+            "Processing batch %d/%d",
+            i // inference_batch_size + 1,
+            (len(data) + inference_batch_size - 1) // inference_batch_size,
+        )
         
         # Run batch inference
         responses = query_llm_batch(model, tokenizer, prompts, max_new_tokens=20)
@@ -119,7 +123,11 @@ def main(model, tokenizer, inference_batch_size: int = 16):
         gc.collect()
         torch.cuda.empty_cache()
         
-        print(f"  - Completed and saved {min(i + inference_batch_size, len(data))}/{len(data)} items\n")
+        logger.info(
+            "Completed and saved %d/%d items",
+            min(i + inference_batch_size, len(data)),
+            len(data),
+        )
     
     # Save results
     # with open(output_path, 'w', encoding='utf-8') as f:

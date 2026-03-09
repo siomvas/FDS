@@ -57,7 +57,7 @@ Basic workflow with caching:
     ...     images=["img1.jpg", "img2.jpg"],
     ...     use_cache=True
     ... )
-    >>> print(embeddings.shape)  # (2, 768)
+    >>> embeddings.shape)  # (2, 768
 
 See Also
 --------

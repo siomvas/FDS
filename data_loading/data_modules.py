@@ -75,12 +75,66 @@ class BaseDataModule(ABC):
 
         if split_path.suffix == ".json":
             with open(split_path, "r") as f:
-                return json.load(f)
+                splits = json.load(f)
         elif split_path.suffix == ".pkl":
             with open(split_path, "rb") as f:
-                return pickle.load(f)
+                splits = pickle.load(f)
         else:
             raise ValueError(f"Unsupported split file format: {split_path.suffix}")
+
+        self._validate_split_schema(splits)
+        return splits
+
+    @staticmethod
+    def _validate_split_sample(sample: Any, sample_ref: str) -> None:
+        if not isinstance(sample, dict):
+            raise ValueError(
+                "Invalid split sample schema. Expected mapping with at least "
+                f"'image', got {type(sample).__name__} at {sample_ref}. "
+                "This often happens when using path-only split files not intended for training."
+            )
+        if "image" not in sample:
+            raise KeyError(f"Split sample missing required 'image' key at {sample_ref}.")
+        if not isinstance(sample["image"], (str, Path)):
+            raise TypeError(
+                f"Split sample 'image' must be a path-like string at {sample_ref}, "
+                f"got {type(sample['image']).__name__}."
+            )
+
+    def _validate_split_schema(self, splits: Any) -> None:
+        if not isinstance(splits, dict):
+            raise ValueError(f"Split payload must be a mapping, got {type(splits).__name__}.")
+
+        clients = splits.get("clients")
+        if not isinstance(clients, dict):
+            raise ValueError("Split payload must contain a 'clients' mapping.")
+
+        global_val = splits.get("global_val", None)
+        if global_val is not None and not isinstance(global_val, list):
+            raise ValueError("Split payload 'global_val' must be a list or null.")
+
+        for client_id, client_split in clients.items():
+            if not isinstance(client_split, dict):
+                raise ValueError(
+                    f"Client split for '{client_id}' must be a mapping, "
+                    f"got {type(client_split).__name__}."
+                )
+
+            for split_name in ("train", "val"):
+                if split_name not in client_split:
+                    raise KeyError(f"Client '{client_id}' is missing required '{split_name}' split.")
+                split_samples = client_split[split_name]
+                if not isinstance(split_samples, list):
+                    raise ValueError(
+                        f"Client '{client_id}' split '{split_name}' must be a list, "
+                        f"got {type(split_samples).__name__}."
+                    )
+                for idx, sample in enumerate(split_samples):
+                    self._validate_split_sample(sample, f"clients.{client_id}.{split_name}[{idx}]")
+
+        if isinstance(global_val, list):
+            for idx, sample in enumerate(global_val):
+                self._validate_split_sample(sample, f"global_val[{idx}]")
 
     @staticmethod
     def _is_int_like(value: Any) -> bool:
@@ -114,6 +168,29 @@ class BaseDataModule(ABC):
             return None
 
         return {str(label): idx for idx, label in enumerate(unique_labels)}
+
+    def _normalize_segmentation_samples(self, samples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Normalize segmentation samples to canonical ``mask_path`` schema.
+
+        Supports legacy split files that used ``label`` to store mask paths.
+        """
+        normalized: List[Dict[str, Any]] = []
+        for sample in samples:
+            image_path = sample.get("image")
+            mask_path = sample.get("mask_path", sample.get("label"))
+            if image_path is None or mask_path is None:
+                raise KeyError(
+                    "Segmentation split sample must include 'image' and "
+                    "either 'mask_path' or legacy 'label'."
+                )
+
+            item = dict(sample)
+            item["image"] = str(image_path)
+            item["mask_path"] = str(mask_path)
+            # Keep label alias for backward compatibility.
+            item.setdefault("label", item["mask_path"])
+            normalized.append(item)
+        return normalized
 
     def get_client_data(self, splits: Dict) -> Tuple[List[Dict], List[Dict]]:
         """
@@ -355,6 +432,8 @@ class ADE20KDataModule(BaseDataModule):
 
         splits = self.load_splits()
         train_data, val_data = self.get_client_data(splits)
+        train_data = self._normalize_segmentation_samples(train_data)
+        val_data = self._normalize_segmentation_samples(val_data)
         train_transform = self.get_train_transform()
         val_transform = self.get_val_transform()
         mask_transform = self.get_mask_transform()
@@ -363,6 +442,7 @@ class ADE20KDataModule(BaseDataModule):
             split_data=train_data,
             transform=train_transform,
             mask_transform=mask_transform,
+            sync_hflip_prob=0.5,
         )
 
         if val_data:
@@ -370,6 +450,7 @@ class ADE20KDataModule(BaseDataModule):
                 split_data=val_data,
                 transform=val_transform,
                 mask_transform=mask_transform,
+                sync_hflip_prob=0.0,
             )
 
     def get_train_transform(self) -> T.Compose:
@@ -377,7 +458,6 @@ class ADE20KDataModule(BaseDataModule):
         image_size = int(self.image_size) if self.image_size is not None else 512
         return T.Compose([
             T.Resize((image_size, image_size)),
-            T.RandomHorizontalFlip(),
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
             T.ToTensor(),
             T.Normalize(

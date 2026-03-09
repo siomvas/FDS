@@ -50,6 +50,7 @@ Quick Links
    developer/architecture
    developer/contributing
    developer/testing
+   developer/logging
 
 Indices and tables
 ==================

@@ -13,6 +13,7 @@ different clients have different types of data.
 """
 
 from pathlib import Path
+import logging
 from typing import Dict, List, Optional, Any
 import numpy as np
 import time
@@ -24,6 +25,8 @@ from embedding.embedding_extractors import ModelRegistry, EmbeddingExtractor
 from embedding.cache_manager import CacheManager
 from .embedding_utils.pooling_strategies import get_pooling_strategy
 from .embedding_utils.clustering_methods import get_clustering_method
+
+logger = logging.getLogger(__name__)
 
 class EmbeddingSplitter(BaseDatasetSplitter):
     """Splits datasets using embedding-based clustering for federated learning.
@@ -128,6 +131,10 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         Device for computation ("cuda", "cpu", etc.). Auto-detects if None.
     batch_size : int, optional
         Batch size for embedding extraction. Default: 100.
+    proxy : str, optional
+        Optional proxy value forwarded to embedding extractors. Set to an empty
+        string to explicitly disable proxy use in extractor download contexts.
+        If None, extractor defaults apply.
     num_workers : int, optional
         Number of DataLoader worker processes for parallel data loading.
         Default: 4. Set to 0 for single-threaded loading (recommended for
@@ -163,7 +170,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
     ...     seed=42,
     ... )
     >>> splits = splitter.get_client_splits()
-    >>> print(f"Found {splitter.n_clients} clusters/clients")
+    >>> f"Found {splitter.n_clients} clusters/clients"
     >>> splitter.store_client_splits("embedding_splits.json")
 
     Using KMeans with fixed number of clients:
@@ -214,6 +221,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         device: Optional[str] = None,
         batch_size: int = 100,
         use_cache: bool = True,
+        proxy: Optional[str] = None,
         num_workers: int = 0,
     ):
         """Initialize the embedding splitter."""
@@ -249,16 +257,19 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         else:
             token_params = token_params or {}
 
+        # Turn off pooling if using CLS tokens only.
+        if token_extraction_strategy == "cls":
+            pooling_strategy = "cls"
+        elif pooling_strategy is None:
+            # Keep script defaults ergonomic: non-CLS token extraction falls back to mean pooling.
+            pooling_strategy = "mean"
+
         # Validate pooling strategy
-        valid_pooling = ["mean", "max", "gem", "lastk", "spectral"]
+        valid_pooling = ["cls", "mean", "max", "gem", "lastk", "spectral"]
         if pooling_strategy not in valid_pooling:
             raise ValueError(
                 f"Invalid pooling: {pooling_strategy}. Choose from {valid_pooling}"
             )
-        
-        # Turn off pooling if using CLS tokens only
-        if token_extraction_strategy == "cls":
-            pooling_strategy = "cls"
 
         # Validate clustering method
         valid_clustering = ["hdbscan", "kmeans", "knn", "spectral"]
@@ -291,6 +302,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         self.device = device
         self.batch_size = batch_size
         self.use_cache = use_cache
+        self.proxy = proxy
         self.num_workers = num_workers
 
         # need to persist the umap reducer if used
@@ -309,12 +321,19 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             Initialized extractor with cache manager.
         """
         cache_manager = CacheManager(cache_dir=self.cache_dir, enabled=True)
-        return ModelRegistry.create(
-            self.extractor_name,
+        create_kwargs = dict(
             device=self.device,
             batch_size=self.batch_size,
             cache_manager=cache_manager,
             num_workers=self.num_workers,
+        )
+        # Explicit proxy is optional; if omitted, extractor defaults are used.
+        if self.proxy is not None:
+            create_kwargs["proxy"] = self.proxy
+
+        return ModelRegistry.create(
+            self.extractor_name,
+            **create_kwargs,
         )
 
     def _get_embeddings(self, dataset: BaseDataset, dataset_type: str = "train") -> np.ndarray:
@@ -337,20 +356,20 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             str(dataset[i][0]) for i in range(len(dataset))
         ]
 
-        print(f"Extracting {dataset_type} embeddings using {self.extractor_name}...")
+        logger.info("Extracting %s embeddings using %s...", dataset_type, self.extractor_name)
         # only print for train to reduce noise
         if dataset_type == "train":
-            print(f"  Token extraction strategy: {self.token_extraction_strategy}")
+            logger.info("Token extraction strategy: %s", self.token_extraction_strategy)
             if self.token_extraction_strategy in ["k_last_all", "k_last_cls"]:
-                print(f"  Token layer aggregation: {self.token_params['layer_aggregation']}")
-                print(f"  Token last K layers: {self.token_params['lastk_k']}")
+                logger.info("Token layer aggregation: %s", self.token_params["layer_aggregation"])
+                logger.info("Token last K layers: %s", self.token_params["lastk_k"])
             if self.pooling_strategy != "cls":
-                print(f"  Pooling strategy: {self.pooling_strategy}")
+                logger.info("Pooling strategy: %s", self.pooling_strategy)
 
         # Extract embeddings (caching controlled by use_cache parameter)
-            print(f"  Caching: {'enabled' if self.use_cache else 'disabled'}")
+            logger.info("Caching: %s", "enabled" if self.use_cache else "disabled")
 
-        print(f" Starting extraction for {len(image_paths)} images...")
+        logger.info("Starting extraction for %d images.", len(image_paths))
         time_start = time.time()
         raw_embeddings = extractor.extract_embeddings(
             images=image_paths,
@@ -361,20 +380,24 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             base_path=self.base_path,
         )
         time_end = time.time()
-        print(f"✓ Extraction completed in {time_end - time_start:.2f} seconds")
-        print(f"  Raw embeddings shape: {raw_embeddings.shape}")
+        logger.info("Extraction completed in %.2f seconds.", time_end - time_start)
+        logger.info("Raw embeddings shape: %s", raw_embeddings.shape)
 
         # Apply pooling if needed
         if self.pooling_strategy == "cls":
             # CLS token only, no pooling needed
-            print("  Using CLS token only, skipping pooling.")
+            logger.debug("Using CLS token only, skipping pooling.")
             embeddings = raw_embeddings
         else:
             if self.pooling_strategy == "lastk":
                 self.layer_aggregation = self.token_params["layer_aggregation"]
                 token_agg = self.pooling_params["token_aggregation"]
                 # Last K layers pooling
-                print(f"  Applying Last K Layers pooling with layer aggregation {self.layer_aggregation} and token aggregation {token_agg}.")
+                logger.info(
+                    "Applying Last K Layers pooling with layer aggregation %s and token aggregation %s.",
+                    self.layer_aggregation,
+                    token_agg,
+                )
                 pooler = get_pooling_strategy(
                     "lastk",
                     layer_aggregation=self.layer_aggregation,
@@ -382,13 +405,13 @@ class EmbeddingSplitter(BaseDatasetSplitter):
                 )
             else:
                 # Other pooling strategies
-                print(f"  Applying {self.pooling_strategy} pooling.")
+                logger.info("Applying %s pooling.", self.pooling_strategy)
                 pooler = get_pooling_strategy(
                     self.pooling_strategy, **self.pooling_params
                 )
             embeddings = pooler.pool(raw_embeddings)
 
-        print(f"✓ Final embeddings shape: {embeddings.shape}")
+        logger.info("Final embeddings shape: %s", embeddings.shape)
         return embeddings
 
     def _preprocess_embeddings(self, embeddings, fit=True) -> np.ndarray:
@@ -399,7 +422,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         if args.get("normalization", "none") == "l2":
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             embeddings = embeddings / np.where(norms == 0, 1, norms)
-            print("  Applied L2 normalization to embeddings")
+            logger.debug("Applied L2 normalization to embeddings.")
         
         if args.get("dim_reduction", "none") == "umap":
             if fit:
@@ -410,7 +433,13 @@ class EmbeddingSplitter(BaseDatasetSplitter):
                     metric=args["umap_metric"],
                     # random_state=self.seed, # Uncomment for reproducibility, incompatible with n_jobs > 1 (parallelism)
                 )
-                print(f"  UMAP: {embeddings.shape[1]} → {args['dr_dims']} (neighbors={args['umap_neighbors']}, min_dist={args['umap_min_dist']})")
+                logger.info(
+                    "UMAP: %d -> %d (neighbors=%s, min_dist=%s)",
+                    embeddings.shape[1],
+                    args["dr_dims"],
+                    args["umap_neighbors"],
+                    args["umap_min_dist"],
+                )
                 embeddings = self.umap_reducer.fit_transform(embeddings)
             else:
                 if self.umap_reducer is None:
@@ -441,17 +470,17 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             self.clustering_method, **self.clustering_params
         )
 
-        print(f"Clustering with {self.clustering_method}...")
+        logger.info("Clustering with %s...", self.clustering_method)
         time_start = time.time()
         cluster_labels = clustering.cluster(embeddings)
         self.cluster_info_ = clustering.get_cluster_info()
 
         num_clusters = self.cluster_info_.get("num_clusters", 0)
         time_end = time.time()
-        print(f"✓ Found {num_clusters} clusters in {time_end - time_start:.2f} seconds")
+        logger.info("Found %d clusters in %.2f seconds.", num_clusters, time_end - time_start)
 
         if "noise_count" in self.cluster_info_:
-            print(f"  Noise samples: {self.cluster_info_['noise_count']}")
+            logger.info("Noise samples: %s", self.cluster_info_["noise_count"])
 
         return cluster_labels
 
@@ -476,14 +505,14 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         if not noise_mask.any():
             return labels
 
-        print(f"  Assigning {noise_mask.sum()} noise points to nearest clusters...")
+        logger.info("Assigning %d noise points to nearest clusters...", int(noise_mask.sum()))
 
         # Get cluster centroids
         unique_labels = [l for l in set(labels) if l != -1]
         
         # If no clusters found (all noise), return single cluster
         if not unique_labels:
-            print("  All points are noise; assigning all to single cluster 0.")
+            logger.warning("All points are noise; assigning all samples to cluster 0.")
             return np.zeros_like(labels)
 
         centroids = {
@@ -546,7 +575,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         unique_clusters = sorted(set(cluster_labels))
         self.n_clients = len(unique_clusters)
 
-        print(f"\nCreating {self.n_clients} clients from {len(unique_clusters)} clusters")
+        logger.info("Creating %d clients from %d clusters.", self.n_clients, len(unique_clusters))
 
         # 6. Direct mapping: cluster_i -> client_i
         # Create mapping from original cluster labels to sequential client IDs

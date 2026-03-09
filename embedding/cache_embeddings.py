@@ -1,11 +1,13 @@
 import argparse
-import sys
-from pathlib import Path
-from typing import List
+import logging
+import traceback
 import torch
 from embedding.cache_manager import CacheManager
 from embedding.embedding_extractors import ModelRegistry
 from data_loading.dataset import BaseDataset
+
+logger = logging.getLogger(__name__)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Pre-compute embeddings for a dataset")
@@ -20,15 +22,15 @@ def main():
     
     args = parser.parse_args()
     
-    print(f"Initializing CacheManager at {args.cache_dir}...")
+    logger.info("Initializing CacheManager at %s...", args.cache_dir)
     cache_manager = CacheManager(cache_dir=args.cache_dir)
     
-    print(f"Loading dataset '{args.dataset}' from {args.base_path}...")
+    logger.info("Loading dataset '%s' from %s...", args.dataset, args.base_path)
 
     dataset = BaseDataset(dataset_name=args.dataset, base_path=args.base_path, split='train')
     images = dataset.data
 
-    print(f"Initializing Extractor: {args.model}...")
+    logger.info("Initializing extractor: %s...", args.model)
     try:
         extractor = ModelRegistry.create(
             args.model, 
@@ -39,10 +41,10 @@ def main():
 
         )
     except ValueError as e:
-        print(f"Error initializing model: {e}")
+        logger.exception("Error initializing model: %s", e)
         return
     
-    print("Computing embeddings... (This will automatically save to cache)")
+    logger.info("Computing embeddings (this will automatically save to cache)...")
     try:
         tokens = args.tokens if args.tokens != "none" else None
         k_last = args.k_last if args.k_last > 0 else None
@@ -54,13 +56,13 @@ def main():
             return_which_token=tokens,
             k_last=k_last
         )
-        print("Embedding extraction and caching completed successfully.")
+        logger.info("Embedding extraction and caching completed successfully.")
 
 
-    except Exception as e:
-        print(f"Error during extraction: {e}")
-        import traceback
+    except (RuntimeError, ValueError, OSError) as e:
+        logger.exception("Error during extraction: %s", e)
         traceback.print_exc()
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     main()

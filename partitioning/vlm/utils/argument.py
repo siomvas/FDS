@@ -1,11 +1,14 @@
 import os
 import shutil
 import argparse
+import logging
 from pathlib import Path
 #from dotenv import load_dotenv
 from time import strftime, localtime
 from partitioning.vlm.utils.constants import TINY_IMAGENET, FOOD101, PASCALVOC, ADE20K
 from partitioning.vlm.utils.constants import INTERNVL3_38B, INTERNVL3_8B, LLAMA33_70B, LLAMA31_8B_INSTRUCT , MINICPM26, QWEN3_8B, QWEN3_30B
+
+logger = logging.getLogger(__name__)
 
 
 def str2bool(v):
@@ -135,9 +138,9 @@ else:
     args.exemplar = None
     args.num_classes = None
 
-print(f"Selected criteria: {args.criteria} (index {criteria_index})")
-print(f"Prompt label: {args.prompt_label}")
-print(f"Exemplar: {args.exemplar}")
-print(f"Num class: {args.num_classes}")
+logger.info("Selected criteria: %s (index %d)", args.criteria, criteria_index)
+logger.info("Prompt label: %s", args.prompt_label)
+logger.info("Exemplar: %s", args.exemplar)
+logger.info("Num class: %s", args.num_classes)
 
 #--------------------------------------------------------------------------------------
