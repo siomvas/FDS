@@ -3,6 +3,7 @@ import json
 import warnings
 import logging
 import random
+import numpy as np
 from torch.utils.data import Dataset
 import torch
 from numbers import Integral
@@ -162,6 +163,23 @@ class SegmentationDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
+    @staticmethod
+    def _decode_rgb_mask(mask: Image.Image, mask_path: str) -> Image.Image:
+        """Decode RGB-encoded segmentation masks into a single-channel index map.
+
+        ADE20K ``*_seg.png`` masks in this local layout expose semantic ids in
+        channel-0. Preserve that channel directly to avoid creating synthetic
+        out-of-range labels.
+
+        For other RGB masks, fall back to channel-0 to enforce the expected
+        single-channel mask contract downstream.
+        """
+        rgb = np.asarray(mask.convert("RGB"), dtype=np.int32)
+        if str(mask_path).endswith("_seg.png"):
+            return Image.fromarray(rgb[..., 0].astype(np.uint8), mode="L")
+
+        return Image.fromarray(rgb[..., 0].astype(np.uint8), mode="L")
+
     def __getitem__(self, idx):
         sample = self.samples[idx]
         image = Image.open(sample["image"]).convert("RGB")
@@ -169,6 +187,8 @@ class SegmentationDataset(Dataset):
         if mask_path is None:
             raise KeyError("Segmentation sample must include 'mask_path' or legacy 'label'.")
         mask = Image.open(mask_path)
+        if mask.mode in {"RGB", "RGBA"}:
+            mask = self._decode_rgb_mask(mask, str(mask_path))
 
         # Apply synchronized geometric augmentation before individual transforms.
         if self.sync_hflip_prob > 0.0 and random.random() < self.sync_hflip_prob:

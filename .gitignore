@@ -57,6 +57,7 @@ local_data/
 local_artifacts/
 
 benchmark_results/
+outputs/
 
 # Code audit
 audit/

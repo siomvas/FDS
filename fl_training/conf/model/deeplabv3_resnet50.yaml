@@ -1,0 +1,16 @@
+# @package _global_
+model:
+  name: deeplabv3_resnet50
+  provider: torchvision
+  args:
+    weights: null
+    weights_backbone: null
+
+training:
+  lr: 5e-4
+  batch_size: 2
+  optimizer:
+    class_name: SGD
+    args:
+      momentum: 0.9
+      weight_decay: 1e-4

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import pytest
+from types import SimpleNamespace
 from torch.utils.data import DataLoader, TensorDataset
 
 from fl_training.engines.segmentation import SegmentationEngine
@@ -35,10 +36,28 @@ class _DummyDetectionModel(nn.Module):
                 {
                     "boxes": torch.tensor([[0.0, 0.0, 1.0, 1.0]], device=images[0].device),
                     "scores": torch.tensor([0.95], device=images[0].device),
+                    "labels": torch.tensor([1], device=images[0].device),
                 }
                 for _ in images
             ]
         raise TypeError("Unexpected input format")
+
+
+class _DummyHFDetectionModel(nn.Module):
+    """Lightweight HF-style detection model expecting pixel_values + labels."""
+
+    def __init__(self):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, pixel_values=None, labels=None):
+        if labels is not None:
+            loss = pixel_values.float().mean().abs()
+            return {"loss_total": (self.scale * 0.0) + loss}
+
+        batch_size = int(pixel_values.shape[0])
+        logits = torch.randn(batch_size, 5, 3, device=pixel_values.device)
+        return SimpleNamespace(logits=logits)
 
 
 def test_segmentation_engine_supports_dict_outputs():
@@ -55,8 +74,8 @@ def test_segmentation_engine_supports_dict_outputs():
             "local_steps": 2,
             "lr": 1e-3,
             "scheduler": "none",
+            "optimizer": {"class_name": "Adam", "args": {}},
         },
-        "optimizer": {"class_name": "Adam", "args": {}},
         "fed": {"rounds": 1},
     }
 
@@ -74,6 +93,62 @@ def test_segmentation_engine_supports_dict_outputs():
     assert "val_loss" in val_metrics
 
 
+def test_segmentation_engine_rejects_out_of_range_masks_by_default():
+    cfg = {
+        "training": {
+            "steps_or_epochs": "steps",
+            "num_classes": 3,
+            "ignore_index": 255,
+            "loss": "cross_entropy",
+            "optim_resume": "resume",
+            "amp_enabled": False,
+            "grad_clipping_type": "none",
+            "grad_clipping_value": 0.0,
+            "local_steps": 1,
+            "lr": 1e-3,
+            "scheduler": "none",
+            "optimizer": {"class_name": "Adam", "args": {}},
+        },
+        "fed": {"rounds": 1},
+    }
+
+    engine = SegmentationEngine(_DictSegModel(num_classes=3), cfg, torch.device("cpu"))
+    masks = torch.tensor([[[[0, 2], [5, 255]]]], dtype=torch.long)
+    with pytest.raises(ValueError, match="out-of-range segmentation labels"):
+        engine._prepare_masks(masks)
+
+
+def test_segmentation_engine_can_map_out_of_range_masks_when_explicitly_enabled():
+    cfg = {
+        "training": {
+            "steps_or_epochs": "steps",
+            "num_classes": 3,
+            "ignore_index": 255,
+            "loss": "cross_entropy",
+            "optim_resume": "resume",
+            "amp_enabled": False,
+            "grad_clipping_type": "none",
+            "grad_clipping_value": 0.0,
+            "local_steps": 1,
+            "lr": 1e-3,
+            "scheduler": "none",
+            "segmentation_out_of_range_policy": "ignore",
+            "optimizer": {"class_name": "Adam", "args": {}},
+        },
+        "fed": {"rounds": 1},
+    }
+
+    engine = SegmentationEngine(_DictSegModel(num_classes=3), cfg, torch.device("cpu"))
+    masks = torch.tensor([[[[0, 2], [5, 255]]]], dtype=torch.long)
+    prepared = engine._prepare_masks(masks)
+
+    assert prepared.shape == (1, 2, 2)
+    assert int(prepared[0, 0, 0]) == 0
+    assert int(prepared[0, 0, 1]) == 2
+    assert int(prepared[0, 1, 0]) == 255
+    assert int(prepared[0, 1, 1]) == 255
+
+
 def test_detection_engine_smoke():
     cfg = {
         "training": {
@@ -86,8 +161,8 @@ def test_detection_engine_smoke():
             "lr": 1e-3,
             "scheduler": "none",
             "detection_score_threshold": 0.5,
+            "optimizer": {"class_name": "Adam", "args": {}},
         },
-        "optimizer": {"class_name": "Adam", "args": {}},
         "fed": {"rounds": 1},
     }
 
@@ -119,6 +194,150 @@ def test_detection_engine_smoke():
     assert train_metrics["num_steps_current_round"] == 2.0
     assert "train_loss" in train_metrics
     assert "avg_detections" in val_metrics
+    assert "map_50" in val_metrics
+
+
+def test_detection_engine_supports_variable_image_shapes_in_eval():
+    cfg = {
+        "training": {
+            "steps_or_epochs": "steps",
+            "optim_resume": "resume",
+            "amp_enabled": False,
+            "grad_clipping_type": "none",
+            "grad_clipping_value": 0.0,
+            "local_steps": 1,
+            "lr": 1e-3,
+            "scheduler": "none",
+            "detection_score_threshold": 0.5,
+            "optimizer": {"class_name": "Adam", "args": {}},
+        },
+        "fed": {"rounds": 1},
+    }
+
+    engine = DetectionEngine(_DummyDetectionModel(), cfg, torch.device("cpu"))
+
+    class VariableShapeLoader:
+        def __len__(self):
+            return 1
+
+        def __iter__(self):
+            images = [
+                torch.randn(3, 375, 500),
+                torch.randn(3, 333, 500),
+            ]
+            targets = [
+                {
+                    "boxes": torch.tensor([[0.0, 0.0, 1.0, 1.0]], dtype=torch.float32),
+                    "labels": torch.tensor([1], dtype=torch.int64),
+                },
+                {
+                    "boxes": torch.tensor([[0.0, 0.0, 1.0, 1.0]], dtype=torch.float32),
+                    "labels": torch.tensor([1], dtype=torch.int64),
+                },
+            ]
+            yield images, targets
+
+    loader = VariableShapeLoader()
+    train_metrics = engine.train_one_round(loader)
+    val_metrics = engine.evaluate(loader)
+
+    assert train_metrics["num_steps_current_round"] == 1.0
+    assert "train_loss" in train_metrics
+    assert "avg_detections" in val_metrics
+    assert "map_50" in val_metrics
+
+
+def test_detection_engine_hf_adapter_with_batched_tensor_inputs():
+    cfg = {
+        "model": {"provider": "hf"},
+        "training": {
+            "steps_or_epochs": "steps",
+            "optim_resume": "resume",
+            "amp_enabled": False,
+            "grad_clipping_type": "none",
+            "grad_clipping_value": 0.0,
+            "local_steps": 1,
+            "lr": 1e-3,
+            "scheduler": "none",
+            "detection_score_threshold": 0.5,
+            "optimizer": {"class_name": "Adam", "args": {}},
+        },
+        "fed": {"rounds": 1},
+    }
+
+    engine = DetectionEngine(_DummyHFDetectionModel(), cfg, torch.device("cpu"))
+    base_loader = DataLoader(
+        TensorDataset(
+            torch.randn(4, 3, 32, 32),
+            torch.tensor([[[0.0, 0.0, 1.0, 1.0]]] * 4, dtype=torch.float32),
+            torch.tensor([[1]] * 4, dtype=torch.int64),
+        ),
+        batch_size=2,
+    )
+
+    class WrappedLoader:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def __len__(self):
+            return len(self.wrapped)
+
+        def __iter__(self):
+            for images, boxes, labels in self.wrapped:
+                yield images, {"boxes": boxes, "labels": labels}
+
+    loader = WrappedLoader(base_loader)
+    train_metrics = engine.train_one_round(loader)
+    val_metrics = engine.evaluate(loader)
+
+    assert train_metrics["num_steps_current_round"] == 1.0
+    assert "train_loss" in train_metrics
+    assert "avg_detections" in val_metrics
+
+
+def test_detection_engine_hf_adapter_rejects_variable_shape_batches():
+    cfg = {
+        "model": {"provider": "hf"},
+        "training": {
+            "steps_or_epochs": "steps",
+            "optim_resume": "resume",
+            "amp_enabled": False,
+            "grad_clipping_type": "none",
+            "grad_clipping_value": 0.0,
+            "local_steps": 1,
+            "lr": 1e-3,
+            "scheduler": "none",
+            "detection_score_threshold": 0.5,
+            "optimizer": {"class_name": "Adam", "args": {}},
+        },
+        "fed": {"rounds": 1},
+    }
+
+    engine = DetectionEngine(_DummyHFDetectionModel(), cfg, torch.device("cpu"))
+
+    class VariableShapeLoader:
+        def __len__(self):
+            return 1
+
+        def __iter__(self):
+            images = [
+                torch.randn(3, 375, 500),
+                torch.randn(3, 333, 500),
+            ]
+            targets = [
+                {
+                    "boxes": torch.tensor([[0.0, 0.0, 1.0, 1.0]], dtype=torch.float32),
+                    "labels": torch.tensor([1], dtype=torch.int64),
+                },
+                {
+                    "boxes": torch.tensor([[0.0, 0.0, 1.0, 1.0]], dtype=torch.float32),
+                    "labels": torch.tensor([1], dtype=torch.int64),
+                },
+            ]
+            yield images, targets
+
+    with pytest.raises(RuntimeError, match="HF detection adapter requires batched tensor inputs"):
+        engine.train_one_round(VariableShapeLoader())
 
 
 def test_model_factory_torchvision_path():
@@ -151,6 +370,19 @@ def test_model_factory_torchvision_segmentation_path():
     model = create_model(
         model_cfg={
             "name": "fcn_resnet50",
+            "provider": "torchvision",
+            "args": {"weights": None, "weights_backbone": None},
+        },
+        task_type="segmentation",
+        num_classes=4,
+    )
+    assert isinstance(model, nn.Module)
+
+
+def test_model_factory_torchvision_deeplab_segmentation_path():
+    model = create_model(
+        model_cfg={
+            "name": "deeplabv3_resnet50",
             "provider": "torchvision",
             "args": {"weights": None, "weights_backbone": None},
         },

@@ -46,6 +46,7 @@ def _base_cfg(split_file: str, data_root: str) -> dict:
             "task_type": "classification",
             "batch_size": 2,
             "num_classes": 2,
+            "optimizer": {"class_name": "SGD", "args": {}},
         },
         "model": {
             "name": "resnet18",
@@ -129,6 +130,36 @@ def test_preflight_fl_requires_split_path(tmp_path, monkeypatch):
     del cfg["dataset"]["dataset_splits"]
 
     cfg_file = _write_json(tmp_path / "cfg_no_split.json", cfg)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["preflight_fl.py", "--config-file", cfg_file],
+    )
+
+    assert module.main() == 1
+
+
+def test_preflight_fl_requires_training_optimizer(tmp_path, monkeypatch):
+    module = _load_module("preflight_fl_missing_optimizer", "scripts/preflight_fl.py")
+
+    img0 = _write_rgb(tmp_path / "img0.jpg")
+    split_file = _write_json(
+        tmp_path / "splits.json",
+        {
+            "clients": {
+                "client_0": {
+                    "train": [{"image": img0, "label": 0}],
+                    "val": [],
+                }
+            },
+            "global_val": None,
+        },
+    )
+
+    cfg = _base_cfg(split_file=split_file, data_root=str(tmp_path))
+    del cfg["training"]["optimizer"]
+    cfg_file = _write_json(tmp_path / "cfg_no_optimizer.json", cfg)
 
     monkeypatch.setattr(
         sys,

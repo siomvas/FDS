@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import sys
@@ -60,6 +61,66 @@ def _build_tiny_imagenet_minimal(base_path: Path) -> None:
         f.write("\n".join(val_rows) + "\n")
 
 
+def _build_pascal_voc_minimal(base_path: Path, n_train: int = 20, n_val: int = 4) -> list[str]:
+    root = base_path / "VOC2012"
+    train_img_dir = root / "images" / "train"
+    train_lbl_dir = root / "labels" / "train"
+    val_img_dir = root / "images" / "val"
+    val_lbl_dir = root / "labels" / "val"
+
+    train_img_dir.mkdir(parents=True, exist_ok=True)
+    train_lbl_dir.mkdir(parents=True, exist_ok=True)
+    val_img_dir.mkdir(parents=True, exist_ok=True)
+    val_lbl_dir.mkdir(parents=True, exist_ok=True)
+
+    train_names: list[str] = []
+    for idx in range(n_train):
+        name = f"2008_{idx:06d}"
+        train_names.append(name)
+        _write_rgb(train_img_dir / f"{name}.jpg", color=((idx * 7) % 255, 100, 120))
+        with open(train_lbl_dir / f"{name}.txt", "w", encoding="utf-8") as f:
+            f.write("person 0.5 0.5 0.4 0.4\n")
+
+    for idx in range(n_val):
+        name = f"2011_{idx:06d}"
+        _write_rgb(val_img_dir / f"{name}.jpg", color=(80, (idx * 11) % 255, 150))
+        with open(val_lbl_dir / f"{name}.txt", "w", encoding="utf-8") as f:
+            f.write("dog 0.5 0.5 0.3 0.3\n")
+
+    return train_names
+
+
+def _build_pascal_vlm_annotations(vlm_root: Path, train_names: list[str]) -> None:
+    criterion_to_dir = {
+        "color": "output_color_train",
+        "light": "output_light_train",
+        "size": "output_size_train",
+        "location": "output_location_train",
+        "main_object": "output_main_object_train",
+    }
+    criterion_labels = {
+        "color": ("warm", "cool"),
+        "light": ("bright", "dim"),
+        "size": ("close", "wide"),
+        "location": ("indoor", "outdoor"),
+        "main_object": ("person", "animal"),
+    }
+
+    for criterion, dirname in criterion_to_dir.items():
+        out_dir = vlm_root / dirname
+        out_dir.mkdir(parents=True, exist_ok=True)
+        file_path = out_dir / "step3_result.jsonl"
+        labels = criterion_labels[criterion]
+        with open(file_path, "w", encoding="utf-8") as f:
+            for idx, name in enumerate(train_names):
+                # Different user-root on purpose to verify suffix-based normalization.
+                entry = {
+                    "image": f"/users/other/FDS/VOC2012/images/train/{name}.jpg",
+                    "class": labels[idx % len(labels)],
+                }
+                f.write(json.dumps(entry) + "\n")
+
+
 def test_generate_baselines_cli_smoke(tmp_path, monkeypatch):
     _build_tiny_imagenet_minimal(tmp_path)
     module = _load_module("generate_baselines_smoke", "scripts/generate_baselines.py")
@@ -105,6 +166,56 @@ def test_generate_baselines_cli_smoke(tmp_path, monkeypatch):
     assert isinstance(random_payload["clients"]["client_0"]["train"][0], dict)
     assert "image" in random_payload["clients"]["client_0"]["train"][0]
     assert "label" in random_payload["clients"]["client_0"]["train"][0]
+
+
+def test_generate_baselines_pascal_voc_vlm_cli_smoke(tmp_path, monkeypatch):
+    train_names = _build_pascal_voc_minimal(tmp_path, n_train=40, n_val=4)
+    vlm_root = tmp_path / "pascal_vlm"
+    _build_pascal_vlm_annotations(vlm_root, train_names)
+    module = _load_module("generate_baselines_pascal_smoke", "scripts/generate_baselines.py")
+
+    out_dir = tmp_path / "baseline_pascal_out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_baselines.py",
+            "--dataset",
+            "pascal_voc",
+            "--base_path",
+            str(tmp_path),
+            "--output",
+            str(out_dir),
+            "--n_clients",
+            "2",
+            "--alphas",
+            "0.5",
+            "--seed",
+            "7",
+            "--cluster_labels_dir",
+            str(vlm_root),
+        ],
+    )
+
+    rc = module.main()
+    assert rc == 0
+
+    random_split = out_dir / "random_n2_seed7.json"
+    dirichlet_split = out_dir / "dirichlet_n2_alpha0.5_seed7.json"
+    vlm_split = out_dir / "vlm_n2_alpha0.5_seed7.json"
+
+    assert random_split.exists()
+    assert dirichlet_split.exists()
+    assert vlm_split.exists()
+
+    with open(vlm_split, "r", encoding="utf-8") as f:
+        vlm_payload = json.load(f)
+
+    assert sorted(vlm_payload["clients"].keys()) == ["client_0", "client_1"]
+    assert isinstance(vlm_payload.get("global_val"), list)
+    sample = vlm_payload["clients"]["client_0"]["train"][0]
+    assert "image" in sample
+    assert "label" in sample
 
 
 def test_generate_embedding_partitions_cli_smoke(tmp_path, monkeypatch):
@@ -210,6 +321,41 @@ def test_run_experiment_cli_smoke_invokes_job_runner(tmp_path, monkeypatch, hydr
     assert int(cfg.training.batch_size) == 2
 
 
+def test_hydra_compose_ade20k_deeplab_contract(tmp_path, monkeypatch, hydra_restore_singletons):
+    monkeypatch.setenv("DATASETS_ROOT", str(tmp_path))
+    monkeypatch.setenv("ade20k_chosen_split_path", str(tmp_path / "ade_splits.json"))
+
+    from hydra import compose, initialize_config_dir
+    from fl_training.models.factory import validate_model_contract
+    from omegaconf import OmegaConf
+
+    with initialize_config_dir(version_base=None, config_dir=str(REPO_ROOT / "fl_training" / "conf")):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "dataset=ade20k",
+                "model=deeplabv3_resnet50",
+                "hydra.job.chdir=false",
+                f"paths.output_dir={tmp_path / 'outputs'}",
+            ],
+        )
+
+    assert str(cfg.dataset.args.data_dir) == str(tmp_path)
+    assert str(cfg.dataset.name) == "ade20k"
+    assert str(cfg.model.provider) == "torchvision"
+    assert str(cfg.model.name) == "deeplabv3_resnet50"
+    assert str(cfg.training.task_type) == "segmentation"
+    assert int(cfg.training.num_classes) == 150
+
+    validated = validate_model_contract(
+        model_cfg=OmegaConf.to_container(cfg.model, resolve=True),
+        task_type=str(cfg.training.task_type),
+        num_classes=int(cfg.training.num_classes),
+    )
+    assert validated["provider"] == "torchvision"
+    assert validated["task_type"] == "segmentation"
+
+
 def test_fl_job_run_smoke_with_stubbed_nvflare(tmp_path, monkeypatch):
     import fl_training.fl_job as fl_job
     from omegaconf import OmegaConf
@@ -270,13 +416,13 @@ def test_fl_job_run_smoke_with_stubbed_nvflare(tmp_path, monkeypatch):
                 "grad_clipping_type": "none",
                 "grad_clipping_value": 0.0,
                 "loss": "cross_entropy",
+                "optimizer": {"class_name": "Adam", "args": {}},
             },
             "model": {
                 "name": "resnet18",
                 "provider": "torchvision",
                 "args": {"weights": None},
             },
-            "optimizer": {"class_name": "Adam", "args": {}},
             "paths": {"output_dir": str(tmp_path / "out")},
             "system": {"gpu_ids": [0, 1]},
         }
@@ -290,6 +436,10 @@ def test_fl_job_run_smoke_with_stubbed_nvflare(tmp_path, monkeypatch):
     assert recipe_kwargs["num_rounds"] == 1
     assert "--task_type classification" in recipe_kwargs["train_args"]
     assert "--config_payload" in recipe_kwargs["train_args"]
+    payload = recipe_kwargs["train_args"].split("--config_payload ", 1)[1]
+    decoded = json.loads(base64.b64decode(payload).decode("utf-8"))
+    assert decoded["training"]["optimizer"]["class_name"] == "Adam"
+    assert "optimizer" not in decoded
     assert str(REPO_ROOT / "fl_training" / "client_entry.py") == recipe_kwargs["train_script"]
     initial_model = recipe_kwargs["initial_model"]
     assert hasattr(initial_model, "model_args_b64")

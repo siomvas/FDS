@@ -30,7 +30,9 @@ class SegmentationEngine:
         self.num_classes = int(training_cfg["num_classes"])
         self.ignore_index = int(training_cfg.get("ignore_index", 255))
         self.loss_name = str(training_cfg.get("loss", "cross_entropy")).lower()
+        self.out_of_range_policy = str(training_cfg.get("segmentation_out_of_range_policy", "error")).lower()
         self._ce_criterion = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+        self._logged_out_of_range_warning = False
 
         if self.loss_name not in {"cross_entropy", "ce", "dice_loss", "dice", "ce_dice"}:
             raise ValueError(f"Unsupported segmentation loss: {self.loss_name}")
@@ -51,9 +53,10 @@ class SegmentationEngine:
         self.grad_clipping_value = float(training_cfg.get("grad_clipping_value", 0.0))
 
     def configure_optimizer(self):
-        optimizer_cfg = self.config.get("optimizer") or self.config["training"].get("optimizer")
+        training_cfg = self.config.get("training", {})
+        optimizer_cfg = training_cfg.get("optimizer")
         if optimizer_cfg is None:
-            raise ValueError("Missing optimizer configuration. Expected `optimizer` or `training.optimizer`.")
+            raise ValueError("Missing optimizer configuration. Expected `training.optimizer`.")
 
         opt_class_name = optimizer_cfg["class_name"]
         opt_args = optimizer_cfg["args"]
@@ -116,7 +119,34 @@ class SegmentationEngine:
             else:
                 masks = torch.round(masks)
 
-        return masks.long()
+        masks = masks.long()
+
+        # Validate label ranges early to avoid silently corrupting metrics.
+        valid = (masks >= 0) & (masks < self.num_classes)
+        ignore = masks == self.ignore_index
+        out_of_range = ~(valid | ignore)
+        if torch.any(out_of_range):
+            count = int(out_of_range.sum().item())
+            if self.out_of_range_policy in {"ignore", "map_to_ignore"}:
+                if not self._logged_out_of_range_warning:
+                    log.warning(
+                        "Found %d out-of-range segmentation labels for num_classes=%d; "
+                        "mapping them to ignore_index=%d.",
+                        count,
+                        self.num_classes,
+                        self.ignore_index,
+                    )
+                    self._logged_out_of_range_warning = True
+                masks = masks.clone()
+                masks[out_of_range] = self.ignore_index
+            else:
+                raise ValueError(
+                    "Found out-of-range segmentation labels for configured num_classes. "
+                    f"count={count}, num_classes={self.num_classes}, ignore_index={self.ignore_index}. "
+                    "Fix dataset labels or set training.segmentation_out_of_range_policy=ignore."
+                )
+
+        return masks
 
     def _dice_loss(self, logits: torch.Tensor, targets: torch.Tensor, smooth: float = 1e-6) -> torch.Tensor:
         probs = torch.softmax(logits, dim=1)
@@ -341,8 +371,10 @@ class SegmentationEngine:
         avg_loss = total_loss / n_batches if n_batches > 0 else 0.0
 
         self.model.to(self.cpu_device)
-        return {
+        metrics = {
             "pixel_accuracy": float(pixel_accuracy),
             "mean_iou": float(mean_iou),
             "val_loss": float(avg_loss),
         }
+        metrics["accuracy"] = float(pixel_accuracy)
+        return metrics

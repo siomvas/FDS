@@ -243,6 +243,44 @@ class TestPathNormalization:
         assert label is not None
         assert isinstance(label, str)
 
+    def test_pascalvoc_alias_is_accepted(self, tmp_path):
+        """PascalVOC dataset alias maps to VOC criteria set."""
+
+        class DummyDataset:
+            dataset_name = "PascalVOC"
+
+            def __len__(self):
+                return 0
+
+            def __getitem__(self, idx):
+                raise IndexError(idx)
+
+        splitter = MultivariateDirichletSplitter(
+            train_dataset=DummyDataset(),
+            val_dataset=None,
+            n_clients=2,
+            heterogeneity=1.0,
+            cluster_labels_dir=str(tmp_path),
+            valset_type="none",
+            seed=42,
+        )
+
+        assert splitter.CRITERIA == splitter.CRITERIA_VOC
+
+    def test_normalize_image_key_voc_path_alignment(self):
+        """VOC paths with/without local_data prefix normalize to the same key."""
+        local_path = (
+            "/Users/example/FDS/local_data/VOC2012/images/train/2008_000008.jpg"
+        )
+        vlm_path = "/path/to/gtai/FDS/VOC2012/images/train/2008_000008.jpg"
+
+        local_key = MultivariateDirichletSplitter._normalize_image_key(local_path)
+        vlm_key = MultivariateDirichletSplitter._normalize_image_key(vlm_path)
+
+        assert local_key == "VOC2012/images/train/2008_000008.jpg"
+        assert vlm_key == "VOC2012/images/train/2008_000008.jpg"
+        assert local_key == vlm_key
+
 
 # ============================================================================
 # Preference Sampling Tests

@@ -98,8 +98,8 @@ def _classification_config() -> dict:
             "lr": 1e-3,
             "lr_min": 0.0,
             "scheduler": "none",
+            "optimizer": {"class_name": "Adam", "args": {}},
         },
-        "optimizer": {"class_name": "Adam", "args": {}},
         "fed": {"rounds": 1},
     }
 
@@ -119,8 +119,8 @@ def _segmentation_config(num_classes: int) -> dict:
             "lr": 1e-3,
             "lr_min": 0.0,
             "scheduler": "none",
+            "optimizer": {"class_name": "Adam", "args": {}},
         },
-        "optimizer": {"class_name": "Adam", "args": {}},
         "fed": {"rounds": 1},
     }
 
@@ -138,8 +138,8 @@ def _detection_config() -> dict:
             "lr_min": 0.0,
             "scheduler": "none",
             "detection_score_threshold": 0.5,
+            "optimizer": {"class_name": "Adam", "args": {}},
         },
-        "optimizer": {"class_name": "Adam", "args": {}},
         "fed": {"rounds": 1},
     }
 
@@ -360,3 +360,4 @@ def test_fl_detection_one_round_smoke_pascal_voc(tmp_path):
     assert train_metrics["num_steps_current_round"] == 2.0
     assert "train_loss" in train_metrics
     assert "avg_detections" in val_metrics
+    assert "map_50" in val_metrics

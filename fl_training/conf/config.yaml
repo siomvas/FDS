@@ -43,10 +43,14 @@ training:
   grad_clipping_value: 0.0
   amp_enabled: true
   grad_tracking: false # needs grad_tracking controller, to be implemented
-
-optimizer:
-  class_name: Adam
-  args: {}
+  # Detection evaluation threshold defaults
+  detection_score_threshold: 0.5
+  detection_map_iou_threshold: 0.5
+  # Segmentation label validation policy: "error" (fail-fast) or "ignore"
+  segmentation_out_of_range_policy: error
+  optimizer:
+    class_name: Adam
+    args: {}
 
 # -----------------------------------------------------------------------------
 # 5. System & Paths

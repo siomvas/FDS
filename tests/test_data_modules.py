@@ -280,6 +280,28 @@ class TestSegmentationDataset:
         assert isinstance(img_tensor, torch.Tensor)
         assert isinstance(mask_tensor, torch.Tensor)
 
+    def test_rgb_ade_mask_is_decoded_to_single_channel_indices(self, tmp_path):
+        """ADE-style RGB *_seg masks are decoded from channel-0 into a single channel."""
+        img_path = tmp_path / "img.jpg"
+        mask_path = tmp_path / "sample_seg.png"
+
+        Image.new("RGB", (2, 1), color=(10, 20, 30)).save(img_path)
+        ade_mask = Image.new("RGB", (2, 1))
+        ade_mask.putpixel((0, 0), (7, 5, 0))
+        ade_mask.putpixel((1, 0), (120, 7, 255))
+        ade_mask.save(mask_path)
+
+        dataset = SegmentationDataset(
+            split_data=[{"image": str(img_path), "mask_path": str(mask_path)}],
+            transform=T.PILToTensor(),
+            mask_transform=T.PILToTensor(),
+        )
+
+        _, mask_tensor = dataset[0]
+        assert mask_tensor.shape == (1, 1, 2)
+        assert int(mask_tensor[0, 0, 0]) == 7
+        assert int(mask_tensor[0, 0, 1]) == 120
+
     def test_accepts_legacy_label_key(self, temp_images, temp_mask_files):
         """Legacy split schema with 'label' mask paths remains supported."""
         split_data = [
@@ -591,6 +613,32 @@ class TestBaseDataModule:
         assert dm.val_dataset is not None
         assert dm.train_dataset.samples[0]["mask_path"] == str(train_mask)
         assert dm.val_dataset.samples[0]["mask_path"] == str(val_mask)
+
+    def test_basedataset_ade20k_root_data_dir_works(self, tmp_path):
+        ade_root = tmp_path / "ADE20K" / "ADE20K_2021_17_01" / "images" / "ADE"
+        train_dir = ade_root / "training" / "unit"
+        val_dir = ade_root / "validation" / "unit"
+        train_dir.mkdir(parents=True, exist_ok=True)
+        val_dir.mkdir(parents=True, exist_ok=True)
+
+        train_img = train_dir / "ADE_train_00000001.jpg"
+        train_mask = train_dir / "ADE_train_00000001_seg.png"
+        val_img = val_dir / "ADE_val_00000001.jpg"
+        val_mask = val_dir / "ADE_val_00000001_seg.png"
+        Image.new("RGB", (16, 16), color=(1, 2, 3)).save(train_img)
+        Image.new("L", (16, 16), color=1).save(train_mask)
+        Image.new("RGB", (16, 16), color=(4, 5, 6)).save(val_img)
+        Image.new("L", (16, 16), color=2).save(val_mask)
+
+        train_ds = BaseDataset("ade20k", str(tmp_path), "train")
+        val_ds = BaseDataset("ade20k", str(tmp_path), "val")
+        assert len(train_ds) == 1
+        assert len(val_ds) == 1
+
+    def test_basedataset_ade20k_nested_data_dir_fails_fast(self, tmp_path):
+        (tmp_path / "ade20k").mkdir(parents=True, exist_ok=True)
+        with pytest.raises(FileNotFoundError, match="Images directory .*ADE20K_2021_17_01/images/ADE/training"):
+            BaseDataset("ade20k", str(tmp_path / "ade20k"), "train")
 
 
 # ============================================================================

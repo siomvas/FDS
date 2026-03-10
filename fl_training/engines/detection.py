@@ -32,6 +32,178 @@ def _recursive_to_device(value: Any, device: torch.device) -> Any:
     return value
 
 
+class _DetectionProviderAdapter:
+    """Provider-specific detection I/O layer.
+
+    Input contract is framework-agnostic:
+    - images: list[Tensor(C,H,W)] with variable shapes allowed
+    - targets: list[dict] canonical detection targets (boxes, labels, ...)
+    """
+
+    name = "generic"
+
+    def forward_train(
+        self,
+        model: nn.Module,
+        images_tensor: Optional[torch.Tensor],
+        images_list: List[torch.Tensor],
+        targets: Any,
+    ) -> Any:
+        raise NotImplementedError
+
+    def forward_eval(
+        self,
+        model: nn.Module,
+        images_tensor: Optional[torch.Tensor],
+        images_list: List[torch.Tensor],
+    ) -> Any:
+        raise NotImplementedError
+
+
+class _TorchvisionDetectionAdapter(_DetectionProviderAdapter):
+    name = "torchvision"
+
+    def forward_train(
+        self,
+        model: nn.Module,
+        images_tensor: Optional[torch.Tensor],
+        images_list: List[torch.Tensor],
+        targets: Any,
+    ) -> Any:
+        if targets is None:
+            raise ValueError("Torchvision detection training requires targets.")
+        return model(images_list, targets)
+
+    def forward_eval(
+        self,
+        model: nn.Module,
+        images_tensor: Optional[torch.Tensor],
+        images_list: List[torch.Tensor],
+    ) -> Any:
+        return model(images_list)
+
+
+class _HFDetectionAdapter(_DetectionProviderAdapter):
+    name = "hf"
+
+    @staticmethod
+    def _require_tensor_batch(images_tensor: Optional[torch.Tensor]) -> torch.Tensor:
+        if images_tensor is None:
+            raise ValueError(
+                "HF detection adapter requires batched tensor inputs with uniform spatial shape. "
+                "Configure detection preprocessing/collate to produce fixed-size images."
+            )
+        return images_tensor
+
+    @staticmethod
+    def _to_hf_labels(targets: Any, images_list: List[torch.Tensor]) -> List[Dict[str, torch.Tensor]]:
+        if targets is None:
+            raise ValueError("HF detection training requires targets.")
+        if not isinstance(targets, list):
+            raise ValueError("HF detection adapter expects list-of-dicts targets.")
+
+        labels: List[Dict[str, torch.Tensor]] = []
+        for image_tensor, item in zip(images_list, targets):
+            if not isinstance(item, dict):
+                raise ValueError("HF detection target entries must be dictionaries.")
+            if "boxes" not in item or "labels" not in item:
+                raise KeyError("HF detection target requires 'boxes' and 'labels'.")
+
+            boxes = torch.as_tensor(item["boxes"], dtype=torch.float32, device=image_tensor.device).reshape(-1, 4)
+            class_labels = torch.as_tensor(item["labels"], dtype=torch.int64, device=image_tensor.device).reshape(-1)
+            if boxes.shape[0] != class_labels.shape[0]:
+                raise ValueError("HF detection target has mismatched boxes/labels lengths.")
+
+            h = int(image_tensor.shape[-2])
+            w = int(image_tensor.shape[-1])
+            labels.append(
+                {
+                    "class_labels": class_labels,
+                    "boxes": boxes,
+                    "orig_size": torch.tensor([h, w], dtype=torch.int64, device=image_tensor.device),
+                    "size": torch.tensor([h, w], dtype=torch.int64, device=image_tensor.device),
+                }
+            )
+        return labels
+
+    def forward_train(
+        self,
+        model: nn.Module,
+        images_tensor: Optional[torch.Tensor],
+        images_list: List[torch.Tensor],
+        targets: Any,
+    ) -> Any:
+        batched = self._require_tensor_batch(images_tensor)
+        hf_labels = self._to_hf_labels(targets, images_list)
+        return model(pixel_values=batched, labels=hf_labels)
+
+    def forward_eval(
+        self,
+        model: nn.Module,
+        images_tensor: Optional[torch.Tensor],
+        images_list: List[torch.Tensor],
+    ) -> Any:
+        batched = self._require_tensor_batch(images_tensor)
+        return model(pixel_values=batched)
+
+
+class _GenericDetectionAdapter(_DetectionProviderAdapter):
+    name = "generic"
+
+    def forward_train(
+        self,
+        model: nn.Module,
+        images_tensor: Optional[torch.Tensor],
+        images_list: List[torch.Tensor],
+        targets: Any,
+    ) -> Any:
+        if targets is None:
+            raise ValueError("Detection training requires targets.")
+
+        errors = []
+        attempts = [lambda: model(images_list, targets)]  # torchvision-style
+        if images_tensor is not None:
+            attempts.append(lambda: model(images_tensor, targets))  # generic tensor+targets
+            attempts.append(lambda: model(pixel_values=images_tensor, labels=targets))  # HF-style
+
+        for attempt in attempts:
+            try:
+                return attempt()
+            except FORWARD_ATTEMPT_ERRORS as exc:
+                errors.append(exc)
+
+        raise RuntimeError(f"Unable to run detection forward pass with targets. Last error: {errors[-1]}")
+
+    def forward_eval(
+        self,
+        model: nn.Module,
+        images_tensor: Optional[torch.Tensor],
+        images_list: List[torch.Tensor],
+    ) -> Any:
+        errors = []
+        attempts = [lambda: model(images_list)]  # torchvision-style
+        if images_tensor is not None:
+            attempts.append(lambda: model(images_tensor))  # generic tensor
+            attempts.append(lambda: model(pixel_values=images_tensor))  # HF-style
+
+        for attempt in attempts:
+            try:
+                return attempt()
+            except FORWARD_ATTEMPT_ERRORS as exc:
+                errors.append(exc)
+
+        raise RuntimeError(f"Unable to run detection inference. Last error: {errors[-1]}")
+
+
+def _resolve_detection_adapter(provider: str) -> _DetectionProviderAdapter:
+    normalized = str(provider).lower()
+    if normalized == "torchvision":
+        return _TorchvisionDetectionAdapter()
+    if normalized in {"hf", "huggingface", "transformers"}:
+        return _HFDetectionAdapter()
+    return _GenericDetectionAdapter()
+
+
 class DetectionEngine:
     """Stateful detection engine for federated local training."""
 
@@ -61,11 +233,18 @@ class DetectionEngine:
         self.grad_clipping_type = str(training_cfg.get("grad_clipping_type", "none")).lower()
         self.grad_clipping_value = float(training_cfg.get("grad_clipping_value", 0.0))
         self.score_threshold = float(training_cfg.get("detection_score_threshold", 0.5))
+        self.map_iou_threshold = float(training_cfg.get("detection_map_iou_threshold", 0.5))
+
+        model_cfg = self.config.get("model") or {}
+        provider = str(model_cfg.get("provider", "generic")).lower()
+        self.io_adapter = _resolve_detection_adapter(provider)
+        log.info("Detection I/O adapter: provider=%s adapter=%s", provider, self.io_adapter.name)
 
     def configure_optimizer(self):
-        optimizer_cfg = self.config.get("optimizer") or self.config["training"].get("optimizer")
+        training_cfg = self.config.get("training", {})
+        optimizer_cfg = training_cfg.get("optimizer")
         if optimizer_cfg is None:
-            raise ValueError("Missing optimizer configuration. Expected `optimizer` or `training.optimizer`.")
+            raise ValueError("Missing optimizer configuration. Expected `training.optimizer`.")
 
         opt_class_name = optimizer_cfg["class_name"]
         opt_args = optimizer_cfg["args"]
@@ -125,7 +304,7 @@ class DetectionEngine:
             "{'images': ..., 'targets': ...}."
         )
 
-    def _prepare_images(self, images: Any) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+    def _prepare_images(self, images: Any) -> Tuple[Optional[torch.Tensor], List[torch.Tensor]]:
         if torch.is_tensor(images):
             images_tensor = images.to(self.compute_device, non_blocking=True)
             if images_tensor.ndim != 4:
@@ -137,7 +316,12 @@ class DetectionEngine:
             images_list = [_recursive_to_device(img, self.compute_device) for img in images]
             if not images_list or not all(torch.is_tensor(img) for img in images_list):
                 raise ValueError("Image list must contain tensors.")
-            images_tensor = torch.stack(images_list, dim=0)
+            # Torchvision detection backends support list-of-tensors with variable
+            # spatial shapes. Only stack when every image shares the same shape.
+            if all(img.shape == images_list[0].shape for img in images_list):
+                images_tensor = torch.stack(images_list, dim=0)
+            else:
+                images_tensor = None
             return images_tensor, images_list
 
         raise ValueError(f"Unsupported images type for detection: {type(images).__name__}")
@@ -201,45 +385,35 @@ class DetectionEngine:
 
     def _forward_with_loss(
         self,
-        images_tensor: torch.Tensor,
+        images_tensor: Optional[torch.Tensor],
         images_list: List[torch.Tensor],
         targets: Any,
     ) -> Tuple[torch.Tensor, Any]:
-        if targets is None:
-            raise ValueError("Detection training requires targets.")
+        try:
+            outputs = self.io_adapter.forward_train(
+                self.model,
+                images_tensor=images_tensor,
+                images_list=images_list,
+                targets=targets,
+            )
+            loss = self._loss_from_outputs(outputs)
+            return loss, self._predictions_from_outputs(outputs)
+        except FORWARD_ATTEMPT_ERRORS as exc:
+            raise RuntimeError(
+                f"Detection train forward failed for adapter '{self.io_adapter.name}': {exc}"
+            ) from exc
 
-        errors = []
-        attempts = [
-            lambda: self.model(images_list, targets),                     # torchvision detection
-            lambda: self.model(images_tensor, targets),                   # generic tensor+targets
-            lambda: self.model(pixel_values=images_tensor, labels=targets),  # transformers detection
-        ]
-
-        for attempt in attempts:
-            try:
-                outputs = attempt()
-                loss = self._loss_from_outputs(outputs)
-                return loss, self._predictions_from_outputs(outputs)
-            except FORWARD_ATTEMPT_ERRORS as exc:
-                errors.append(exc)
-
-        raise RuntimeError(f"Unable to run detection forward pass with targets. Last error: {errors[-1]}")
-
-    def _forward_inference(self, images_tensor: torch.Tensor, images_list: List[torch.Tensor]) -> Any:
-        errors = []
-        attempts = [
-            lambda: self.model(images_list),             # torchvision detection
-            lambda: self.model(images_tensor),           # generic tensor input
-            lambda: self.model(pixel_values=images_tensor),  # transformers detection
-        ]
-
-        for attempt in attempts:
-            try:
-                return attempt()
-            except FORWARD_ATTEMPT_ERRORS as exc:
-                errors.append(exc)
-
-        raise RuntimeError(f"Unable to run detection inference. Last error: {errors[-1]}")
+    def _forward_inference(self, images_tensor: Optional[torch.Tensor], images_list: List[torch.Tensor]) -> Any:
+        try:
+            return self.io_adapter.forward_eval(
+                self.model,
+                images_tensor=images_tensor,
+                images_list=images_list,
+            )
+        except FORWARD_ATTEMPT_ERRORS as exc:
+            raise RuntimeError(
+                f"Detection inference failed for adapter '{self.io_adapter.name}': {exc}"
+            ) from exc
 
     def _count_detections(self, predictions: Any, batch_size: int) -> float:
         if predictions is None:
@@ -268,6 +442,181 @@ class DetectionEngine:
             return float(counts.mean().item())
 
         return 0.0
+
+    @staticmethod
+    def _box_iou_xyxy(box: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
+        """IoU between one box [4] and many boxes [N,4] in xyxy format."""
+        if boxes.numel() == 0:
+            return torch.zeros((0,), dtype=torch.float32, device=box.device)
+
+        x1 = torch.maximum(box[0], boxes[:, 0])
+        y1 = torch.maximum(box[1], boxes[:, 1])
+        x2 = torch.minimum(box[2], boxes[:, 2])
+        y2 = torch.minimum(box[3], boxes[:, 3])
+
+        inter_w = torch.clamp(x2 - x1, min=0.0)
+        inter_h = torch.clamp(y2 - y1, min=0.0)
+        inter = inter_w * inter_h
+
+        area_box = torch.clamp(box[2] - box[0], min=0.0) * torch.clamp(box[3] - box[1], min=0.0)
+        area_boxes = torch.clamp(boxes[:, 2] - boxes[:, 0], min=0.0) * torch.clamp(boxes[:, 3] - boxes[:, 1], min=0.0)
+        union = area_box + area_boxes - inter
+        return inter / torch.clamp(union, min=1e-12)
+
+    @staticmethod
+    def _voc_ap(recalls: List[float], precisions: List[float]) -> float:
+        """Continuous VOC AP from precision-recall curve."""
+        if not recalls:
+            return 0.0
+
+        mrec = [0.0, *recalls, 1.0]
+        mpre = [0.0, *precisions, 0.0]
+        for idx in range(len(mpre) - 1, 0, -1):
+            mpre[idx - 1] = max(mpre[idx - 1], mpre[idx])
+
+        ap = 0.0
+        for idx in range(len(mrec) - 1):
+            if mrec[idx + 1] != mrec[idx]:
+                ap += (mrec[idx + 1] - mrec[idx]) * mpre[idx + 1]
+        return float(ap)
+
+    def _extract_eval_entries(
+        self,
+        predictions: Any,
+        targets: Any,
+        batch_size: int,
+    ) -> Optional[Tuple[List[Dict[str, torch.Tensor]], List[Dict[str, torch.Tensor]]]]:
+        """Normalize predictions/targets to list-of-dicts for AP computation."""
+        if not isinstance(predictions, list):
+            return None
+        if not isinstance(targets, list):
+            return None
+        if len(predictions) != len(targets):
+            return None
+
+        pred_entries: List[Dict[str, torch.Tensor]] = []
+        gt_entries: List[Dict[str, torch.Tensor]] = []
+        for idx in range(batch_size):
+            pred = predictions[idx]
+            tgt = targets[idx]
+            if not isinstance(pred, dict) or not isinstance(tgt, dict):
+                return None
+            if "boxes" not in pred or "boxes" not in tgt or "labels" not in tgt:
+                return None
+
+            pred_boxes = torch.as_tensor(pred["boxes"], dtype=torch.float32, device=self.cpu_device).reshape(-1, 4)
+            pred_labels = torch.as_tensor(pred.get("labels", torch.zeros((pred_boxes.shape[0],), dtype=torch.int64)), dtype=torch.int64, device=self.cpu_device).reshape(-1)
+            pred_scores = torch.as_tensor(pred.get("scores", torch.ones((pred_boxes.shape[0],), dtype=torch.float32)), dtype=torch.float32, device=self.cpu_device).reshape(-1)
+            if pred_labels.shape[0] != pred_boxes.shape[0] or pred_scores.shape[0] != pred_boxes.shape[0]:
+                return None
+
+            gt_boxes = torch.as_tensor(tgt["boxes"], dtype=torch.float32, device=self.cpu_device).reshape(-1, 4)
+            gt_labels = torch.as_tensor(tgt["labels"], dtype=torch.int64, device=self.cpu_device).reshape(-1)
+            if gt_labels.shape[0] != gt_boxes.shape[0]:
+                return None
+
+            pred_entries.append(
+                {
+                    "boxes": pred_boxes,
+                    "labels": pred_labels,
+                    "scores": pred_scores,
+                }
+            )
+            gt_entries.append(
+                {
+                    "boxes": gt_boxes,
+                    "labels": gt_labels,
+                }
+            )
+
+        return pred_entries, gt_entries
+
+    def _compute_map50(
+        self,
+        pred_entries: List[Dict[str, torch.Tensor]],
+        gt_entries: List[Dict[str, torch.Tensor]],
+    ) -> Optional[float]:
+        """Compute mAP@0.5 over classes present in GT."""
+        class_ids = set()
+        for gt in gt_entries:
+            labels = gt["labels"]
+            for cls in labels.tolist():
+                if int(cls) > 0:
+                    class_ids.add(int(cls))
+
+        if not class_ids:
+            return None
+
+        aps: List[float] = []
+        for cls in sorted(class_ids):
+            gt_by_image: Dict[int, torch.Tensor] = {}
+            total_gt = 0
+            for img_idx, gt in enumerate(gt_entries):
+                class_mask = gt["labels"] == cls
+                boxes = gt["boxes"][class_mask]
+                gt_by_image[img_idx] = boxes
+                total_gt += int(boxes.shape[0])
+
+            if total_gt == 0:
+                continue
+
+            predictions_for_cls: List[Tuple[float, int, torch.Tensor]] = []
+            for img_idx, pred in enumerate(pred_entries):
+                class_mask = pred["labels"] == cls
+                cls_boxes = pred["boxes"][class_mask]
+                cls_scores = pred["scores"][class_mask]
+                for score, box in zip(cls_scores.tolist(), cls_boxes):
+                    predictions_for_cls.append((float(score), img_idx, box))
+
+            if not predictions_for_cls:
+                aps.append(0.0)
+                continue
+
+            predictions_for_cls.sort(key=lambda x: x[0], reverse=True)
+            matched = {
+                img_idx: torch.zeros((boxes.shape[0],), dtype=torch.bool, device=self.cpu_device)
+                for img_idx, boxes in gt_by_image.items()
+            }
+
+            tp: List[float] = []
+            fp: List[float] = []
+            for _, img_idx, pred_box in predictions_for_cls:
+                gt_boxes = gt_by_image.get(img_idx)
+                if gt_boxes is None or gt_boxes.numel() == 0:
+                    tp.append(0.0)
+                    fp.append(1.0)
+                    continue
+
+                ious = self._box_iou_xyxy(pred_box, gt_boxes)
+                best_iou, best_idx = torch.max(ious, dim=0)
+                if float(best_iou.item()) >= self.map_iou_threshold and not bool(matched[img_idx][best_idx]):
+                    matched[img_idx][best_idx] = True
+                    tp.append(1.0)
+                    fp.append(0.0)
+                else:
+                    tp.append(0.0)
+                    fp.append(1.0)
+
+            cum_tp: List[float] = []
+            cum_fp: List[float] = []
+            tp_total = 0.0
+            fp_total = 0.0
+            for is_tp, is_fp in zip(tp, fp):
+                tp_total += is_tp
+                fp_total += is_fp
+                cum_tp.append(tp_total)
+                cum_fp.append(fp_total)
+
+            recalls = [v / float(total_gt) for v in cum_tp]
+            precisions = [
+                cum_tp[idx] / max(cum_tp[idx] + cum_fp[idx], 1e-12)
+                for idx in range(len(cum_tp))
+            ]
+            aps.append(self._voc_ap(recalls, precisions))
+
+        if not aps:
+            return None
+        return float(sum(aps) / len(aps))
 
     def train_one_round(
         self,
@@ -326,7 +675,7 @@ class DetectionEngine:
             self.scheduler.step()
 
             round_loss += float(loss.item())
-            round_detection_count += self._count_detections(predictions, images_tensor.shape[0])
+            round_detection_count += self._count_detections(predictions, len(images_list))
 
             if metric_callback:
                 metric_callback({
@@ -374,6 +723,9 @@ class DetectionEngine:
         n_loss_batches = 0
         total_detection_count = 0.0
         n_batches = 0
+        all_pred_entries: List[Dict[str, torch.Tensor]] = []
+        all_gt_entries: List[Dict[str, torch.Tensor]] = []
+        map_supported = True
 
         with torch.no_grad():
             for batch in val_loader:
@@ -387,13 +739,23 @@ class DetectionEngine:
                         loss, predictions = self._forward_with_loss(images_tensor, images_list, targets)
                         total_loss += float(loss.item())
                         n_loss_batches += 1
+                        if predictions is None:
+                            predictions = self._forward_inference(images_tensor, images_list)
                     except RuntimeError:
                         predictions = self._forward_inference(images_tensor, images_list)
                 else:
                     predictions = self._forward_inference(images_tensor, images_list)
 
-                total_detection_count += self._count_detections(predictions, images_tensor.shape[0])
+                total_detection_count += self._count_detections(predictions, len(images_list))
                 n_batches += 1
+
+                normalized = self._extract_eval_entries(predictions, targets, len(images_list))
+                if normalized is None:
+                    map_supported = False
+                else:
+                    pred_entries, gt_entries = normalized
+                    all_pred_entries.extend(pred_entries)
+                    all_gt_entries.extend(gt_entries)
 
         self.model.to(self.cpu_device)
         metrics = {
@@ -401,4 +763,10 @@ class DetectionEngine:
         }
         if n_loss_batches > 0:
             metrics["val_loss"] = float(total_loss / n_loss_batches)
+        map_50 = self._compute_map50(all_pred_entries, all_gt_entries) if map_supported else None
+        if map_50 is not None:
+            metrics["map_50"] = float(map_50)
+            metrics["accuracy"] = float(map_50)
+        else:
+            metrics["accuracy"] = float(metrics["avg_detections"])
         return metrics

@@ -61,9 +61,10 @@ class ClassificationEngine:
         self.grad_clipping_value = self.config["training"]["grad_clipping_value"]
 
     def configure_optimizer(self):
-        optimizer_cfg = self.config.get("optimizer") or self.config["training"].get("optimizer")
+        training_cfg = self.config.get("training", {})
+        optimizer_cfg = training_cfg.get("optimizer")
         if optimizer_cfg is None:
-            raise ValueError("Missing optimizer configuration. Expected `optimizer` or `training.optimizer`.")
+            raise ValueError("Missing optimizer configuration. Expected `training.optimizer`.")
 
         opt_class_name = optimizer_cfg["class_name"]
         opt_args = optimizer_cfg["args"]

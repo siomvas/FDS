@@ -131,6 +131,13 @@ def _validate_cfg_structure(cfg: Dict[str, Any]) -> None:
         raise ValueError("training.batch_size is required.")
     if "num_classes" not in training_cfg:
         raise ValueError("training.num_classes is required.")
+    optimizer_cfg = training_cfg.get("optimizer")
+    if not isinstance(optimizer_cfg, dict):
+        raise ValueError("training.optimizer must be a mapping.")
+    if not isinstance(optimizer_cfg.get("class_name"), str) or not optimizer_cfg["class_name"].strip():
+        raise ValueError("training.optimizer.class_name must be a non-empty string.")
+    if not isinstance(optimizer_cfg.get("args"), dict):
+        raise ValueError("training.optimizer.args must be a mapping.")
 
     if "rounds" not in fed_cfg:
         raise ValueError("fed.rounds is required.")

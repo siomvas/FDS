@@ -105,11 +105,9 @@ See Also
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import numpy as np
-from collections import defaultdict
 
 from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
 from data_loading.dataset import BaseDataset
@@ -192,6 +190,15 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         "scene": "output_scene_train",
         "light": "output_light_train",
     }
+    CRITERIA_VOC = ["color", "light", "size", "location", "main_object"]
+    CRITERION_TO_DIR_VOC = {
+        "color": "output_color_train",
+        "light": "output_light_train",
+        "size": "output_size_train",
+        "location": "output_location_train",
+        "main_object": "output_main_object_train",
+    }
+    _PATH_ANCHORS = ("VOC2012", "tiny-imagenet-200", "food101", "ADE20K", "bdd100k")
 
     def __init__(
         self,
@@ -299,11 +306,14 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         elif dataset_name in {"ade20k"}:
             self.CRITERIA = self.CRITERIA_ade20k
             self.CRITERION_TO_DIR = self.CRITERION_TO_DIR_ade20k
+        elif dataset_name in {"voc", "pascal_voc", "pascal-voc", "pascalvoc"}:
+            self.CRITERIA = self.CRITERIA_VOC
+            self.CRITERION_TO_DIR = self.CRITERION_TO_DIR_VOC
         else:
             raise ValueError(
                 f"Dataset '{dataset_name}' not supported for "
                 f"MultivariateDirichletSplitter. Supported datasets: "
-                f"tiny_imagenet, food101, ade20k."
+                f"tiny_imagenet, food101, ade20k, pascal_voc."
             )
 
         self.cluster_labels_dir = Path(cluster_labels_dir)
@@ -323,8 +333,9 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         (color, main_object, size, location, time) and populates self.cluster_labels
         and self.unique_labels. Supports both JSON array and JSONL formats.
 
-        The method normalizes image paths to be user-independent by taking only
-        the last 5 path components (e.g., "tiny-imagenet-200/train/n01/images/img.jpg").
+        The method normalizes image paths to be user-independent using dataset-anchored
+        suffixes when possible (e.g., "VOC2012/images/train/xxx.jpg"), with a fallback
+        to the last 5 components for legacy compatibility.
 
         Raises:
             FileNotFoundError: If any expected annotation file (step3_result.jsonl)
@@ -357,15 +368,8 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                     # JSON array format
                     entries = json.loads(content)
                     for entry in entries:
-                        # image_path = entry["image"]
-                        # modify to be user-independent path 
-                        # e.g /path/to/gtai/FDS/tiny-imagenet-200/train/n01443537/images/n01443537_0.JPEG
-                        # and /path/to/gtai/FDS/tiny-imagenet-200/train/n01443537/images/n01443537_0.JPEG
-                        # are the same image
                         full_image_path = entry["image"]
-                        image_path = os.path.join(
-                            "/".join(full_image_path.split("/")[-5:])
-                        )
+                        image_path = self._normalize_image_key(full_image_path)
 
                         cluster_label = entry["class"]
                         criterion_labels[image_path] = cluster_label
@@ -378,9 +382,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                             continue
                         entry = json.loads(line)
                         full_image_path = entry["image"]
-                        image_path = os.path.join(
-                            "/".join(full_image_path.split("/")[-5:])
-                        )
+                        image_path = self._normalize_image_key(full_image_path)
                         cluster_label = entry["class"]
                         criterion_labels[image_path] = cluster_label
 
@@ -388,6 +390,10 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
             # Get unique labels for this criterion
             unique_labels = sorted(set(criterion_labels.values()))
+            if not unique_labels:
+                raise ValueError(
+                    f"No cluster labels loaded for criterion '{criterion}' from {jsonl_path}."
+                )
             self.unique_labels[criterion] = unique_labels
 
             logger.info(
@@ -482,7 +488,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         Raises:
             ValueError: If cluster label not found (data mismatch between dataset and VLM annotations).
         """
-        normalized_path = "/".join(image_path.split("/")[-5:])
+        normalized_path = self._normalize_image_key(image_path)
         try:
             return self.cluster_labels[criterion][normalized_path]
         except KeyError:
@@ -490,6 +496,22 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                 f"Cluster label for image {normalized_path} under criterion '{criterion}' not found. "
                 f"This indicates a mismatch between your dataset and VLM annotations."
             )
+
+    @classmethod
+    def _normalize_image_key(cls, image_path: str) -> str:
+        """Normalize image path across environments using anchored dataset suffixes."""
+        parts = [part for part in str(image_path).replace("\\", "/").split("/") if part]
+        if not parts:
+            return ""
+
+        for anchor in cls._PATH_ANCHORS:
+            if anchor in parts:
+                anchor_idx = parts.index(anchor)
+                return "/".join(parts[anchor_idx:])
+
+        if len(parts) >= 5:
+            return "/".join(parts[-5:])
+        return "/".join(parts)
 
     def _compute_affinity_score(self, image_path: str, client_id: int) -> float:
         """Compute affinity score between a sample and a client.
@@ -736,7 +758,6 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             float(np.mean(samples_per_client)),
             float(np.std(samples_per_client)),
         )
-
         # Handle validation set
         val_assignments = None
         global_val = None
