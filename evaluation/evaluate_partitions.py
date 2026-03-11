@@ -33,31 +33,32 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "8"
 os.environ["NUMEXPR_NUM_THREADS"] = "8"
 
 import argparse
+from dataclasses import asdict
 import json
 import time
 import logging
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+import sys
+from typing import Any, Dict, List, Optional
 
 import numpy as np
-import pandas as pd
 from tqdm import tqdm
 
-from evaluation.eval_config import PartitionConfig, MetricResults, EvaluationResult
+from evaluation.eval_config import PartitionConfig, MetricResults
 from data_loading.dataset import BaseDataset
 from evaluation import metrics
+from research import (
+    build_run_id,
+    create_manifest,
+    create_result,
+    file_sha256,
+    write_manifest,
+    write_result,
+    write_results_index,
+)
 from utils.cli_common import add_standard_cli_args
 
 log = logging.getLogger(__name__)
-
-PARTITION_LOAD_ERRORS = (
-    FileNotFoundError,
-    json.JSONDecodeError,
-    KeyError,
-    TypeError,
-    ValueError,
-)
 
 PARTITION_EVAL_ERRORS = (
     RuntimeError,
@@ -82,7 +83,8 @@ def get_or_create_label_mapping(
     Handle datasets where labels are strings (e.g., Food101 "apple_pie", TinyImageNet "n021...").
     Metrics require integer labels, so we map strings to sorted integers 0..N-1.
     """
-    if len(dataset) == 0: return None
+    if len(dataset) == 0:
+        return None
     
     # Check the first item to see if mapping is needed
     # BaseDataset.__getitem__ returns (image_path, label)
@@ -97,7 +99,7 @@ def get_or_create_label_mapping(
             mapping_file = mapping_dir / f"{dataset_name}_label_mapping.json"
             if mapping_file.exists():
                 log.info("Loading label mapping from %s...", mapping_file)
-                with open(mapping_file, "r") as f:
+                with open(mapping_file, "r", encoding="utf-8") as f:
                     return json.load(f)
 
         log.info("Creating new integer mapping for string labels (%s)...", dataset_name)
@@ -109,7 +111,7 @@ def get_or_create_label_mapping(
         # Save for future runs only when an explicit persistence directory is configured.
         if mapping_file is not None:
             mapping_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(mapping_file, "w") as f:
+            with open(mapping_file, "w", encoding="utf-8") as f:
                 json.dump(mapping, f, indent=2)
         else:
             log.info("Label mapping persistence disabled; using in-memory mapping for this run.")
@@ -159,7 +161,7 @@ def load_partition_from_json(
     Returns:
         List of client datasets, each a list of {"image": path, "label": label} dicts.
    """
-    with open(json_path, 'r') as f:
+    with open(json_path, "r", encoding="utf-8") as f:
         partition_data = json.load(f)
     
     # Sort clients to ensure deterministic order (client_0, client_1...)
@@ -174,24 +176,13 @@ def load_partition_from_json(
         train_paths = client_split["train"]
         
         client_data = []
-        for img_path in train_paths:
-
-            # For embedding-based partitionings, the partitioning json is already using
-            # a dictionary format with 'image' and 'label' keys. 
-            if isinstance(img_path, dict):
-                assert "image" in img_path and "label" in img_path, \
-                    "Partition JSON dict entries must have 'image' and 'label' keys."
-                item = dataset_map.get(img_path["image"])
-                client_data.append(item)
-                continue
-
-            # O(1) Lookup - This connects the partition path to the mapped label
-            item = dataset_map.get(img_path)
-
-            if item is not None:
-                client_data.append(item)
-            else:
-                log.warning("%s in partition but not in dataset map", img_path)
+        for entry in train_paths:
+            image_path = entry["image"] if isinstance(entry, dict) else entry
+            if isinstance(entry, dict) and {"image", "label"} - entry.keys():
+                raise KeyError("Partition JSON dict entries must have 'image' and 'label' keys.")
+            if image_path not in dataset_map:
+                raise KeyError(f"{image_path} is in the partition JSON but missing from the dataset map.")
+            client_data.append(dataset_map[image_path])
         
         client_datasets.append(client_data)
     
@@ -441,9 +432,136 @@ def compute_all_metrics(
 # Entry Points
 # ============================================================================
 
-def get_output_path(partition_path: Path, output_dir: Path) -> Path:
-    """Generate output path for evaluation results."""
-    return output_dir / f"{partition_path.stem}_eval.json"
+def _partition_run_id(dataset_name: str, partition_path: Path) -> str:
+    return build_run_id(
+        "partition-eval",
+        dataset_name,
+        partition_path.parent.name,
+        partition_path.stem,
+        source=str(partition_path.resolve()),
+    )
+
+
+def _partition_summary(
+    *,
+    config: Optional[PartitionConfig],
+    dataset_name: str,
+    partition_path: Path,
+    partition_hash: Optional[str],
+    feature_model: str,
+    batch_size: int,
+    use_cache: bool,
+    cache_dir: Optional[str],
+    subsample: int,
+    seed: int,
+    duration_sec: float,
+    has_labels: Optional[bool] = None,
+    num_classes: Optional[int] = None,
+    client_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    if config is not None:
+        summary = asdict(config)
+    else:
+        summary = {
+            "partition_path": str(partition_path),
+            "filename": partition_path.name,
+            "method": "Unknown",
+            "dataset_name": dataset_name,
+            "extractor": None,
+            "token_strategy": None,
+            "pooling": None,
+            "preprocessing": None,
+            "clustering": None,
+            "n_clients": 0,
+            "heterogeneity": 0.0,
+            "seed": 0,
+            "extra_params": {},
+        }
+    summary.update(
+        {
+            "dataset_name": dataset_name,
+            "partition_hash": partition_hash,
+            "feature_model": feature_model,
+            "batch_size": batch_size,
+            "use_cache": use_cache,
+            "cache_dir": cache_dir,
+            "subsample": subsample,
+            "evaluation_seed": seed,
+            "duration_sec": round(duration_sec, 4),
+            "has_labels": has_labels,
+            "num_classes": num_classes,
+            "client_count_observed": client_count,
+        }
+    )
+    return summary
+
+
+def _partition_manifest(
+    *,
+    run_id: str,
+    run_dir: Path,
+    args_config: Dict[str, Any],
+    dataset_name: str,
+    base_path: str,
+    dataset_size: int,
+    partition_path: Path,
+    partition_hash: Optional[str],
+    config: Optional[PartitionConfig],
+    feature_model: str,
+    batch_size: int,
+    use_cache: bool,
+    cache_dir: Optional[str],
+    subsample: int,
+    seed: int,
+) -> Any:
+    partition_meta = {
+        "path": str(partition_path),
+        "filename": partition_path.name,
+        "sha256": partition_hash,
+    }
+    if config is not None:
+        partition_meta.update(
+            {
+                "method": config.method,
+                "n_clients": config.n_clients,
+                "heterogeneity": config.heterogeneity,
+                "extractor": config.extractor,
+                "token_strategy": config.token_strategy,
+                "pooling": config.pooling,
+                "preprocessing": config.preprocessing,
+                "clustering": config.clustering,
+            }
+        )
+
+    return create_manifest(
+        run_id=run_id,
+        script_name="evaluation/evaluate_partitions.py",
+        command=list(sys.argv),
+        resolved_config=args_config,
+        dataset={
+            "name": dataset_name,
+            "base_path": base_path,
+            "split": "train",
+            "size": dataset_size,
+        },
+        partition=partition_meta,
+        model={
+            "name": feature_model,
+            "task_type": "embedding_feature_evaluation",
+            "args": {
+                "batch_size": batch_size,
+                "use_cache": use_cache,
+                "cache_dir": cache_dir,
+                "subsample": subsample,
+            },
+        },
+        seed=seed,
+        artifacts={
+            "run_dir": str(run_dir),
+            "manifest_path": str(run_dir / "run_manifest.json"),
+            "result_path": str(run_dir / "result.json"),
+        },
+    )
 
 
 def evaluate_partition(
@@ -459,58 +577,49 @@ def evaluate_partition(
     subsample: int,
     force: bool,
     seed: int,
-) -> Optional[EvaluationResult]:
-    
-    # output_path = get_output_path(partition_path, output_dir)
-
-    # Embedding-based partitions have the embedding model in the parent directory name
-    # e.g., tiny_imagenet/mae-base/cls_mean_k4_mean_norm-true_dr-umap_hdbscan_euclidean_eom_valset-global_seed42.json
-    # and tiny_imagenet/dinov2-base/cls_mean_k4_mean_norm-true_dr-umap_hdbscan_euclidean_eom_valset-global_seed42.json
-    # should produce different output files (not overwrite each other) and not cause skipping
-
-    parent_dir = partition_path.parent.name
-    if parent_dir != "baselines":
-        output_path = output_dir / f"{parent_dir}_{partition_path.stem}_eval.json"
-    else:
-        output_path = output_dir / f"{partition_path.stem}_eval.json"
-
-    if output_path.exists() and not force:
-        log.info("Skipping %s (results exist at %s)", partition_path.name, output_path.name)
+) -> Optional[Any]:
+    run_id = _partition_run_id(dataset_name, partition_path)
+    run_dir = output_dir / run_id
+    result_path = run_dir / "result.json"
+    if result_path.exists() and not force:
+        log.info("Skipping %s (results exist at %s)", partition_path.name, result_path)
         return None
-    
+
     log.info("%s", "=" * 60)
     log.info("Evaluating: %s", partition_path.name)
-    
     start_time = time.time()
-    
-    # Config Parsing
-    config = PartitionConfig.from_path(str(partition_path))
-    config.dataset_name = dataset_name
-    
-    # Load Data
-    try:
-        client_datasets = load_partition_from_json(partition_path, dataset_map)
-    except PARTITION_LOAD_ERRORS as e:
-        log.error("Failed to load partition %s: %s", partition_path, e)
-        return None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Update dynamic client count (HDBSCAN)
-    if config.n_clients == 0:
-        config.n_clients = len(client_datasets)
-    
-    log.info("Loaded %s clients, %s samples", len(client_datasets), sum(len(c) for c in client_datasets))
-    
-    # Check Labels
-    has_labels = detect_has_labels(dataset_name, dataset_map)
-    num_classes = get_num_classes(dataset_map) if has_labels else 0
-    
-    # Compute
-    metrics_obj = compute_all_metrics(
+    partition_hash = file_sha256(partition_path) if partition_path.exists() else None
+    config: Optional[PartitionConfig] = None
+    stage = "config"
+    try:
+        config = PartitionConfig.from_path(str(partition_path))
+        config.dataset_name = dataset_name
+    except PARTITION_EVAL_ERRORS as exc:
+        log.debug("Partition config parse failed before manifest write: %s", exc)
+
+    manifest = _partition_manifest(
+        run_id=run_id,
+        run_dir=run_dir,
+        args_config={
+            "partition_path": str(partition_path),
+            "dataset_name": dataset_name,
+            "base_path": base_path,
+            "feature_model": feature_model,
+            "batch_size": batch_size,
+            "use_cache": use_cache,
+            "cache_dir": cache_dir,
+            "subsample": subsample,
+            "seed": seed,
+        },
         dataset_name=dataset_name,
         base_path=base_path,
-        client_datasets=client_datasets,
-        has_labels=has_labels,
-        num_classes=num_classes,
+        dataset_size=len(dataset_map),
+        partition_path=partition_path,
+        partition_hash=partition_hash,
+        config=config,
         feature_model=feature_model,
         batch_size=batch_size,
         use_cache=use_cache,
@@ -518,19 +627,97 @@ def evaluate_partition(
         subsample=subsample,
         seed=seed,
     )
-    
-    # Save
-    result = EvaluationResult(
-        config=config,
-        metrics=metrics_obj,
-        timestamp=datetime.now().isoformat()
-    )
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with open(output_path, 'w') as f:
-        json.dump(result.to_dict(), f, indent=2)
-    log.info("Saved %s (%.1fs)", output_path.name, time.time() - start_time)
-    
+    write_manifest(run_dir, manifest)
+
+    try:
+        if config is None:
+            config = PartitionConfig.from_path(str(partition_path))
+            config.dataset_name = dataset_name
+
+        stage = "load_partition"
+        client_datasets = load_partition_from_json(partition_path, dataset_map)
+        if config.n_clients == 0:
+            config.n_clients = len(client_datasets)
+
+        log.info("Loaded %s clients, %s samples", len(client_datasets), sum(len(c) for c in client_datasets))
+
+        stage = "detect_labels"
+        has_labels = detect_has_labels(dataset_name, dataset_map)
+        num_classes = get_num_classes(dataset_map) if has_labels else 0
+
+        stage = "compute_metrics"
+        metrics_obj = compute_all_metrics(
+            dataset_name=dataset_name,
+            base_path=base_path,
+            client_datasets=client_datasets,
+            has_labels=has_labels,
+            num_classes=num_classes,
+            feature_model=feature_model,
+            batch_size=batch_size,
+            use_cache=use_cache,
+            cache_dir=cache_dir,
+            subsample=subsample,
+            seed=seed,
+        )
+        duration_sec = time.time() - start_time
+        result = create_result(
+            run_id=run_id,
+            result_type="partition_eval",
+            status="success",
+            summary=_partition_summary(
+                config=config,
+                dataset_name=dataset_name,
+                partition_path=partition_path,
+                partition_hash=partition_hash,
+                feature_model=feature_model,
+                batch_size=batch_size,
+                use_cache=use_cache,
+                cache_dir=cache_dir,
+                subsample=subsample,
+                seed=seed,
+                duration_sec=duration_sec,
+                has_labels=has_labels,
+                num_classes=num_classes,
+                client_count=len(client_datasets),
+            ),
+            metrics=asdict(metrics_obj),
+            artifacts={
+                "partition_path": str(partition_path),
+                "run_dir": str(run_dir),
+            },
+        )
+        log.info("Saved %s (%.1fs)", result_path, duration_sec)
+    except Exception as exc:  # noqa: BLE001 - preserve failed runs as artifacts
+        duration_sec = time.time() - start_time
+        log.exception("Error evaluating %s", partition_path.name)
+        result = create_result(
+            run_id=run_id,
+            result_type="partition_eval",
+            status="failed",
+            summary=_partition_summary(
+                config=config,
+                dataset_name=dataset_name,
+                partition_path=partition_path,
+                partition_hash=partition_hash,
+                feature_model=feature_model,
+                batch_size=batch_size,
+                use_cache=use_cache,
+                cache_dir=cache_dir,
+                subsample=subsample,
+                seed=seed,
+                duration_sec=duration_sec,
+            ),
+            artifacts={
+                "partition_path": str(partition_path),
+                "run_dir": str(run_dir),
+            },
+            failure={
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "stage": stage,
+            },
+        )
+    write_result(run_dir, result)
     return result
 
 
@@ -547,31 +734,33 @@ def evaluate_all(
     force: bool,
     subsample: int,
     seed: int,
-) -> List[EvaluationResult]:
+) -> List[Any]:
     
     partition_files = sorted(partition_dir.rglob("*.json"))
     log.info("Found %s partitions.", len(partition_files))
     
     results = []
     for p_path in tqdm(partition_files, desc="Evaluating"):
-        try:
-            res = evaluate_partition(
-                p_path, dataset_map, dataset_name, base_path, output_dir,
-                feature_model, batch_size, use_cache, cache_dir, subsample, force, seed
-            )
-            if res: results.append(res)
-        except PARTITION_EVAL_ERRORS:
-            log.exception("Error evaluating %s", p_path.name)
-            
-    # Aggregate CSV
-    if results:
-        # Convert results to DataFrame
-        rows = [r.to_dict() for r in results]
-        df = pd.DataFrame(rows)
-        csv_path = output_dir / "all_results.csv"
-        df.to_csv(csv_path, index=False)
-        log.info("Aggregate CSV saved to %s", csv_path)
-        
+        res = evaluate_partition(
+            p_path, dataset_map, dataset_name, base_path, output_dir,
+            feature_model, batch_size, use_cache, cache_dir, subsample, force, seed
+        )
+        if res:
+            results.append(res)
+
+    write_results_index(output_dir, result_type="partition_eval")
+
+    failures = [r for r in results if r.status != "success"]
+    if failures:
+        failure_lines = [
+            f"{r.summary.get('filename', r.run_id)}: {r.failure.get('error_message', 'unknown error')}"
+            for r in failures[:5]
+        ]
+        suffix = "" if len(failures) <= 5 else f"\n... and {len(failures) - 5} more"
+        raise RuntimeError(
+            "One or more partition evaluations failed:\n" + "\n".join(failure_lines) + suffix
+        )
+
     return results
 
 
@@ -592,7 +781,7 @@ def main() -> int:
         base_path_required=True,
         include_output=True,
         output_required=True,
-        output_help="Directory where evaluation JSON/CSV outputs are written.",
+        output_help="Directory where canonical evaluation run artifacts are written.",
         include_seed=True,
         seed_default=42,
         include_dry_run=True,
@@ -645,11 +834,13 @@ def main() -> int:
     
     # 4. Run
     if args.partition:
-        evaluate_partition(
+        result = evaluate_partition(
             Path(args.partition), dataset_map, args.dataset, args.base_path, output_dir,
             args.feature_model, args.batch_size, use_cache, args.cache_dir, 
             args.subsample, args.force, args.seed
         )
+        if result and result.status != "success":
+            raise RuntimeError(result.failure.get("error_message", "Partition evaluation failed."))
     else:
         evaluate_all(
             Path(args.partition_dir), dataset_map, args.dataset, args.base_path, output_dir,

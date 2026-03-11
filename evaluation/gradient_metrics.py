@@ -22,9 +22,8 @@ Usage:
 import numpy as np
 import torch
 from torch import Tensor
-from typing import Dict, List, Optional, Tuple, Literal, Union
+from typing import Any, Dict, List, Optional, Literal, Union
 from scipy.spatial.distance import pdist, squareform
-from collections import OrderedDict
 import warnings
 
 
@@ -138,7 +137,6 @@ def compute_pairwise_l2_distance(gradients: List[Tensor]) -> np.ndarray:
     Returns:
         C x C matrix of pairwise L2 distances
     """
-    n_clients = len(gradients)
     grad_matrix = torch.stack(gradients).cpu().numpy()
 
     # Compute pairwise distances
@@ -220,13 +218,13 @@ class GradientDiversityMetric:
         self.device = device
 
         # Cache for parameter sampling
-        self._param_sample_indices: Optional[Dict[str, Tensor]] = None
+        self._param_sample_indices: Optional[Tensor] = None
 
     def compute(
         self,
         client_gradients: List[Dict[str, Tensor]],
         return_details: bool = False
-    ) -> Union[float, Dict[str, any]]:
+    ) -> Union[float, Dict[str, Any]]:
         """
         Compute gradient diversity for a set of client gradients.
 
@@ -484,6 +482,8 @@ class GradientDiversityMetric:
                     layer_sim_matrices.append(sim_matrix)
 
             # Average across layers
+            if not layer_sim_matrices:
+                raise ValueError("No gradients found. Check layer_filter or gradient dict.")
             return np.mean(layer_sim_matrices, axis=0)
 
         else:
@@ -551,7 +551,7 @@ def compute_gradient_diversity(
 def analyze_gradient_diversity(
     client_gradients: List[Dict[str, Tensor]],
     normalize: bool = True
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """
     Comprehensive gradient diversity analysis.
 

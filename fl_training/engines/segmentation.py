@@ -9,6 +9,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from torch.amp import autocast, GradScaler
+from ._common import build_scheduler, cycle_batches, move_optimizer_state
 
 log = logging.getLogger(__name__)
 
@@ -53,14 +54,11 @@ class SegmentationEngine:
         self.grad_clipping_value = float(training_cfg.get("grad_clipping_value", 0.0))
 
     def configure_optimizer(self):
-        training_cfg = self.config.get("training", {})
-        optimizer_cfg = training_cfg.get("optimizer")
-        if optimizer_cfg is None:
-            raise ValueError("Missing optimizer configuration. Expected `training.optimizer`.")
-
+        training_cfg = self.config["training"]
+        optimizer_cfg = training_cfg["optimizer"]
         opt_class_name = optimizer_cfg["class_name"]
         opt_args = optimizer_cfg["args"]
-        lr = float(self.config["training"]["lr"])
+        lr = float(training_cfg["lr"])
 
         OptimizerClass = getattr(optim, opt_class_name)
         self.optimizer = OptimizerClass(self.model.parameters(), lr=lr, **opt_args)
@@ -68,39 +66,13 @@ class SegmentationEngine:
         if self.optim_resume == "resume" and self.optimizer_state:
             self.optimizer.load_state_dict(self.optimizer_state)
 
-        scheduler_name = str(self.config["training"]["scheduler"]).lower()
-        if scheduler_name == "none":
-            self.scheduler = torch.optim.lr_scheduler.ConstantLR(self.optimizer, factor=1, total_iters=self.max_steps)
-        elif scheduler_name == "step":
-            step_size = int(self.config.get("lr_step_size", 1000))
-            self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=0.1)
-        elif scheduler_name == "cosine":
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.max_steps, eta_min=self.lr_min)
-        elif scheduler_name == "onecycle":
-            self.scheduler = optim.lr_scheduler.OneCycleLR(
-                self.optimizer,
-                max_lr=lr,
-                total_steps=self.max_steps,
-                pct_start=0.3,
-                anneal_strategy="cos",
-                final_div_factor=1e4,
-            )
-        else:
-            log.warning(f"Unknown scheduler: {scheduler_name}. Falling back to constant LR.")
-            self.scheduler = torch.optim.lr_scheduler.ConstantLR(self.optimizer, factor=1, total_iters=self.max_steps)
+        self.scheduler = build_scheduler(self.optimizer, training_cfg, max_steps=self.max_steps)
 
         if self.scheduler_state:
             self.scheduler.load_state_dict(self.scheduler_state)
 
     def _get_batch_iterator(self, dataloader: DataLoader) -> Iterator:
-        it = iter(dataloader)
-        while True:
-            try:
-                batch = next(it)
-            except StopIteration:
-                it = iter(dataloader)
-                batch = next(it)
-            yield batch
+        return cycle_batches(dataloader)
 
     def _prepare_masks(self, masks: torch.Tensor) -> torch.Tensor:
         masks = masks.to(self.compute_device, non_blocking=True)
@@ -323,10 +295,7 @@ class SegmentationEngine:
             metric_callback(metrics)
 
         self.model.to(self.cpu_device)
-        for state in self.optimizer.state.values():
-            for key, value in state.items():
-                if isinstance(value, torch.Tensor):
-                    state[key] = value.to(self.cpu_device)
+        move_optimizer_state(self.optimizer, self.cpu_device)
 
         self.optimizer_state = deepcopy(self.optimizer.state_dict()) if self.optim_resume == "resume" else None
         self.scheduler_state = deepcopy(self.scheduler.state_dict())

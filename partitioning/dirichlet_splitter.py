@@ -9,10 +9,6 @@ federated learning scenarios.
 import numpy as np
 import logging
 from typing import List
-import matplotlib.pyplot as plt
-from matplotlib.cm import get_cmap
-import matplotlib.patches as mpatches
-from scipy.stats import entropy
 
 from .base_splitter import DatasetSplits, ClientSplit
 from data_loading.dataset import BaseDataset
@@ -304,6 +300,10 @@ class DirichletSplitter(RandomSplitter):
             >>> splitter.visualize_class_distribution(max_classes_to_show=10)
             >>> # Shows highly imbalanced distribution with low alpha
         """
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        from matplotlib.cm import get_cmap
+
         splits = self.get_client_splits()
 
         all_labels = set()
@@ -429,6 +429,8 @@ class DirichletSplitter(RandomSplitter):
 
     def _print_heterogeneity_stats(self, client_label_counts: dict, all_labels: set) -> None:
         """Print heterogeneity statistics."""
+        from scipy.stats import entropy
+
         # Calculate label distribution skew across clients
 
         labels_list = sorted(all_labels)

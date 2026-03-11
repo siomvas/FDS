@@ -1,4 +1,6 @@
 #!/bin/bash
+set -euo pipefail
+
 # Run all embedding partition combinations
 # This script generates embedding-based partitions for all combinations of:
 # - Extractors (foundation models)
@@ -9,9 +11,12 @@
 # CONFIGURATION - Edit these variables
 # =============================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 # Global settings
 MOCK=false                            # Set to true for quick testing with 1k samples
-BASE_PATH="/path/to/gtai/FDS/" # UPDATE THIS PATH
+BASE_PATH="${BASE_PATH:-${REPO_ROOT}}"
 SEED=42
 VALSET_TYPE="global" # global, local, or none
 LAST_K_POOLING=mean  # Token aggregation method for lastk pooling
@@ -139,64 +144,67 @@ for extractor in "${EXTRACTORS[@]}"; do
                                 echo "[$current/$total] Model: $extractor | Tokens: ($token_strategy extracted, $layer_agg layer agg of last $TOKEN_LAST_K, $pooling pooling) | Preprocessing: (normalize=$NORMALIZE, dim_reduction=$DIM_REDUCTION)"
                                 echo "                            | Clustering: ($clustering, $N_CLUSTERS, $hdbscan_metric, $hdbscan_method) | Dataset: $dataset | Valset: $VALSET_TYPE | Seed: $SEED"
                                 # Build command
-                                cmd="python -u generate_embedding_partitions.py"
-                                cmd="$cmd --dataset $dataset"
-                                cmd="$cmd --base_path $BASE_PATH"
-                                cmd="$cmd --extractor $extractor"
-                                cmd="$cmd --tokens $token_strategy"
-                                cmd="$cmd --lastk_k $TOKEN_LAST_K"
-                                cmd="$cmd --layer_aggregation $layer_agg"
-                                cmd="$cmd --pooling $pooling"
-                                cmd="$cmd --clustering $clustering"
-                                cmd="$cmd --hdbscan_metric $hdbscan_metric"
-                                cmd="$cmd --hdbscan_method $hdbscan_method"
-                                cmd="$cmd --valset_type $VALSET_TYPE"
-                                cmd="$cmd --seed $SEED"
-                                cmd="$cmd --output $output_path"
+                                cmd=(
+                                    python -u "${SCRIPT_DIR}/generate_embedding_partitions.py"
+                                    --dataset "$dataset"
+                                    --base_path "$BASE_PATH"
+                                    --extractor "$extractor"
+                                    --tokens "$token_strategy"
+                                    --lastk_k "$TOKEN_LAST_K"
+                                    --layer_aggregation "$layer_agg"
+                                    --pooling "$pooling"
+                                    --clustering "$clustering"
+                                    --hdbscan_metric "$hdbscan_metric"
+                                    --hdbscan_method "$hdbscan_method"
+                                    --valset_type "$VALSET_TYPE"
+                                    --seed "$SEED"
+                                    --output "$output_path"
+                                )
 
                                 # Add n_clusters for kmeans/spectral
                                 if [[ "$clustering" == "kmeans" || "$clustering" == "spectral" ]]; then
-                                    cmd="$cmd --n_clusters $N_CLUSTERS"
-                                    cmd="$cmd --spectral_k 50" # Default spectral k
+                                    cmd+=(--n_clusters "$N_CLUSTERS")
+                                    cmd+=(--spectral_k 50) # Default spectral k
                                 fi
 
                                 # add token aggregation for lastk pooling
                                 if [[ "$pooling" == "lastk" ]]; then
-                                    cmd="$cmd --lastk_pooling $LAST_K_POOLING"
+                                    cmd+=(--lastk_pooling "$LAST_K_POOLING")
                                 fi
 
                                 # Add gem_p for gem pooling
                                 if [[ "$pooling" == "gem" ]]; then
-                                    cmd="$cmd --gem_p $GEM_P"
+                                    cmd+=(--gem_p "$GEM_P")
                                 fi
 
                                 # Add mock flag if enabled
                                 if [[ "$MOCK" == true ]]; then
-                                    cmd="$cmd --mock"
+                                    cmd+=(--mock)
                                 fi
 
                                 # Add normalization flag
                                 if [[ "$NORMALIZE" == true ]]; then
-                                    cmd="$cmd --normalize"
+                                    cmd+=(--normalize)
                                 fi
 
                                 # Add dimensionality reduction method
                                 if [[ "$DIM_REDUCTION" == "umap" ]]; then
-                                    cmd="$cmd --dim_reduction umap"
-                                    cmd="$cmd --dr_dims 30"
-                                    cmd="$cmd --umap_neighbors 20"
-                                    cmd="$cmd --umap_min_dist 0.0"
+                                    cmd+=(--dim_reduction umap)
+                                    cmd+=(--dr_dims 30)
+                                    cmd+=(--umap_neighbors 20)
+                                    cmd+=(--umap_min_dist 0.0)
                                 fi
 
                                 # Add HDBSCAN specific parameters
                                 if [[ "$clustering" == "hdbscan" ]]; then
-                                    cmd="$cmd --min_cluster_size 500"
-                                    cmd="$cmd --min_samples 15"
+                                    cmd+=(--min_cluster_size 500)
+                                    cmd+=(--min_samples 15)
                                 fi
 
                                 # Run and capture output
-                                echo "  Command: $cmd" >"$log_path"
-                                if $cmd >>"$log_path" 2>&1; then
+                                printf '  Command: %q ' "${cmd[@]}" >"$log_path"
+                                printf '\n' >>"$log_path"
+                                if "${cmd[@]}" >>"$log_path" 2>&1; then
                                     echo "  ✓ Success"
                                     ((success++))
                                     # Optionally, remove log file on success

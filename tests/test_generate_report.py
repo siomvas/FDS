@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
+
+from research import create_manifest, create_result, write_manifest, write_result, write_results_index
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -19,55 +23,91 @@ def _load_module(module_name: str, rel_path: str):
     return module
 
 
-def test_load_results_normalizes_legacy_columns_and_methods(tmp_path):
+def _write_partition_result(
+    root: Path,
+    run_id: str,
+    *,
+    status: str = "success",
+    method: str = "Random",
+    fid_mean: float = 1.0,
+) -> None:
+    run_dir = root / run_id
+    write_manifest(
+        run_dir,
+        create_manifest(
+            run_id=run_id,
+            script_name="tests.fixture",
+            command=["pytest"],
+            resolved_config={"fixture": True},
+            dataset={"name": "tiny_imagenet", "base_path": "/tmp/data", "split": "train"},
+            partition={"path": "/tmp/partition.json", "filename": "partition.json", "sha256": None},
+            model={"name": "dinov2-small", "task_type": "embedding_feature_evaluation"},
+            seed=7,
+            artifacts={},
+        ),
+    )
+    write_result(
+        run_dir,
+        create_result(
+            run_id=run_id,
+            result_type="partition_eval",
+            status=status,
+            summary={
+                "method": method,
+                "n_clients": 3,
+                "heterogeneity": 0.1,
+                "samples_per_client_min": 9,
+                "samples_per_client_max": 11,
+                "balance_cv": 0.02,
+            },
+            metrics={
+                "fid_mean": fid_mean,
+                "mmd_features_mean": 0.1,
+                "wasserstein_mean": 0.2,
+                "vendi_score_mean": 10.0,
+            },
+            failure=None
+            if status == "success"
+            else {
+                "error_type": "RuntimeError",
+                "error_message": "fixture failure",
+                "stage": "test",
+            },
+        ),
+    )
+
+
+def test_load_results_reads_canonical_directory_and_filters_failures(tmp_path):
     module = _load_module("generate_report_schema_test", "scripts/generate_report.py")
-    input_csv = tmp_path / "legacy_results.csv"
-    pd.DataFrame(
-        {
-            "method": ["random", "vlm"],
-            "n_clients": [3, 3],
-            "heterogeneity": [0.1, 0.1],
-            "vendi_score_features": [28.1, 29.4],
-            "coefficient_of_variation": [0.01, 0.02],
-            "samples_per_client_min": [10, 9],
-            "samples_per_client_max": [10, 11],
-        }
-    ).to_csv(input_csv, index=False)
+    _write_partition_result(tmp_path, "success_run", status="success", method="random")
+    _write_partition_result(tmp_path, "failed_run", status="failed", method="vlm")
 
-    df = module.load_results(input_csv)
+    df = module.load_results(tmp_path)
 
-    assert "vendi_score_mean" in df.columns
-    assert "balance_cv" in df.columns
-    assert df["method"].tolist() == ["Random", "VLM"]
+    assert df["method"].tolist() == ["Random"]
+    assert df["status"].tolist() == ["success"]
+    assert "fid_mean" in df.columns
 
 
-def test_generate_report_handles_legacy_summary_metrics(tmp_path):
-    module = _load_module("generate_report_legacy_test", "scripts/generate_report.py")
-    df = pd.DataFrame(
-        {
-            "method": ["random", "vlm"],
-            "n_clients": [3, 3],
-            "heterogeneity": [0.1, 0.1],
-            "vendi_score_features": [28.1, 29.4],
-            "coefficient_of_variation": [0.01, 0.02],
-            "samples_per_client_min": [10, 9],
-            "samples_per_client_max": [10, 11],
-        }
-    )
+def test_load_results_accepts_results_index_json(tmp_path):
+    module = _load_module("generate_report_index_test", "scripts/generate_report.py")
+    _write_partition_result(tmp_path, "indexed_run", method="vlm")
+    write_results_index(tmp_path, result_type="partition_eval")
 
-    output_path = tmp_path / "report.html"
-    module.generate_report(
-        df=module.normalize_results_schema(df),
-        output_path=output_path,
-        dataset_name="legacy_fixture",
-    )
+    df = module.load_results(tmp_path / "results_index.json")
 
-    html = output_path.read_text(encoding="utf-8")
-    assert "Vendi Score" in html
-    assert "VLM" in html
-    assert "No summary metrics available." not in html
-    assert '<script src="https://cdn.plot.ly/' not in html
-    assert "resizeVisiblePlots" in html
+    assert df["method"].tolist() == ["VLM"]
+
+
+def test_load_results_rejects_malformed_canonical_artifact(tmp_path):
+    module = _load_module("generate_report_malformed_test", "scripts/generate_report.py")
+    bad_dir = tmp_path / "bad_run"
+    bad_dir.mkdir(parents=True)
+    with open(bad_dir / "result.json", "w", encoding="utf-8") as f:
+        json.dump({"run_id": "bad"}, f)
+
+    with pytest.raises(FileNotFoundError, match="run_manifest.json"):
+        module.load_results(tmp_path)
 
 
 def test_generate_report_falls_back_to_appendix_metrics_when_primary_missing(tmp_path):
@@ -77,7 +117,7 @@ def test_generate_report_falls_back_to_appendix_metrics_when_primary_missing(tmp
             "method": ["random", "dirichlet"],
             "n_clients": [3, 3],
             "heterogeneity": [0.1, 0.1],
-            "coefficient_of_variation": [0.01, 0.05],
+            "balance_cv": [0.01, 0.05],
             "samples_per_client_min": [10, 8],
             "samples_per_client_max": [10, 12],
         }

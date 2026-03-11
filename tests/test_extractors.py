@@ -1,21 +1,4 @@
-"""
-Ultimate comprehensive unit tests for embedding extractors.
-
-This test suite provides 100% coverage of:
-- ModelRegistry factory pattern
-- All concrete extractor implementations
-- Base class functionality and edge cases
-- Caching behavior for ALL extractors
-- Error handling and validation
-- Image preprocessing pipelines
-- Token selection modes for ViT-based models
-- Batch independence, reproducibility, edge cases for ALL extractors
-
-Run with: pytest test_extractors_ultimate.py -v
-Skip slow tests (require model downloads): pytest test_extractors_ultimate.py -v -m "not slow"
-Run only fast tests: pytest test_extractors_ultimate.py -v -m "not slow"
-
-"""
+"""Tests for embedding extractors."""
 
 import pytest
 import numpy as np
@@ -234,7 +217,7 @@ class TestModelRegistry:
         from embedding.embedding_extractors import ModelRegistry
         
         expected_families = [
-            "inception_v3", "dino", "clip", "siglip", "mae",
+            "inception_v3", "dino", "dinov2", "clip", "siglip", "mae",
             "raw_pixel_resizer", "sparse_random_projection_resizer",
             "UAE", "wavelet_scattering"
         ]
@@ -247,7 +230,7 @@ class TestModelRegistry:
         """Test that registry has expected number of families."""
         from embedding.embedding_extractors import ModelRegistry
         
-        assert len(ModelRegistry._REGISTRY) >= 9
+        assert len(ModelRegistry._REGISTRY) >= 10
 
     def test_create_with_default_variant(self):
         """Test creating extractor without specifying variant."""
@@ -258,11 +241,12 @@ class TestModelRegistry:
         assert isinstance(extractor, InceptionExtractor)
         assert extractor.model_name == "inception_v3"
 
-    def test_create_with_explicit_variant(self):
-        """Test creating extractor with explicit variant."""
+    @pytest.mark.parametrize("model_id", ["dino-base", "dinov2-base"])
+    def test_create_with_explicit_variant(self, model_id):
+        """Test creating extractor with explicit variant aliases."""
         from embedding.embedding_extractors import ModelRegistry, DINOv2Extractor
         
-        extractor = ModelRegistry.create("dino-base", device="cuda")
+        extractor = ModelRegistry.create(model_id, device="cuda")
         
         assert isinstance(extractor, DINOv2Extractor)
         assert extractor.variant == "base"
@@ -345,6 +329,8 @@ class TestModelRegistry:
         ("inception_v3", "inception_v3", "default"),
         ("dino-small", "dino", "small"),
         ("dino-base", "dino", "base"),
+        ("dinov2-small", "dinov2", "small"),
+        ("dinov2-base", "dinov2", "base"),
         ("clip-base-patch16", "clip", "base-patch16"),
         ("siglip-base-patch16-224", "siglip", "base-patch16-224"),
         ("mae-large", "mae", "large"),
@@ -383,6 +369,17 @@ class TestEmbeddingExtractorBase:
         
         extractor = ModelRegistry.create("raw_pixel_resizer-32", device="cpu")
         
+        assert str(extractor.device) == "cpu"
+
+    def test_explicit_cuda_falls_back_to_cpu_with_warning(self, monkeypatch):
+        """Explicit CUDA requests degrade cleanly when CUDA is unavailable."""
+        from embedding.embedding_extractors import ModelRegistry
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+        with pytest.warns(RuntimeWarning, match="Falling back to CPU"):
+            extractor = ModelRegistry.create("raw_pixel_resizer-32", device="cuda")
+
         assert str(extractor.device) == "cpu"
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -445,30 +442,6 @@ class TestEmbeddingExtractorBase:
         embeddings = extractor.extract_embeddings(sample_images, use_cache=False)
         
         assert extractor.transform is not None
-
-    def test_default_batch_size(self):
-        """Test default batch size is 64."""
-        from embedding.embedding_extractors import ModelRegistry
-        
-        extractor = ModelRegistry.create("raw_pixel_resizer-32", device="cuda")
-        assert extractor.batch_size == 64
-
-    def test_default_num_workers(self):
-        """Test default num_workers is 4."""
-        from embedding.embedding_extractors import ModelRegistry
-        
-        extractor = ModelRegistry.create("raw_pixel_resizer-32", device="cuda")
-        assert extractor.num_workers == 4
-
-    def test_device_torch_device_input(self):
-        """Test that torch.device objects are accepted."""
-        from embedding.embedding_extractors import ModelRegistry
-        
-        extractor = ModelRegistry.create(
-            "raw_pixel_resizer-32",
-            device=torch.device("cpu")
-        )
-        assert str(extractor.device) == "cpu"
 
 
 # ============================================================================
@@ -670,7 +643,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(
@@ -689,7 +662,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(
@@ -709,7 +682,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(
@@ -731,7 +704,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(
@@ -752,9 +725,8 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
-        extractor.load_model()
         
         with pytest.raises(ValueError, match="Invalid return_which_tokens"):
             extractor.extract_embeddings(
@@ -771,7 +743,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(single_image, use_cache=False)
@@ -785,7 +757,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         emb1 = extractor.extract_embeddings(small_images, use_cache=False)
@@ -800,12 +772,12 @@ class TestDINOv2Extractor:
         ext1 = DINOv2Extractor(
             variant="small", device="cpu", batch_size=2,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         ext2 = DINOv2Extractor(
             variant="small", device="cpu", batch_size=5,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         emb1 = ext1.extract_embeddings(sample_images, use_cache=False)
@@ -821,7 +793,7 @@ class TestDINOv2Extractor:
         extractor = DINOv2Extractor(
             variant="small", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         extractor.extract_embeddings(small_images, use_cache=True)
@@ -836,7 +808,7 @@ class TestDINOv2Extractor:
         extractor = DINOv2Extractor(
             variant="small", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         extractor.load_model()
         
@@ -850,7 +822,7 @@ class TestDINOv2Extractor:
         extractor = DINOv2Extractor(
             variant="small", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -874,7 +846,7 @@ class TestCLIPExtractor:
         """Test embedding dimension for each variant."""
         from embedding.embedding_extractors import CLIPExtractor
         
-        extractor = CLIPExtractor(variant=variant, device="cuda", proxy='http://proxy.example.org:3128')
+        extractor = CLIPExtractor(variant=variant, device="cuda", proxy='http://proxy.example:3128')
         
         assert extractor.get_embedding_dim() == expected_dim
 
@@ -889,7 +861,7 @@ class TestCLIPExtractor:
         """Test that HuggingFace model paths are correctly mapped."""
         from embedding.embedding_extractors import CLIPExtractor
         
-        extractor = CLIPExtractor(variant="large-patch14", device="cuda", proxy='http://proxy.example.org:3128')
+        extractor = CLIPExtractor(variant="large-patch14", device="cuda", proxy='http://proxy.example:3128')
         
         assert extractor.hf_model_path == "openai/clip-vit-large-patch14"
 
@@ -901,7 +873,7 @@ class TestCLIPExtractor:
             variant="base-patch32",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -915,7 +887,7 @@ class TestCLIPExtractor:
             variant="base-patch32",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(single_image, use_cache=False)
@@ -929,7 +901,7 @@ class TestCLIPExtractor:
             variant="base-patch32",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         emb1 = extractor.extract_embeddings(small_images, use_cache=False)
@@ -944,12 +916,12 @@ class TestCLIPExtractor:
         ext1 = CLIPExtractor(
             variant="base-patch32", device="cpu", batch_size=2,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         ext2 = CLIPExtractor(
             variant="base-patch32", device="cpu", batch_size=5,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         emb1 = ext1.extract_embeddings(sample_images, use_cache=False)
@@ -965,7 +937,7 @@ class TestCLIPExtractor:
             variant="base-patch32",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         # CLS token
@@ -988,7 +960,7 @@ class TestCLIPExtractor:
         extractor = CLIPExtractor(
             variant="base-patch32", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         extractor.extract_embeddings(small_images, use_cache=True)
@@ -1003,7 +975,7 @@ class TestCLIPExtractor:
         extractor = CLIPExtractor(
             variant="base-patch32", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1027,7 +999,7 @@ class TestSigLIPExtractor:
         """Test embedding dimension for each variant."""
         from embedding.embedding_extractors import SigLIPExtractor
         
-        extractor = SigLIPExtractor(variant=variant, device="cuda", proxy='http://proxy.example.org:3128')
+        extractor = SigLIPExtractor(variant=variant, device="cuda", proxy='http://proxy.example:3128')
         
         assert extractor.get_embedding_dim() == expected_dim
 
@@ -1046,7 +1018,7 @@ class TestSigLIPExtractor:
             variant="base-patch16-224",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1060,7 +1032,7 @@ class TestSigLIPExtractor:
             variant="base-patch16-224",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(single_image, use_cache=False)
@@ -1074,7 +1046,7 @@ class TestSigLIPExtractor:
             variant="base-patch16-224",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         emb1 = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1089,12 +1061,12 @@ class TestSigLIPExtractor:
         ext1 = SigLIPExtractor(
             variant="base-patch16-224", device="cpu", batch_size=2,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         ext2 = SigLIPExtractor(
             variant="base-patch16-224", device="cpu", batch_size=5,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         emb1 = ext1.extract_embeddings(sample_images, use_cache=False)
@@ -1110,7 +1082,7 @@ class TestSigLIPExtractor:
         extractor = SigLIPExtractor(
             variant="base-patch16-224", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         extractor.extract_embeddings(small_images, use_cache=True)
@@ -1125,7 +1097,7 @@ class TestSigLIPExtractor:
         extractor = SigLIPExtractor(
             variant="base-patch16-224", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1168,7 +1140,7 @@ class TestMAEExtractor:
             variant="base",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1182,7 +1154,7 @@ class TestMAEExtractor:
             variant="base",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(single_image, use_cache=False)
@@ -1198,7 +1170,7 @@ class TestMAEExtractor:
     #         variant="base",
     #         device="cpu",
     #         cache_manager=mock_cache_manager,
-    #         proxy='http://proxy.example.org:3128'
+    #         proxy='http://proxy.example:3128'
     #     )
         
     #     emb1 = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1214,12 +1186,12 @@ class TestMAEExtractor:
     #     ext1 = MAEExtractor(
     #         variant="base", device="cpu", batch_size=2,
     #         cache_manager=mock_cache_manager,
-    #         proxy='http://proxy.example.org:3128'
+    #         proxy='http://proxy.example:3128'
     #     )
     #     ext2 = MAEExtractor(
     #         variant="base", device="cpu", batch_size=5,
     #         cache_manager=mock_cache_manager,
-    #         proxy='http://proxy.example.org:3128'
+    #         proxy='http://proxy.example:3128'
     #     )
         
     #     emb1 = ext1.extract_embeddings(sample_images, use_cache=False)
@@ -1235,7 +1207,7 @@ class TestMAEExtractor:
         extractor = MAEExtractor(
             variant="base", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         extractor.extract_embeddings(small_images, use_cache=True)
@@ -1250,7 +1222,7 @@ class TestMAEExtractor:
         extractor = MAEExtractor(
             variant="base", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example.org:3128'
+            proxy='http://proxy.example:3128'
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)

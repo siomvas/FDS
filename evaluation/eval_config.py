@@ -7,10 +7,23 @@ import json
 import re
 import logging
 from dataclasses import dataclass, asdict, field
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, Optional, Any
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def _infer_dataset_name(path: Path) -> str:
+    grandparent = path.parent.parent.name.lower()
+    return grandparent if grandparent not in {"embedding_partitions", "partitions", "."} else "unknown"
+
+
+def _read_client_count(path: Path) -> int:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if "clients" not in data or not isinstance(data["clients"], dict):
+        raise KeyError(f"Partition file {path} is missing a valid 'clients' mapping.")
+    return len(data["clients"])
 
 # ============================================================================
 # 1. Configuration Data Classes
@@ -69,10 +82,7 @@ class PartitionConfig:
         path = Path(path_str)
         name = path.name.lower()
         parent_dir = path.parent.name.lower()
-        grandparent = path.parent.parent.name.lower()
-        
-        # Heuristic to find dataset name if it's not in the folder structure
-        dataset = grandparent if grandparent not in ["embedding_partitions", "partitions", "."] else "unknown"
+        dataset = _infer_dataset_name(path)
         
         config = cls(
             partition_path=str(path),
@@ -153,16 +163,7 @@ class PartitionConfig:
             config.n_clients = int(n_search.group(2))
         else:
             # 2. Fallback: Open file to count keys (HDBSCAN)
-            try:
-                with open(path, 'r') as f:
-                    # Partial read usually enough if simple JSON, but safer to load
-                    # optimization: could use ijson for huge files, but standard json is fine for splits
-                    data = json.load(f)
-                    if "clients" in data:
-                        config.n_clients = len(data["clients"])
-            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
-                config.n_clients = 0  # Mark as failed/unknown
-                log.warning("Could not infer n_clients from %s: %s", path, exc)
+            config.n_clients = _read_client_count(path)
 
         return config
 

@@ -185,9 +185,9 @@ class TestPathNormalization:
         jsonl_path = color_dir / "step3_result.jsonl"
         annotations = [
             # User 1
-            {"image": "/path/to/gtai/FDS/tiny-imagenet-200/train/n01/images/img_0.JPEG", "class": "warm"},
+            {"image": "/users/user1/gtai/FDS/tiny-imagenet-200/train/n01/images/img_0.JPEG", "class": "warm"},
             # User 2 (same image, different user path)
-            {"image": "/path/to/gtai/FDS/tiny-imagenet-200/train/n01/images/img_1.JPEG", "class": "cool"},
+            {"image": "/users/user2/gtai/FDS/tiny-imagenet-200/train/n01/images/img_1.JPEG", "class": "cool"},
         ]
         with open(jsonl_path, 'w') as f:
             json.dump(annotations, f)

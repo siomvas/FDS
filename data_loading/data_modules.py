@@ -137,6 +137,20 @@ class BaseDataModule(ABC):
                 self._validate_split_sample(sample, f"global_val[{idx}]")
 
     @staticmethod
+    def _client_splits(splits: Dict[str, Any]) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+        clients = splits["clients"]
+        if not isinstance(clients, dict):
+            raise TypeError("Validated split payload has invalid 'clients' mapping.")
+        return clients
+
+    @staticmethod
+    def _global_val_samples(splits: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+        global_val = splits["global_val"] if "global_val" in splits else None
+        if global_val is not None and not isinstance(global_val, list):
+            raise TypeError("Validated split payload has invalid 'global_val' list.")
+        return global_val
+
+    @staticmethod
     def _is_int_like(value: Any) -> bool:
         if isinstance(value, bool):
             return False
@@ -152,12 +166,16 @@ class BaseDataModule(ABC):
             return self.label_map
 
         labels: List[Any] = []
-        for client_split in splits.get("clients", {}).values():
+        for client_split in self._client_splits(splits).values():
             for key in ("train", "val"):
-                for sample in client_split.get(key, []):
-                    labels.append(sample.get("label"))
-        for sample in splits.get("global_val") or []:
-            labels.append(sample.get("label"))
+                for sample in client_split[key]:
+                    if "label" in sample:
+                        labels.append(sample["label"])
+        global_val = self._global_val_samples(splits)
+        if global_val is not None:
+            for sample in global_val:
+                if "label" in sample:
+                    labels.append(sample["label"])
 
         labels = [label for label in labels if label is not None]
         if not labels:
@@ -192,6 +210,22 @@ class BaseDataModule(ABC):
             normalized.append(item)
         return normalized
 
+    def _setup_classification_datasets(self) -> None:
+        splits = self.load_splits()
+        self.label_map = self._resolve_label_map(splits)
+        train_data, val_data = self.get_client_data(splits)
+        self.train_dataset = ClassificationDataset(
+            split_data=train_data,
+            label_map=self.label_map,
+            transform=self.get_train_transform(),
+        )
+        if val_data:
+            self.val_dataset = ClassificationDataset(
+                split_data=val_data,
+                label_map=self.label_map,
+                transform=self.get_val_transform(),
+            )
+
     def get_client_data(self, splits: Dict) -> Tuple[List[Dict], List[Dict]]:
         """
         Extract train and validation data for the specified client or central mode.
@@ -202,41 +236,28 @@ class BaseDataModule(ABC):
         Returns:
             (train_data, val_data) lists
         """
+        clients = self._client_splits(splits)
+        global_val = self._global_val_samples(splits)
+
         if self.central:
-            # Central mode: concatenate all client training data
-            train_data = []
-            for client_id, client_split in splits["clients"].items():
+            train_data: List[Dict[str, Any]] = []
+            val_data: List[Dict[str, Any]] = [] if global_val is None else global_val
+            for client_split in clients.values():
                 train_data.extend(client_split["train"])
-
-            # Use global validation if available, otherwise aggregate local val
-            if splits.get("global_val"):
-                val_data = splits["global_val"]
-            else:
-                val_data = []
-                for client_id, client_split in splits["clients"].items():
+                if global_val is None:
                     val_data.extend(client_split["val"])
-
             return train_data, val_data
 
-        else:
-            # Federated mode: get specific client's data
-            if self.client_idx is None:
-                raise ValueError("client_idx must be specified when central=False")
+        if self.client_idx is None:
+            raise ValueError("client_idx must be specified when central=False")
 
-            client_id = f"client_{self.client_idx}"
-            if client_id not in splits["clients"]:
-                raise ValueError(f"Client {client_id} not found in splits")
+        client_id = f"client_{self.client_idx}"
+        if client_id not in clients:
+            raise ValueError(f"Client {client_id} not found in splits")
 
-            client_split = splits["clients"][client_id]
-            train_data = client_split["train"]
-
-            # Use global val if available, otherwise use client's local val
-            if splits.get("global_val"):
-                val_data = splits["global_val"]
-            else:
-                val_data = client_split["val"]
-
-            return train_data, val_data
+        client_split = clients[client_id]
+        val_data = client_split["val"] if global_val is None else global_val
+        return client_split["train"], val_data
 
     @abstractmethod
     def get_train_transform(self) -> T.Compose:
@@ -339,25 +360,7 @@ class TinyImageNetDataModule(BaseDataModule):
     
     def setup(self):
         """Load data and create datasets."""
-        splits = self.load_splits()
-        self.label_map = self._resolve_label_map(splits)
-        train_data, val_data = self.get_client_data(splits)
-        train_transform = self.get_train_transform()
-        val_transform = self.get_val_transform()
-
-        # Create datasets
-        self.train_dataset = ClassificationDataset(
-            split_data=train_data,
-            label_map=self.label_map,
-            transform=train_transform,
-        )
-
-        if val_data:
-            self.val_dataset = ClassificationDataset(
-                split_data=val_data,
-                label_map=self.label_map,
-                transform=val_transform,
-            )
+        self._setup_classification_datasets()
 
 
 class Food101DataModule(BaseDataModule):
@@ -397,26 +400,7 @@ class Food101DataModule(BaseDataModule):
     
     def setup(self):
         """Load data and create datasets."""
-
-        splits = self.load_splits()
-        self.label_map = self._resolve_label_map(splits)
-        train_data, val_data = self.get_client_data(splits)
-        train_transform = self.get_train_transform()
-        val_transform = self.get_val_transform()
-
-        # Create datasets
-        self.train_dataset = ClassificationDataset(
-            split_data=train_data,
-            label_map=self.label_map,
-            transform=train_transform,
-        )
-
-        if val_data:
-            self.val_dataset = ClassificationDataset(
-                split_data=val_data,
-                label_map=self.label_map,
-                transform=val_transform,
-            )
+        self._setup_classification_datasets()
 
 
 class ADE20KDataModule(BaseDataModule):

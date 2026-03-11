@@ -36,11 +36,26 @@ EmbeddingConfig : Configuration for selecting clustering methods.
 """
 
 from abc import ABC, abstractmethod
+from importlib import import_module
 from typing import Dict, List, Optional, Tuple
 import numpy as np
-from sklearn.cluster import KMeans, SpectralClustering, HDBSCAN
-from sklearn.neighbors import kneighbors_graph
 from scipy.sparse.csgraph import connected_components
+
+
+def _require_sklearn_attr(module_name: str, attr_name: str):
+    try:
+        module = import_module(module_name)
+    except ImportError as exc:
+        raise ImportError(
+            "Clustering features require the optional dependency 'scikit-learn'."
+        ) from exc
+
+    try:
+        return getattr(module, attr_name)
+    except AttributeError as exc:
+        raise ImportError(
+            f"Expected '{attr_name}' in optional dependency module '{module_name}'."
+        ) from exc
 
 
 class ClusteringMethod(ABC):
@@ -149,7 +164,8 @@ class HDBSCANMethod(ClusteringMethod):
 
     def cluster(self, embeddings: np.ndarray) -> np.ndarray:
         """Apply HDBSCAN clustering."""
-        self.clusterer = HDBSCAN(
+        hdbscan_cls = _require_sklearn_attr("sklearn.cluster", "HDBSCAN")
+        self.clusterer = hdbscan_cls(
             min_cluster_size=self.min_cluster_size,
             min_samples=self.min_samples,
             metric=self.metric,
@@ -248,7 +264,8 @@ class KMeansMethod(ClusteringMethod):
 
     def cluster(self, embeddings: np.ndarray) -> np.ndarray:
         """Apply K-means clustering."""
-        self.clusterer = KMeans(
+        kmeans_cls = _require_sklearn_attr("sklearn.cluster", "KMeans")
+        self.clusterer = kmeans_cls(
             n_clusters=self.n_clusters,
             random_state=self.random_state,
             n_init=self.n_init,
@@ -337,6 +354,7 @@ class KNNGraphMethod(ClusteringMethod):
     def cluster(self, embeddings: np.ndarray) -> np.ndarray:
         """Apply k-NN graph clustering."""
         # Build k-NN graph
+        kneighbors_graph = _require_sklearn_attr("sklearn.neighbors", "kneighbors_graph")
         self.graph_ = kneighbors_graph(
             embeddings,
             n_neighbors=self.n_neighbors,
@@ -442,7 +460,8 @@ class SpectralMethod(ClusteringMethod):
         # Set gamma if not provided
         gamma = self.gamma if self.gamma is not None else 1.0 / embeddings.shape[1]
 
-        self.clusterer = SpectralClustering(
+        spectral_cls = _require_sklearn_attr("sklearn.cluster", "SpectralClustering")
+        self.clusterer = spectral_cls(
             n_clusters=self.n_clusters,
             affinity=self.affinity,
             gamma=gamma,

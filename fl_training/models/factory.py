@@ -10,6 +10,8 @@ def validate_model_contract(model_cfg: Dict[str, Any], task_type: str, num_class
         raise TypeError(f"model_cfg must be a mapping, got {type(model_cfg).__name__}.")
     if "name" not in model_cfg:
         raise KeyError("model_cfg is missing required key 'name'.")
+    if "provider" not in model_cfg:
+        raise KeyError("model_cfg is missing required key 'provider'.")
 
     task_type = str(task_type).lower()
     valid_tasks = {"classification", "segmentation", "detection"}
@@ -20,7 +22,7 @@ def validate_model_contract(model_cfg: Dict[str, Any], task_type: str, num_class
         raise ValueError(f"num_classes must be a positive integer, got {num_classes!r}.")
 
     name = str(model_cfg["name"])
-    provider = str(model_cfg.get("provider", "timm")).lower()
+    provider = str(model_cfg["provider"]).lower()
     args = model_cfg.get("args", {})
     if not isinstance(args, dict):
         raise TypeError(f"model_cfg.args must be a mapping, got {type(args).__name__}.")

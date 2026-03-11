@@ -56,11 +56,9 @@ def _replace_head(model: nn.Module, num_classes: int, model_name: str):
          model.head = nn.Linear(in_features, num_classes)
          return
 
-    # Fallback
-    log.warning(
-        f"Could not automatically replace head for '{model_name}'. "
-        f"Model output will remain at default (usually 1000 classes). "
-        "Please check model structure manually."
+    raise RuntimeError(
+        f"Could not automatically replace classification head for '{model_name}'. "
+        "Pass an explicit `num_classes`-compatible model configuration instead."
     )
 
 
@@ -80,9 +78,9 @@ def _replace_detection_head(model: nn.Module, num_classes: int, model_name: str)
         except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
             pass
 
-    log.warning(
+    raise RuntimeError(
         f"Could not automatically replace detection head for '{model_name}'. "
-        "Prefer passing num_classes in model args for this architecture."
+        "Pass an explicit `num_classes`-compatible model configuration instead."
     )
 
 
@@ -129,9 +127,9 @@ def _replace_segmentation_head(model: nn.Module, num_classes: int, model_name: s
     if replaced:
         return
 
-    log.warning(
+    raise RuntimeError(
         f"Could not automatically replace segmentation head for '{model_name}'. "
-        "Prefer passing num_classes in model args for this architecture."
+        "Pass an explicit `num_classes`-compatible model configuration instead."
     )
 
 
@@ -190,6 +188,7 @@ def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Mo
     # Modern torchvision uses 'weights="DEFAULT"' instead of 'pretrained=True'
     weights = kwargs.pop("weights", None)
     pretrained = kwargs.pop("pretrained", False)
+    proxy = kwargs.pop("proxy", None)
 
     # Handle legacy 'pretrained' arg if passed from config
     if pretrained and weights is None:
@@ -206,7 +205,7 @@ def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Mo
     if task_type in {"segmentation", "detection"}:
         model_kwargs.setdefault("num_classes", num_classes)
 
-    with hpc_proxy():
+    with hpc_proxy(proxy):
         model = _instantiate_model(model_fn, weights=weights, pretrained=pretrained, kwargs=model_kwargs)
 
     # Surgery

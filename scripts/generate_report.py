@@ -5,12 +5,12 @@ Generates interactive HTML reports from partition evaluation results.
 Uses Plotly for visualizations with hover, legend toggle, and export.
 
 Usage:
-    # Single dataset report
+    # From canonical batch index
     python generate_report.py \
-        --input ./results/tiny_imagenet/all_results.csv \
+        --input ./results/tiny_imagenet/results_index.csv \
         --output ./results/tiny_imagenet/report.html
 
-    # From directory of eval JSONs
+    # From directory of canonical run artifacts
     python generate_report.py \
         --input ./results/tiny_imagenet/ \
         --output ./results/tiny_imagenet/report.html
@@ -34,6 +34,7 @@ from plotly.subplots import make_subplots
 
 # Import metric metadata from shared config
 from evaluation.eval_config import METRIC_META
+from research import scan_results
 from utils.cli_common import add_standard_cli_args
 
 log = logging.getLogger(__name__)
@@ -98,11 +99,6 @@ METRIC_DISPLAY_NAMES = {
     "feature_variance_mean": "Feature Variance",
 }
 
-LEGACY_COLUMN_ALIASES = {
-    "vendi_score_features": "vendi_score_mean",
-    "coefficient_of_variation": "balance_cv",
-}
-
 METHOD_NAME_ALIASES = {
     "random": "Random",
     "dirichlet": "Dirichlet",
@@ -125,49 +121,63 @@ def normalize_method_name(method: Any) -> Any:
 
 
 def normalize_results_schema(df: pd.DataFrame) -> pd.DataFrame:
-    """Backfill legacy CSV column names and normalize method labels."""
+    """Normalize canonical report rows."""
     normalized = df.copy()
-
-    for legacy_col, canonical_col in LEGACY_COLUMN_ALIASES.items():
-        if legacy_col not in normalized.columns:
-            continue
-
-        if canonical_col not in normalized.columns:
-            normalized = normalized.rename(columns={legacy_col: canonical_col})
-            continue
-
-        if normalized[canonical_col].isna().all() and normalized[legacy_col].notna().any():
-            normalized[canonical_col] = normalized[legacy_col]
 
     if "method" in normalized.columns:
         normalized["method"] = normalized["method"].apply(normalize_method_name)
 
     return normalized
 
+
+def _load_index_json(input_path: Path) -> pd.DataFrame:
+    with open(input_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if isinstance(payload, dict):
+        rows = payload.get("rows")
+    else:
+        rows = payload
+    if not isinstance(rows, list):
+        raise ValueError(f"results_index.json must contain a 'rows' list: {input_path}")
+    return pd.DataFrame(rows)
+
+
+def _filter_partition_eval_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if "result_type" not in df.columns:
+        raise ValueError("Canonical report inputs must include 'result_type'.")
+    if "status" not in df.columns:
+        raise ValueError("Canonical report inputs must include 'status'.")
+
+    partition_df = df[df["result_type"] == "partition_eval"].copy()
+    if partition_df.empty:
+        raise ValueError("No partition_eval results found in the provided canonical artifacts.")
+
+    successful = partition_df[partition_df["status"] == "success"].copy()
+    skipped = len(partition_df) - len(successful)
+    if skipped:
+        log.info("Skipping %s non-success partition_eval rows.", skipped)
+    if successful.empty:
+        raise ValueError("No successful partition_eval results found in the provided canonical artifacts.")
+    return successful
+
 def load_results(input_path: Path) -> pd.DataFrame:
     """
-    Load results from CSV or directory of JSON files.
+    Load canonical partition evaluation results from a run directory or index file.
     """
-    if input_path.is_file() and input_path.suffix == ".csv":
+    if input_path.is_file() and input_path.name == "results_index.csv":
         df = pd.read_csv(input_path)
+    elif input_path.is_file() and input_path.name == "results_index.json":
+        df = _load_index_json(input_path)
     elif input_path.is_dir():
-        # Load all *_eval.json files
-        json_files = list(input_path.glob("*_eval.json"))
-        if not json_files:
-            raise ValueError(f"No *_eval.json files found in {input_path}")
-        
-        rows = []
-        for jf in json_files:
-            with open(jf, 'r') as f:
-                data = json.load(f)
-                rows.append(data)
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(scan_results(input_path, result_type="partition_eval"))
     else:
-        raise ValueError(f"Input must be a .csv file or directory: {input_path}")
-    
-    # Ensure method column exists
+        raise ValueError(
+            f"Input must be a canonical run directory or a results_index.csv/results_index.json file: {input_path}"
+        )
+
+    df = _filter_partition_eval_rows(df)
     if "method" not in df.columns:
-        raise ValueError("DataFrame must have 'method' column")
+        raise ValueError("Canonical partition evaluation rows must include 'method'.")
 
     return normalize_results_schema(df)
 
@@ -1532,13 +1542,13 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # From CSV
+    # From canonical batch index
     python generate_report.py \\
-        --input ./results/tiny_imagenet/all_results.csv \\
+        --input ./results/tiny_imagenet/results_index.csv \\
         --output ./results/tiny_imagenet/report.html \\
         --dataset tiny_imagenet
 
-    # From directory of JSONs
+    # From directory of canonical run artifacts
     python generate_report.py \\
         --input ./results/tiny_imagenet/ \\
         --output ./results/tiny_imagenet/report.html \\
@@ -1547,7 +1557,7 @@ Examples:
     )
     
     parser.add_argument("--input", type=str, required=True,
-                        help="Path to CSV or directory containing *_eval.json files")
+                        help="Path to a canonical run directory or results_index file")
     add_standard_cli_args(
         parser,
         include_dataset=True,

@@ -25,9 +25,10 @@ def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Mo
     # HF uses 'num_labels' instead of 'num_classes'
     # 'ignore_mismatched_sizes' is critical: it allows loading weights 
     # from a 1000-class model into a 10-class model by discarding the head.
+    proxy = kwargs.pop("proxy", None)
     hf_args = {
         "num_labels": num_classes,
-        "ignore_mismatched_sizes": True
+        "ignore_mismatched_sizes": True,
     }
     
     # Merge with user kwargs (user args override defaults if collision)
@@ -35,7 +36,7 @@ def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Mo
 
     log.info(f"Initializing HF Model: {name} | Task: {task_type} | Args: {hf_args}")
     
-    with hpc_proxy():
+    with hpc_proxy(proxy):
         try:
             if task_type == "classification":
                 return AutoModelForImageClassification.from_pretrained(name, **hf_args)

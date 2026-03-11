@@ -1,7 +1,8 @@
 import json
 import os
 import random
-from typing import Dict
+from pathlib import Path
+from typing import Any, Dict
 import numpy as np
 import torch
 
@@ -46,13 +47,14 @@ def seed_everything(seed: int = 42) -> None:
     # logger.debug(f"Random seed set as {seed}")
 
 
-def read_json(filename):
-    assert os.path.isfile(filename), f"{filename} does not exist!"
-
-    with open(filename, "r") as f:
+def read_json(filename: str | os.PathLike[str]) -> Any:
+    path = Path(filename)
+    if not path.is_file():
+        raise FileNotFoundError(f"{path} does not exist")
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def write_json(data, filename):
-    with open(filename, "w") as f:
+def write_json(data: Any, filename: str | os.PathLike[str]) -> None:
+    with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)

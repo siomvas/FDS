@@ -1,24 +1,23 @@
-"""Configuration system for embedding-based data partitioning.
-
-This module provides a clean, user-friendly configuration API for the embedding
-pipeline. It supports:
-- Quick start with sensible presets
-- Fine-grained customization
-- Serialization/deserialization for reproducibility
-- Validation of all parameters
-
-User Stories Addressed:
-1. Quick experimentation with get_preset_config()
-2. Custom configurations with builder-style API
-3. Save/load from JSON for reproducibility
-4. Programmatic access and modification
-5. Simple cache management
-"""
+"""Configuration system for embedding-based data partitioning."""
 
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from pathlib import Path
 import json
+
+
+DEFAULT_CACHE_DIR = "./.embedding_cache"
+_EMBEDDING_CONFIG_FIELDS = {
+    "model",
+    "pooling",
+    "clustering",
+    "n_clients",
+    "cache_dir",
+    "cache_enabled",
+    "assignment_strategy",
+    "handle_noise",
+}
+_CUSTOM_CONFIG_KWARGS = {"batch_size", "pooling_strategy", "cache_dir", "cache_enabled"}
 
 
 # =============================================================================
@@ -145,7 +144,7 @@ class EmbeddingConfig:
         pooling: Pooling strategy configuration
         clustering: Clustering algorithm configuration
         n_clients: Number of federated learning clients
-        cache_dir: Directory for caching embeddings (default: /path/to/gtai/FDS/embedding_cache)
+        cache_dir: Directory for caching embeddings
         cache_enabled: Whether to enable embedding caching
         assignment_strategy: How to assign clusters to clients -
             "round_robin", "random", or "size_balanced"
@@ -176,7 +175,7 @@ class EmbeddingConfig:
     n_clients: int
 
     # Cache settings (simplified from old nested CacheConfig)
-    cache_dir: str = "./.embedding_cache"
+    cache_dir: str = DEFAULT_CACHE_DIR
     cache_enabled: bool = True
 
     # Cluster assignment settings
@@ -235,7 +234,7 @@ class EmbeddingConfig:
         json_str = json.dumps(self.to_dict(), indent=2)
 
         if filepath:
-            Path(filepath).write_text(json_str)
+            Path(filepath).write_text(json_str, encoding="utf-8")
 
         return json_str
 
@@ -258,21 +257,30 @@ class EmbeddingConfig:
             ... }
             >>> config = EmbeddingConfig.from_dict(config_dict)
         """
-        # Reconstruct nested dataclasses
+        if not isinstance(config_dict, dict):
+            raise TypeError(f"config_dict must be a mapping, got {type(config_dict).__name__}.")
+
+        missing = {"model", "pooling", "clustering", "n_clients"} - config_dict.keys()
+        if missing:
+            raise KeyError(f"Embedding config is missing required keys: {sorted(missing)}")
+
+        unexpected = set(config_dict) - _EMBEDDING_CONFIG_FIELDS
+        if unexpected:
+            raise KeyError(f"Embedding config has unexpected keys: {sorted(unexpected)}")
+
         model = ModelConfig(**config_dict["model"])
         pooling = PoolingConfig(**config_dict["pooling"])
         clustering = ClusteringConfig(**config_dict["clustering"])
 
-        # Build config with all fields
         return cls(
             model=model,
             pooling=pooling,
             clustering=clustering,
             n_clients=config_dict["n_clients"],
-            cache_dir=config_dict.get("cache_dir", "./.embedding_cache"),
-            cache_enabled=config_dict.get("cache_enabled", True),
-            assignment_strategy=config_dict.get("assignment_strategy", "round_robin"),
-            handle_noise=config_dict.get("handle_noise", "distribute"),
+            cache_dir=config_dict["cache_dir"] if "cache_dir" in config_dict else DEFAULT_CACHE_DIR,
+            cache_enabled=config_dict["cache_enabled"] if "cache_enabled" in config_dict else True,
+            assignment_strategy=config_dict["assignment_strategy"] if "assignment_strategy" in config_dict else "round_robin",
+            handle_noise=config_dict["handle_noise"] if "handle_noise" in config_dict else "distribute",
         )
 
     @classmethod
@@ -289,7 +297,7 @@ class EmbeddingConfig:
             >>> config = EmbeddingConfig.from_json("saved_config.json")
             >>> splits = splitter.get_client_splits()
         """
-        config_dict = json.loads(Path(filepath).read_text())
+        config_dict = json.loads(Path(filepath).read_text(encoding="utf-8"))
         return cls.from_dict(config_dict)
 
     def __repr__(self) -> str:
@@ -520,9 +528,13 @@ def create_custom_config(
     """
 
     # Extract kwargs
+    unexpected = set(kwargs) - _CUSTOM_CONFIG_KWARGS
+    if unexpected:
+        raise TypeError(f"Unexpected custom config kwargs: {sorted(unexpected)}")
+
     batch_size = kwargs.get("batch_size", 32)
     pooling_strategy = kwargs.get("pooling_strategy", "cls")
-    cache_dir = kwargs.get("cache_dir", "./.embedding_cache")
+    cache_dir = kwargs.get("cache_dir", DEFAULT_CACHE_DIR)
     cache_enabled = kwargs.get("cache_enabled", True)
 
     # Build config

@@ -14,10 +14,19 @@ different clients have different types of data.
 
 from pathlib import Path
 import logging
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Any
 import numpy as np
 import time
-import umap
+
+try:
+    import umap as _umap_module
+except Exception as exc:
+    umap = SimpleNamespace(UMAP=None)
+    _UMAP_IMPORT_ERROR = exc
+else:
+    umap = _umap_module
+    _UMAP_IMPORT_ERROR = None
 
 from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
 from data_loading.dataset import BaseDataset
@@ -27,6 +36,15 @@ from .embedding_utils.pooling_strategies import get_pooling_strategy
 from .embedding_utils.clustering_methods import get_clustering_method
 
 logger = logging.getLogger(__name__)
+
+
+def _require_umap():
+    if getattr(umap, "UMAP", None) is None:
+        raise ImportError(
+            "UMAP dimensionality reduction requires the optional dependency "
+            "'umap-learn' to be installed."
+        ) from _UMAP_IMPORT_ERROR
+    return umap
 
 class EmbeddingSplitter(BaseDatasetSplitter):
     """Splits datasets using embedding-based clustering for federated learning.
@@ -240,9 +258,13 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         
         # Validate layer aggregation if using last K layers
         if token_extraction_strategy in ["k_last_all", "k_last_cls"]:
+            if not isinstance(token_params, dict):
+                raise ValueError(
+                    "token_params must be provided as a mapping when using "
+                    "'k_last_all' or 'k_last_cls' extraction."
+                )
             try:
                 layer_aggregation = token_params["layer_aggregation"]
-                lastk_k = token_params["lastk_k"]
             except KeyError:
                 raise ValueError(
                     "token_params must include 'layer_aggregation' and 'lastk_k' "
@@ -290,12 +312,12 @@ class EmbeddingSplitter(BaseDatasetSplitter):
 
         self.extractor_name = extractor_name
         self.clustering_method = clustering_method.lower()
-        self.clustering_params = clustering_params or {}
+        self.clustering_params = {} if clustering_params is None else dict(clustering_params)
         self.token_extraction_strategy = token_extraction_strategy
         self.token_params = token_params
         self.pooling_strategy = pooling_strategy
-        self.pooling_params = pooling_params or {}
-        self.preprocessing_params = preprocessing_params or {}
+        self.pooling_params = {} if pooling_params is None else dict(pooling_params)
+        self.preprocessing_params = {} if preprocessing_params is None else dict(preprocessing_params)
         self.cache_dir = cache_dir
         self.dataset_name = dataset_name
         self.base_path = base_path
@@ -306,7 +328,7 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         self.num_workers = num_workers
 
         # need to persist the umap reducer if used
-        self.umap_reducer: Optional[umap.UMAP] = None
+        self.umap_reducer: Optional[Any] = None
 
         # Results stored after computation
         self.cluster_labels_: Optional[np.ndarray] = None
@@ -390,6 +412,10 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             embeddings = raw_embeddings
         else:
             if self.pooling_strategy == "lastk":
+                if "token_aggregation" not in self.pooling_params:
+                    raise ValueError(
+                        "pooling_params must include 'token_aggregation' when pooling_strategy='lastk'."
+                    )
                 self.layer_aggregation = self.token_params["layer_aggregation"]
                 token_agg = self.pooling_params["token_aggregation"]
                 # Last K layers pooling
@@ -426,7 +452,8 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         
         if args.get("dim_reduction", "none") == "umap":
             if fit:
-                self.umap_reducer = umap.UMAP(
+                umap_module = _require_umap()
+                self.umap_reducer = umap_module.UMAP(
                     n_components=args["dr_dims"],
                     n_neighbors=args["umap_neighbors"],
                     min_dist=args["umap_min_dist"],
@@ -474,8 +501,12 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         time_start = time.time()
         cluster_labels = clustering.cluster(embeddings)
         self.cluster_info_ = clustering.get_cluster_info()
+        if "num_clusters" not in self.cluster_info_:
+            raise RuntimeError(
+                f"Clustering method '{self.clustering_method}' did not report 'num_clusters'."
+            )
 
-        num_clusters = self.cluster_info_.get("num_clusters", 0)
+        num_clusters = int(self.cluster_info_["num_clusters"])
         time_end = time.time()
         logger.info("Found %d clusters in %.2f seconds.", num_clusters, time_end - time_start)
 

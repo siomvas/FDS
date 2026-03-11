@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Run Tiny-ImageNet embedding + multivariate partitioning audit.
 
-This script implements the end-to-end audit workflow described in
-`audit/embedding_partitioning/matrix_manifest.yaml`:
+This script implements the end-to-end embedding partitioning audit workflow:
 1. Baseline checks
 2. Embedding matrix sweeps (default families + variant smoke + tiered confirmations)
 3. Reproducibility and cache checks
@@ -31,7 +30,6 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-import yaml
 
 from data_loading.data_modules import get_datamodule
 from data_loading.dataset import BaseDataset
@@ -39,6 +37,7 @@ from embedding.cache_manager import CacheManager
 from embedding.embedding_extractors import ModelRegistry
 from fl_training.engines.classification import ClassificationEngine
 from partitioning.embedding_splitter import EmbeddingSplitter
+from research import create_manifest, create_result, write_manifest, write_result, write_results_index
 
 
 log = logging.getLogger("embedding_matrix_audit")
@@ -109,28 +108,6 @@ FL_SMOKE_TARGETS = [
     {"n_clients": 2, "alpha": 0.1, "seed": 42},
     {"n_clients": 2, "alpha": 5.0, "seed": 42},
     {"n_clients": 10, "alpha": 0.5, "seed": 42},
-]
-
-RUN_RESULTS_COLUMNS = [
-    "run_id",
-    "phase",
-    "tier",
-    "extractor",
-    "clustering",
-    "seed",
-    "subset_train",
-    "subset_val",
-    "cap_reason",
-    "status",
-    "duration_sec",
-    "n_clients",
-    "cluster_count",
-    "train_samples",
-    "val_samples",
-    "split_path",
-    "split_hash",
-    "error_type",
-    "error_message",
 ]
 
 BACKLOG_COLUMNS = [
@@ -233,6 +210,61 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def persist_audit_run(
+    *,
+    output_root: Path,
+    run_id: str,
+    dataset_name: str,
+    dataset_root: str,
+    status: str,
+    summary: Dict[str, Any],
+    metrics: Optional[Dict[str, Any]] = None,
+    failure: Optional[Dict[str, Any]] = None,
+    partition: Optional[Dict[str, Any]] = None,
+    model: Optional[Dict[str, Any]] = None,
+    resolved_config: Optional[Dict[str, Any]] = None,
+    artifacts: Optional[Dict[str, Any]] = None,
+    seed: Optional[int] = None,
+    extras: Optional[Dict[str, Any]] = None,
+) -> None:
+    run_dir = output_root / run_id
+    ensure_dir(run_dir)
+    manifest = create_manifest(
+        run_id=run_id,
+        script_name="scripts/run_embedding_matrix_audit.py",
+        command=list(sys.argv),
+        resolved_config=resolved_config or {},
+        dataset={
+            "name": dataset_name,
+            "base_path": dataset_root,
+            "split": "audit",
+        },
+        partition=partition or {},
+        model=model or {},
+        seed=seed,
+        artifacts={
+            "run_dir": str(run_dir),
+            "manifest_path": str(run_dir / "run_manifest.json"),
+            "result_path": str(run_dir / "result.json"),
+            **(artifacts or {}),
+        },
+        extras=extras or {},
+    )
+    write_manifest(run_dir, manifest)
+    write_result(
+        run_dir,
+        create_result(
+            run_id=run_id,
+            result_type="audit_run",
+            status=status,
+            summary=summary,
+            metrics=metrics or {},
+            artifacts=artifacts or {},
+            failure=failure,
+        ),
+    )
+
+
 def write_csv(path: Path, rows: List[Dict[str, Any]], columns: List[str]) -> None:
     ensure_dir(path.parent)
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -268,10 +300,17 @@ def load_vlm_maps(vlm_root: Path) -> Tuple[Dict[str, Dict[str, str]], Dict[str, 
 def validate_split_invariants(
     splits: Dict[str, Any], expected_train_count: int
 ) -> Dict[str, Any]:
-    clients = splits.get("clients", {})
+    clients = splits.get("clients")
+    if not isinstance(clients, dict):
+        raise KeyError("Split payload is missing a valid 'clients' mapping.")
+
     train_paths: List[str] = []
-    for block in clients.values():
-        for sample in block.get("train", []):
+    for client_id, block in clients.items():
+        if "train" not in block or not isinstance(block["train"], list):
+            raise KeyError(f"Client '{client_id}' is missing a valid 'train' list.")
+        for sample in block["train"]:
+            if not isinstance(sample, dict) or "image" not in sample:
+                raise KeyError(f"Client '{client_id}' has a train sample without an 'image' field.")
             train_paths.append(str(sample["image"]))
 
     total_train = len(train_paths)
@@ -460,7 +499,7 @@ def run_embedding_combo(
         split_hash = file_sha256(split_path)
 
         summary = splitter.get_split_summary()
-        row["status"] = "passed"
+        row["status"] = "success"
         row["n_clients"] = summary["n_clients"]
         row["cluster_count"] = splitter.cluster_info_.get("num_clusters", "")
         row["train_samples"] = summary.get("total_train_samples", "")
@@ -491,6 +530,73 @@ def run_embedding_combo(
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     row["duration_sec"] = f"{elapsed:.2f}"
+    persist_audit_run(
+        output_root=output_dir,
+        run_id=run_id,
+        dataset_name=dataset_name,
+        dataset_root=dataset_root,
+        status=row["status"],
+        summary={
+            "phase": phase,
+            "tier": tier,
+            "extractor": extractor,
+            "clustering": clustering,
+            "seed": seed,
+            "subset_train": row["subset_train"],
+            "subset_val": row["subset_val"],
+            "cap_reason": row["cap_reason"],
+            "n_clients": row["n_clients"],
+            "cluster_count": row["cluster_count"],
+            "train_samples": row["train_samples"],
+            "val_samples": row["val_samples"],
+            "split_path": row["split_path"],
+            "split_hash": row["split_hash"],
+            "duration_sec": row["duration_sec"],
+        },
+        partition={
+            "path": row["split_path"],
+            "filename": Path(row["split_path"]).name,
+            "sha256": row["split_hash"] or None,
+            "method": "embedding_audit",
+            "n_clients": row["n_clients"] or None,
+        },
+        model={
+            "name": extractor,
+            "task_type": "embedding_partition_audit",
+            "args": {
+                "clustering": clustering,
+                "batch_size": batch_size,
+                "num_workers": num_workers,
+                "proxy": proxy,
+            },
+        },
+        resolved_config={
+            "phase": phase,
+            "tier": tier,
+            "extractor": extractor,
+            "clustering": clustering,
+            "seed": seed,
+            "subset_train": subset_train,
+            "subset_val": subset_val,
+            "cache_dir": str(cache_dir),
+            "device": device,
+            "batch_size": batch_size,
+            "num_workers": num_workers,
+            "proxy": proxy,
+        },
+        artifacts={
+            "split_path": row["split_path"],
+            "trace_path": str(output_dir / "logs" / f"{run_id}.trace.txt"),
+        },
+        seed=seed,
+        failure=None
+        if row["status"] == "success"
+        else {
+            "error_type": row["error_type"] or "RuntimeError",
+            "error_message": row["error_message"] or "Embedding audit run failed.",
+            "stage": "embedding_combo",
+        },
+    )
     return row
 
 
@@ -598,8 +704,8 @@ def run_fl_smoke(
             "lr": 1e-3,
             "lr_min": 0.0,
             "scheduler": "none",
+            "optimizer": {"class_name": "Adam", "args": {}},
         },
-        "optimizer": {"class_name": "Adam", "args": {}},
         "fed": {"rounds": 1},
     }
 
@@ -709,15 +815,7 @@ def load_selected_run_ids(args: argparse.Namespace) -> Optional[set[str]]:
                         if rid:
                             selected.add(rid)
                 else:
-                    # Fallback: first CSV column if no named run_id column.
-                    f.seek(0)
-                    raw_reader = csv.reader(f)
-                    for raw in raw_reader:
-                        if not raw:
-                            continue
-                        rid = raw[0].strip()
-                        if rid and rid.lower() != "run_id":
-                            selected.add(rid)
+                    raise ValueError(f"CSV run_ids_file must contain a 'run_id' column: {path}")
         else:
             for line in path.read_text(encoding="utf-8").splitlines():
                 rid = line.strip()
@@ -754,25 +852,6 @@ def main() -> int:
         if selected_run_ids is None:
             return True
         return run_id in selected_run_ids
-
-    manifest = {
-        "created_at_utc": now_utc(),
-        "dataset_name": args.dataset_name,
-        "dataset_root": dataset_root,
-        "vlm_labels_dir": str(vlm_labels_dir),
-        "default_family_matrix": DEFAULT_FAMILY_MATRIX,
-        "variant_smoke_matrix": VARIANT_SMOKE_MATRIX,
-        "clustering_presets": CLUSTERING_PRESETS,
-        "tier_sizes": {
-            "tier1": {"train": args.tier1_train, "val": args.tier1_val},
-            "tier2": {"train": args.tier2_train, "val": args.tier2_val},
-            "tier2_spectral_cap": {"train": args.tier2_spectral_train, "val": args.tier2_spectral_val},
-            "tier3": {"train": "full", "val": "full"},
-        },
-        "seeds": [args.seed_primary, args.seed_secondary],
-        "proxy": proxy,
-    }
-    (audit_dir / "matrix_manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
 
     # ---------------------------------------------------------------------
     # Phase 0: baseline
@@ -901,7 +980,7 @@ def main() -> int:
             passed_tier1 = [
                 {
                     "tier": "tier1",
-                    "status": "passed",
+                    "status": "success",
                     "extractor": extractor,
                     "clustering": clustering,
                 }
@@ -911,7 +990,7 @@ def main() -> int:
         else:
             passed_tier1 = [
                 row for row in run_rows
-                if row["tier"] == "tier1" and row["status"] == "passed"
+                if row["tier"] == "tier1" and row["status"] == "success"
             ]
         for prior in passed_tier1:
             clustering = prior["clustering"]
@@ -1060,7 +1139,7 @@ def main() -> int:
             )
             run_rows.append(diff_seed)
 
-        if same_seed_a is not None and same_seed_b is not None and same_seed_a["status"] == "passed" and same_seed_b["status"] == "passed":
+        if same_seed_a is not None and same_seed_b is not None and same_seed_a["status"] == "success" and same_seed_b["status"] == "success":
             equal_same_seed = same_seed_a["split_hash"] == same_seed_b["split_hash"]
             repro_checks.append(
                 {"check": "same_seed_equal", "result": equal_same_seed, "a": same_seed_a["split_hash"], "b": same_seed_b["split_hash"]}
@@ -1079,7 +1158,7 @@ def main() -> int:
                     )
                 )
 
-        if same_seed_a is not None and diff_seed is not None and same_seed_a["status"] == "passed" and diff_seed["status"] == "passed":
+        if same_seed_a is not None and diff_seed is not None and same_seed_a["status"] == "success" and diff_seed["status"] == "success":
             changed_diff_seed = same_seed_a["split_hash"] != diff_seed["split_hash"]
             repro_checks.append(
                 {"check": "diff_seed_changes", "result": changed_diff_seed, "a": same_seed_a["split_hash"], "b": diff_seed["split_hash"]}
@@ -1175,6 +1254,41 @@ def main() -> int:
                     test_delta="Add direct cache probe regression to automated audit.",
                 )
             )
+        persist_audit_run(
+            output_root=audit_dir,
+            run_id="cache_probe",
+            dataset_name=args.dataset_name,
+            dataset_root=dataset_root,
+            status="success"
+            if cache_checks["cache_hit_after"] and cache_checks["values_equal"]
+            else "failed",
+            summary={
+                "phase": "cache_check",
+                "probe_model": "raw_pixel_resizer-64",
+                "sample_count": len(images),
+            },
+            metrics=cache_checks,
+            model={
+                "name": "raw_pixel_resizer-64",
+                "task_type": "cache_probe",
+            },
+            resolved_config={
+                "cache_dir": str(cache_probe_dir),
+                "batch_size": args.batch_size,
+                "device": args.device,
+            },
+            artifacts={
+                "cache_dir": str(cache_probe_dir),
+            },
+            seed=args.seed_primary,
+            failure=None
+            if cache_checks["cache_hit_after"] and cache_checks["values_equal"]
+            else {
+                "error_type": "CacheProbeFailed",
+                "error_message": json.dumps(cache_checks),
+                "stage": "cache_check",
+            },
+        )
 
     # ---------------------------------------------------------------------
     # Phase 4: multivariate VLM audit
@@ -1196,7 +1310,36 @@ def main() -> int:
             vlm_labels_dir=vlm_labels_dir,
             findings=findings,
         )
-        (audit_dir / "logs" / "multivariate_generation.log").write_text(cmd_output, encoding="utf-8")
+        generation_log = audit_dir / "logs" / "multivariate_generation.log"
+        generation_log.write_text(cmd_output, encoding="utf-8")
+        persist_audit_run(
+            output_root=audit_dir,
+            run_id="multivariate_generation",
+            dataset_name=args.dataset_name,
+            dataset_root=dataset_root,
+            status="success" if rc == 0 else "failed",
+            summary={
+                "phase": "multivariate_generation",
+                "output_dir": str(multivariate_dir),
+            },
+            resolved_config={
+                "vlm_labels_dir": str(vlm_labels_dir),
+                "n_clients": [2, 6, 10],
+                "alphas": [0.1, 0.5, 1.0, 5.0],
+                "seeds": [42, 99],
+            },
+            artifacts={
+                "generation_log": str(generation_log),
+                "output_dir": str(multivariate_dir),
+            },
+            failure=None
+            if rc == 0
+            else {
+                "error_type": "MultivariateGenerationFailed",
+                "error_message": f"Command returned {rc}",
+                "stage": "multivariate_generation",
+            },
+        )
 
         specialization_by_alpha: Dict[float, List[float]] = defaultdict(list)
         for n_clients in [2, 6, 10]:
@@ -1252,6 +1395,50 @@ def main() -> int:
                                     test_delta="Add invariant assertions for this VLM configuration.",
                                 )
                             )
+                    persist_audit_run(
+                        output_root=audit_dir,
+                        run_id=f"vlm_validate_n{n_clients}_a{alpha}_s{seed}",
+                        dataset_name=args.dataset_name,
+                        dataset_root=dataset_root,
+                        status="success" if row["status"] == "validated" and row["no_overlap"] and row["full_coverage"] and row["min_samples_ok"] else "failed",
+                        summary={
+                            "phase": "multivariate_validation",
+                            "n_clients": n_clients,
+                            "alpha": alpha,
+                            "seed": seed,
+                            "file": str(path),
+                        },
+                        metrics={
+                            "no_overlap": row["no_overlap"],
+                            "full_coverage": row["full_coverage"],
+                            "min_samples_ok": row["min_samples_ok"],
+                            "specialization_score": row["specialization_score"],
+                        },
+                        partition={
+                            "path": str(path),
+                            "filename": path.name,
+                            "sha256": file_sha256(path) if path.exists() else None,
+                            "method": "vlm",
+                            "n_clients": n_clients,
+                            "heterogeneity": alpha,
+                        },
+                        resolved_config={
+                            "alpha": alpha,
+                            "n_clients": n_clients,
+                            "seed": seed,
+                        },
+                        artifacts={
+                            "split_file": str(path),
+                        },
+                        seed=seed,
+                        failure=None
+                        if row["status"] == "validated" and row["no_overlap"] and row["full_coverage"] and row["min_samples_ok"]
+                        else {
+                            "error_type": "MultivariateValidationFailed",
+                            "error_message": json.dumps(row),
+                            "stage": "multivariate_validation",
+                        },
+                    )
                     multivariate_rows.append(row)
 
         low_alpha_mean = float(np.mean(specialization_by_alpha[0.1])) if specialization_by_alpha[0.1] else 0.0
@@ -1270,6 +1457,29 @@ def main() -> int:
                     test_delta="Add alpha monotonicity guardrail test over fixed seeds.",
                 )
             )
+        persist_audit_run(
+            output_root=audit_dir,
+            run_id="vlm_alpha_order",
+            dataset_name=args.dataset_name,
+            dataset_root=dataset_root,
+            status="success" if heterogeneity_order_ok else "failed",
+            summary={
+                "phase": "multivariate_validation",
+                "check": "alpha_order",
+            },
+            metrics={
+                "low_alpha_mean": low_alpha_mean,
+                "high_alpha_mean": high_alpha_mean,
+            },
+            resolved_config={"low_alpha": 0.1, "high_alpha": 5.0},
+            failure=None
+            if heterogeneity_order_ok
+            else {
+                "error_type": "HeterogeneityOrderFailed",
+                "error_message": f"low_alpha_mean={low_alpha_mean:.6f}, high_alpha_mean={high_alpha_mean:.6f}",
+                "stage": "multivariate_validation",
+            },
+        )
 
         # FL smoke on representative VLM splits
         if not args.skip_fl_smoke:
@@ -1311,23 +1521,53 @@ def main() -> int:
                             test_delta="Add this split to stable FL smoke regression set.",
                         )
                     )
+                persist_audit_run(
+                    output_root=audit_dir,
+                    run_id=f"fl_smoke_n{target['n_clients']}_a{target['alpha']}_s{target['seed']}",
+                    dataset_name=args.dataset_name,
+                    dataset_root=dataset_root,
+                    status="success" if row["status"] == "passed" else "failed",
+                    summary={
+                        "phase": "fl_smoke",
+                        "n_clients": target["n_clients"],
+                        "alpha": target["alpha"],
+                        "seed": target["seed"],
+                        "split_file": str(split_path),
+                    },
+                    metrics={
+                        "train_loss": row["train_loss"],
+                        "val_loss": row["val_loss"],
+                        "accuracy": row["accuracy"],
+                        "num_steps_current_round": row["num_steps_current_round"],
+                    },
+                    partition={
+                        "path": str(split_path),
+                        "filename": split_path.name,
+                        "sha256": file_sha256(split_path) if split_path.exists() else None,
+                        "method": "vlm",
+                        "n_clients": target["n_clients"],
+                        "heterogeneity": target["alpha"],
+                    },
+                    resolved_config=target,
+                    artifacts={
+                        "split_file": str(split_path),
+                    },
+                    seed=target["seed"],
+                    failure=None
+                    if row["status"] == "passed"
+                    else {
+                        "error_type": "FLSmokeFailed",
+                        "error_message": row["error"],
+                        "stage": "fl_smoke",
+                    },
+                )
                 fl_rows.append(row)
 
     # ---------------------------------------------------------------------
     # Phase 5: reporting
     # ---------------------------------------------------------------------
     log.info("Phase 5: writing reports")
-    write_csv(audit_dir / "run_results.csv", run_rows, RUN_RESULTS_COLUMNS)
-    write_csv(
-        audit_dir / "multivariate_validation.csv",
-        multivariate_rows,
-        list(multivariate_rows[0].keys()) if multivariate_rows else ["file"],
-    )
-    write_csv(
-        audit_dir / "fl_smoke_results.csv",
-        fl_rows,
-        list(fl_rows[0].keys()) if fl_rows else ["split_file"],
-    )
+    write_results_index(audit_dir, result_type="audit_run")
     write_csv(audit_dir / "backlog.csv", [f.to_backlog_row() for f in findings], BACKLOG_COLUMNS)
 
     failures_lines = ["# Failures", ""]
@@ -1378,8 +1618,8 @@ def main() -> int:
         )
     (audit_dir / "fl_smoke_report.md").write_text("\n".join(fl_report_lines) + "\n", encoding="utf-8")
 
-    passed_runs = len([r for r in run_rows if r["status"] == "passed"])
-    failed_runs = len([r for r in run_rows if r["status"] != "passed"])
+    passed_runs = len([r for r in run_rows if r["status"] == "success"])
+    failed_runs = len([r for r in run_rows if r["status"] != "success"])
     open_p0 = len([f for f in open_findings if f.severity == "P0"])
     open_p1 = len([f for f in open_findings if f.severity == "P1"])
     closure_lines = [

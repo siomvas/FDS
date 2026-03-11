@@ -116,6 +116,7 @@ See Also
 
 from abc import ABC, abstractmethod
 import logging
+import warnings
 from typing import Dict, List, Optional, Type, Union, Any
 import os
 import json
@@ -131,19 +132,39 @@ from tqdm import tqdm
 
 from data_loading.dataset import to_image_dataset
 from embedding.cache_manager import CacheManager
-from utils.proxy_config import hpc_proxy
 
-from transformers import (
-    AutoImageProcessor,
-    AutoModel,
-    CLIPVisionModel,
-    CLIPImageProcessor,
-    SiglipVisionModel,
-    SiglipImageProcessor,
-    ViTMAEModel,
-)
+try:
+    from transformers import (
+        AutoImageProcessor,
+        AutoModel,
+        CLIPVisionModel,
+        CLIPImageProcessor,
+        SiglipVisionModel,
+        SiglipImageProcessor,
+        ViTMAEModel,
+    )
+except ImportError as exc:
+    AutoImageProcessor = None
+    AutoModel = None
+    CLIPVisionModel = None
+    CLIPImageProcessor = None
+    SiglipVisionModel = None
+    SiglipImageProcessor = None
+    ViTMAEModel = None
+    _TRANSFORMERS_IMPORT_ERROR = exc
+else:
+    _TRANSFORMERS_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
+_PROXY_UNSET = object()
+
+
+def _require_transformers() -> None:
+    if _TRANSFORMERS_IMPORT_ERROR is not None:
+        raise ImportError(
+            "Transformer-backed embedding extractors require the optional dependency "
+            "'transformers' to be installed."
+        ) from _TRANSFORMERS_IMPORT_ERROR
 
 
 class ModelRegistry:
@@ -352,7 +373,7 @@ class EmbeddingExtractor(ABC):
         device: Optional[Union[str, torch.device]] = None,
         batch_size: int = 64,
         num_workers: int = 0,
-        proxy: Optional[str] ='http://proxy.example.org:3128',
+        proxy: Optional[str] = None,
         model_dir: Optional[str] = None,
         cache_manager: Optional[CacheManager] = None,
     ):
@@ -377,15 +398,51 @@ class EmbeddingExtractor(ABC):
 
         # Use provided CacheManager or create a local one if None is passed but we want caching
         self.cache_manager = cache_manager
+        self._original_https_proxy: Any = _PROXY_UNSET
+        self._proxy_override_active = False
 
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
+        self.device = self._resolve_device(device)
 
         self.model: Optional[nn.Module] = None
         self.processor: Any = None
         self.transform: Any = None
+
+    def _resolve_device(self, requested: Optional[Union[str, torch.device]]) -> torch.device:
+        if requested is None:
+            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        device = torch.device(requested)
+        if device.type != "cuda":
+            return device
+        if torch.cuda.is_available():
+            return device
+
+        message = (
+            f"CUDA was requested for '{self.model_name}' but is unavailable in this environment. "
+            "Falling back to CPU; embedding extraction may take a long time."
+        )
+        logger.warning(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+        return torch.device("cpu")
+
+    def _setup_proxy_for_download(self) -> None:
+        self._original_https_proxy = os.environ.get("https_proxy", _PROXY_UNSET)
+        if self.proxy is None:
+            self._proxy_override_active = False
+            return
+        os.environ["https_proxy"] = self.proxy
+        self._proxy_override_active = True
+
+    def _cleanup_proxy_after_download(self) -> None:
+        if not self._proxy_override_active:
+            self._original_https_proxy = _PROXY_UNSET
+            return
+        if self._original_https_proxy is _PROXY_UNSET:
+            os.environ.pop("https_proxy", None)
+        else:
+            os.environ["https_proxy"] = self._original_https_proxy
+        self._original_https_proxy = _PROXY_UNSET
+        self._proxy_override_active = False
 
     def _download_model_with_proxy(self, download_func, *args, **kwargs) -> Any:
         """Wrapper for model downloads with centralized proxy configuration.
@@ -401,24 +458,35 @@ class EmbeddingExtractor(ABC):
         Returns:
             Downloaded model object
         """
-        with hpc_proxy(self.proxy):
+        self._setup_proxy_for_download()
+        try:
             if self.model_dir:
-                kwargs['local_files_only'] = True
                 model_path = self.model_dir / self.model_name.replace("/", "--")
                 if model_path.exists():
                     logger.info("Loading model from local directory: %s", model_path)
+                    kwargs["local_files_only"] = True
                     return download_func(str(model_path), *args[1:], **kwargs)
-                else:
-                    logger.info("Model not found in %s. Will try to download.", model_path)
+                logger.info("Model not found in %s. Will try to download.", model_path)
 
             return download_func(*args, **kwargs)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load model assets for '{self.model_name}'. "
+                f"proxy={self.proxy!r}, model_dir={str(self.model_dir) if self.model_dir else None}."
+            ) from exc
+        finally:
+            self._cleanup_proxy_after_download()
 
     def _save_model_locally(self, model, processor) -> None:
         if self.model_dir:
             model_path = self.model_dir / self.model_name.replace("/", "--")
             model_path.mkdir(parents=True, exist_ok=True)
+            if not hasattr(model, "save_pretrained"):
+                raise TypeError(
+                    f"Model '{self.model_name}' does not support local save_pretrained() persistence."
+                )
             model.save_pretrained(str(model_path))
-            if processor:
+            if processor and hasattr(processor, "save_pretrained"):
                 processor.save_pretrained(str(model_path))
             logger.info("Model saved locally to: %s", model_path)
 
@@ -489,6 +557,9 @@ class EmbeddingExtractor(ABC):
         base_path: Optional[str] = None,
         **kwargs: Any,
     ) -> np.ndarray:
+        valid_token_modes = {"cls", "all_last", "k_last_cls", "k_last_all"}
+        if return_which_tokens not in valid_token_modes:
+            raise ValueError(f"Invalid return_which_tokens '{return_which_tokens}'")
         
         # Define cache parameters
         cache_params = {
@@ -513,7 +584,7 @@ class EmbeddingExtractor(ABC):
                 logger.info("Cache miss for %s; computing embeddings.", self.model_name)
 
         # 2. Compute if not cached
-        if not self.model:
+        if self.model is None:
             self.load_model()
 
         all_embeddings = []
@@ -608,6 +679,11 @@ class InceptionExtractor(EmbeddingExtractor):
         ])
 
         def _load_inception(*args, **kwargs):
+            if kwargs.get("local_files_only"):
+                raise ValueError(
+                    "InceptionExtractor does not support loading from model_dir; "
+                    "torchvision weights are managed by torch's own cache."
+                )
             return models.inception_v3(weights='IMAGENET1K_V1', transform_input=False)
 
         self.model = self._download_model_with_proxy(_load_inception)
@@ -652,7 +728,7 @@ class InceptionExtractor(EmbeddingExtractor):
                 )
                 logger.debug("Cache params for %s: %s", self.model_name, cache_params)
 
-        if not self.model:
+        if self.model is None:
             self.load_model()
 
         all_embeddings = []
@@ -726,6 +802,7 @@ class MAEExtractor(EmbeddingExtractor):
         self.hf_model_path = self.VARIANTS[variant]
 
     def load_model(self) -> None:
+        _require_transformers()
         logger.info("Loading MAE %s.", self.variant)
         self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.hf_model_path)
         self.model = self._download_model_with_proxy(ViTMAEModel.from_pretrained, self.hf_model_path)
@@ -735,6 +812,7 @@ class MAEExtractor(EmbeddingExtractor):
     def get_embedding_dim(self) -> int:
         return {"base": 768, "large": 1024, "huge": 1280}[self.variant]
 
+@ModelRegistry.register("dino")
 @ModelRegistry.register("dinov2")
 class DINOv2Extractor(EmbeddingExtractor):
     """DINOv2 self-supervised Vision Transformer feature extractor.
@@ -771,6 +849,7 @@ class DINOv2Extractor(EmbeddingExtractor):
         self.variant = variant
         self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
+        _require_transformers()
         logger.info("Loading DINOv2 %s.", self.variant)
         self.processor = self._download_model_with_proxy(AutoImageProcessor.from_pretrained, self.hf_model_path)
         self.model = self._download_model_with_proxy(AutoModel.from_pretrained, self.hf_model_path)
@@ -778,7 +857,7 @@ class DINOv2Extractor(EmbeddingExtractor):
         self.model.to(self.device)
         self.model.eval()
     def get_embedding_dim(self) -> int:
-        return {"small": 384, "base": 768, "large": 1024, "giant": 1536}.get(self.variant, 768)
+        return {"small": 384, "base": 768, "large": 1024, "giant": 1536}[self.variant]
 
 @ModelRegistry.register("clip")
 class CLIPExtractor(EmbeddingExtractor):
@@ -820,6 +899,7 @@ class CLIPExtractor(EmbeddingExtractor):
         self.variant = variant
         self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
+        _require_transformers()
         logger.info("Loading CLIP %s.", self.variant)
         self.processor = self._download_model_with_proxy(CLIPImageProcessor.from_pretrained, self.hf_model_path, use_safetensors=True)
         self.model = self._download_model_with_proxy(CLIPVisionModel.from_pretrained, self.hf_model_path, use_safetensors=True)
@@ -870,6 +950,7 @@ class SigLIPExtractor(EmbeddingExtractor):
         self.variant = variant
         self.hf_model_path = self.VARIANTS[variant]
     def load_model(self) -> None:
+        _require_transformers()
         logger.info("Loading SigLIP %s.", self.variant)
         self.processor = self._download_model_with_proxy(SiglipImageProcessor.from_pretrained, self.hf_model_path)
         self.model = self._download_model_with_proxy(SiglipVisionModel.from_pretrained, self.hf_model_path)
@@ -952,7 +1033,7 @@ class RawPixelResizerExtractor(EmbeddingExtractor):
             if cached_data is not None:
                 return cached_data
 
-        if not self.model:
+        if self.model is None:
             self.load_model()
 
         all_embeddings = []
@@ -1312,9 +1393,12 @@ class WaveletScatteringExtractor(EmbeddingExtractor):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
-        # Handle potential downloads for kymatio filters with proxy
-        with hpc_proxy(self.proxy):
+        # Handle potential downloads for kymatio filters with an explicit proxy when requested.
+        self._setup_proxy_for_download()
+        try:
             self.scattering = Scattering2D(J=self.J, shape=(self.input_size, self.input_size)).to(self.device)
+        finally:
+            self._cleanup_proxy_after_download()
             
         self.model = None
 

@@ -99,6 +99,8 @@ class BaseDatasetSplitter(ABC):
 
         if valset_type in ["local", "global"] and val_dataset is None:
             raise ValueError(f"val_dataset must be provided when valset_type is '{valset_type}'")
+        if n_clients < 1:
+            raise ValueError(f"n_clients must be >= 1, got {n_clients}")
 
         if valset_type == "none" and val_dataset is not None:
             logger.warning("val_dataset provided while valset_type='none'; val_dataset will be ignored.")
@@ -196,7 +198,7 @@ class BaseDatasetSplitter(ABC):
 
         normalized_format = format.lower()
         if normalized_format == "json":
-            with open(filename, "w") as f:
+            with open(filename, "w", encoding="utf-8") as f:
                 serializable_splits = self._make_serializable(splits)
                 json.dump(serializable_splits, f, indent=2)
         elif normalized_format in {"pkl", "pickle"}:
@@ -341,13 +343,15 @@ class BaseDatasetSplitter(ABC):
         """
         normalized_format = format.lower()
         if normalized_format == "json":
-            with open(filename, "r") as f:
+            with open(filename, "r", encoding="utf-8") as f:
                 self.splits = json.load(f)
         elif normalized_format in {"pkl", "pickle"}:
             with open(filename, "rb") as f:
                 self.splits = pickle.load(f)
         else:
             raise ValueError(f"Unsupported format '{format}'. Use 'json' or 'pkl'/'pickle'.")
+
+        self.validate_splits(self.splits)
 
         return self.splits  # type: ignore[return-value]
 

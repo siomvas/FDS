@@ -2,6 +2,7 @@ import json
 import base64
 import logging
 from pathlib import Path
+import sys
 
 import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
@@ -10,7 +11,8 @@ from omegaconf import DictConfig, OmegaConf
 from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe
 from nvflare.recipe import SimEnv, add_experiment_tracking
 
-from fl_training.models.factory import create_model
+from fl_training.models.factory import create_model, validate_model_contract
+from research import create_manifest, create_result, file_sha256, write_manifest, write_result
 
 log = logging.getLogger(__name__)
 
@@ -103,13 +105,21 @@ def get_initial_model(cfg: DictConfig) -> nn.Module:
     
     num_classes = cfg.training.num_classes
 
-    log.info(f"Initializing Server Model via Factory | Task: {task_type} | Classes: {num_classes} | Model Config: {model_cfg}")
+    validated = validate_model_contract(
+        model_cfg,
+        task_type=str(task_type),
+        num_classes=int(num_classes),
+    )
+    log.info(
+        "Initializing Server Model via Factory | Task: %s | Classes: %s | Model Config: %s",
+        task_type,
+        num_classes,
+        model_cfg,
+    )
 
-    provider = str(model_cfg.get("provider", "timm"))
-    name = str(model_cfg.get("name"))
-    model_args = model_cfg.get("args", {})
-    if not isinstance(model_args, dict):
-        raise TypeError(f"model.args must be a mapping, got {type(model_args).__name__}.")
+    provider = validated["provider"]
+    name = validated["name"]
+    model_args = validated["args"]
 
     # Use a persistable wrapper so NVFlare can safely reconstruct the model.
     model_args_b64 = base64.urlsafe_b64encode(
@@ -119,60 +129,157 @@ def get_initial_model(cfg: DictConfig) -> nn.Module:
     return PersistableFactoryModel(
         provider=provider,
         name=name,
-        task_type=str(task_type),
-        num_classes=int(num_classes),
+        task_type=validated["task_type"],
+        num_classes=validated["num_classes"],
         model_args_b64=model_args_b64,
     )
+
+
+def _dataset_metadata(cfg: DictConfig) -> dict:
+    dataset_cfg = OmegaConf.to_container(cfg.dataset, resolve=True)
+    dataset_splits = dataset_cfg.get("dataset_splits")
+    partition = {
+        "path": dataset_splits,
+        "filename": Path(dataset_splits).name if dataset_splits else None,
+        "sha256": file_sha256(Path(dataset_splits)) if dataset_splits and Path(dataset_splits).exists() else None,
+    }
+    dataset = {
+        "name": dataset_cfg.get("name") or dataset_cfg.get("class_path") or "unknown",
+        "base_path": (dataset_cfg.get("args") or {}).get("root"),
+        "class_path": dataset_cfg.get("class_path"),
+        "split": "federated",
+    }
+    return {"dataset": dataset, "partition": partition}
+
 
 def run_job(cfg: DictConfig):
     """
     Builds and executes the FedAvgRecipe using the Config Payload pattern.
     """
-    
-    # -------------------------------------------------------------------------
-    # 1. Payload Generation
-    # -------------------------------------------------------------------------
-    # Instead of manual args, we create one robust payload.
-    config_payload = encode_config(cfg)
-
-    # We pass the Task Type explicitly for client_entry.py
-    # to route quickly, and the Payload for everything else.
-    train_args = (
-        f"--task_type {cfg.training.task_type} "
-        f"--config_payload {config_payload}"
-    )
-    
-    log.info(f"Client Launch Command Args: {train_args}")
-
-    # -------------------------------------------------------------------------
-    # 2. Server Setup
-    # -------------------------------------------------------------------------
-    initial_model = get_initial_model(cfg)
-
-    recipe = FedAvgRecipe(
-        name=cfg.name,
-        initial_model=initial_model,
-        min_clients=cfg.fed.n_clients,
-        num_rounds=cfg.fed.rounds,
-        train_script=str(Path(__file__).parent / "client_entry.py"), 
-        train_args=train_args,
-    )
-
-    add_experiment_tracking(recipe, tracking_type="tensorboard")
-
-    # -------------------------------------------------------------------------
-    # 3. Execution
-    # -------------------------------------------------------------------------
-    log.info(f"Launching NVFlare Simulation: {cfg.name}")
-    
     workspace_path = Path(cfg.paths.output_dir) / cfg.name
-
-    env = SimEnv(
-        num_clients=cfg.fed.n_clients,
-        gpu_config=_normalize_gpu_config(cfg.system.gpu_ids),
-        workspace_root=str(workspace_path)
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    gpu_config = _normalize_gpu_config(cfg.system.gpu_ids)
+    metadata = _dataset_metadata(cfg)
+    validated_model = validate_model_contract(
+        OmegaConf.to_container(cfg.model, resolve=True),
+        task_type=str(cfg.training.task_type),
+        num_classes=int(cfg.training.num_classes),
     )
-    run_status = recipe.execute(env=env)
-    
-    log.info(f"Job Status: {run_status.get_status()}")
-    log.info(f"Result Path: {run_status.get_result()}")
+
+    manifest = create_manifest(
+        run_id=str(cfg.name),
+        script_name="fl_training/fl_job.py",
+        command=list(sys.argv),
+        resolved_config=OmegaConf.to_container(cfg, resolve=True),
+        dataset=metadata["dataset"],
+        partition=metadata["partition"],
+        model={
+            "provider": validated_model["provider"],
+            "name": validated_model["name"],
+            "task_type": validated_model["task_type"],
+            "num_classes": validated_model["num_classes"],
+            "args": validated_model["args"],
+        },
+        seed=int(cfg.seed),
+        artifacts={
+            "run_dir": str(workspace_path),
+            "manifest_path": str(workspace_path / "run_manifest.json"),
+            "result_path": str(workspace_path / "result.json"),
+        },
+        device=None,
+        gpu_config=gpu_config,
+    )
+    write_manifest(workspace_path, manifest)
+
+    stage = "payload_generation"
+    try:
+        # ---------------------------------------------------------------------
+        # 1. Payload Generation
+        # ---------------------------------------------------------------------
+        config_payload = encode_config(cfg)
+        train_args = (
+            f"--task_type {cfg.training.task_type} "
+            f"--config_payload {config_payload}"
+        )
+        log.info("Client Launch Command Args: %s", train_args)
+
+        # ---------------------------------------------------------------------
+        # 2. Server Setup
+        # ---------------------------------------------------------------------
+        stage = "initial_model"
+        initial_model = get_initial_model(cfg)
+
+        recipe = FedAvgRecipe(
+            name=cfg.name,
+            initial_model=initial_model,
+            min_clients=cfg.fed.n_clients,
+            num_rounds=cfg.fed.rounds,
+            train_script=str(Path(__file__).parent / "client_entry.py"),
+            train_args=train_args,
+        )
+
+        add_experiment_tracking(recipe, tracking_type="tensorboard")
+
+        # ---------------------------------------------------------------------
+        # 3. Execution
+        # ---------------------------------------------------------------------
+        log.info("Launching NVFlare Simulation: %s", cfg.name)
+
+        env = SimEnv(
+            num_clients=cfg.fed.n_clients,
+            gpu_config=gpu_config,
+            workspace_root=str(workspace_path)
+        )
+        stage = "execute"
+        run_status = recipe.execute(env=env)
+
+        log.info("Job Status: %s", run_status.get_status())
+        log.info("Result Path: %s", run_status.get_result())
+        result = create_result(
+            run_id=str(cfg.name),
+            result_type="fl_run",
+            status="success",
+            summary={
+                "name": str(cfg.name),
+                "task_type": str(cfg.training.task_type),
+                "n_clients": int(cfg.fed.n_clients),
+                "rounds": int(cfg.fed.rounds),
+                "workspace_root": str(workspace_path),
+            },
+            artifacts={
+                "workspace_root": str(workspace_path),
+                "train_script": str(Path(__file__).parent / "client_entry.py"),
+                "nvflare_result": str(run_status.get_result()),
+            },
+            metrics={
+                "status_text": str(run_status.get_status()),
+            },
+        )
+        write_result(workspace_path, result)
+        return run_status
+    except Exception as exc:  # noqa: BLE001 - persist canonical failure artifact
+        write_result(
+            workspace_path,
+            create_result(
+                run_id=str(cfg.name),
+                result_type="fl_run",
+                status="failed",
+                summary={
+                    "name": str(cfg.name),
+                    "task_type": str(cfg.training.task_type),
+                    "n_clients": int(cfg.fed.n_clients),
+                    "rounds": int(cfg.fed.rounds),
+                    "workspace_root": str(workspace_path),
+                },
+                artifacts={
+                    "workspace_root": str(workspace_path),
+                    "train_script": str(Path(__file__).parent / "client_entry.py"),
+                },
+                failure={
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "stage": stage,
+                },
+            ),
+        )
+        raise

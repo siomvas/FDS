@@ -1,35 +1,4 @@
-"""
-Ultimate comprehensive unit tests for evaluation metrics.
-
-TEST SUMMARY: 148 test functions covering:
-- Global cache management (get_global_cache) - 3 tests
-- Helper functions (_compute_pairwise) - 7 tests
-- Feature extraction (_extract_features) - 6 tests
-- JS Divergence - 11 tests
-- TV Distance - 10 tests
-- JSD Client-to-Global - 9 tests
-- FID Distance - 7 tests
-- MMD - 7 tests
-- Energy Distance - 4 tests
-- Sliced Wasserstein Distance - 6 tests
-- KS Multivariate Test - 8 tests
-- Vendi Score - 7 tests
-- Intrinsic Dimensionality - 9 tests (including FAISS)
-- kNN Separability - 8 tests
-- Centroid Distance - 6 tests
-- Feature Variance - 5 tests
-- MMD RBF Kernel utility - 8 tests
-- Edge cases & numerical stability - 16 tests
-- Property-based tests (hypothesis) - 6 tests
-- Integration tests (multiple extractors) - 8 tests
-- Cache verification - 3 tests
-- Metric ordering consistency - 1 test
-
-Run with: pytest test_metrics_ultimate.py -v
-Skip slow tests: pytest test_metrics_ultimate.py -v -m "not slow"
-Skip property tests: pytest test_metrics_ultimate.py -v -m "not property"
-
-"""
+"""Tests for evaluation metrics."""
 
 import pytest
 import numpy as np
@@ -219,6 +188,14 @@ class TestGlobalCache:
             shutil.rmtree(other_dir)
             metrics._GLOBAL_CACHE = None
 
+    def test_uses_env_default_cache_dir(self, monkeypatch, tmp_path):
+        """Default cache dir should come from FDS_CACHE_DIR when set."""
+        cache_dir = tmp_path / "env-cache"
+        monkeypatch.setenv("FDS_CACHE_DIR", str(cache_dir))
+        cache = metrics.get_global_cache()
+        assert str(cache.cache_dir) == str(cache_dir)
+        metrics._GLOBAL_CACHE = None
+
 
 # ============================================================================
 # Test _compute_pairwise Helper
@@ -292,7 +269,7 @@ class TestExtractFeatures:
         """Test feature extraction with DINOv2."""
         dataset1, dataset2 = small_image_datasets
         features = metrics._extract_features(
-            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example.org:3128"
+            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
         )
         assert len(features) == 2
         assert features[0].shape[1] == 384  # DINOv2-small dim
@@ -314,7 +291,7 @@ class TestExtractFeatures:
             use_cache=False,
             return_which_tokens="k_last_cls",
             k_last=2,
-            proxy="http://proxy.example.org:3128",
+            proxy="http://proxy.example:3128",
         )
         # k_last=2 with dim 384 = 768
         assert features[0].shape[1] == 768
@@ -634,7 +611,7 @@ class TestMMD:
         mmd_inception = metrics.MMD([dataset1, dataset2], model_name="inception_v3", batch_size=5, use_cache=False)
 
         mmd_dino = metrics.MMD(
-            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example.org:3128"
+            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
         )
 
         # Both should be valid
@@ -673,7 +650,7 @@ class TestEnergyDistance:
         """Test with different feature extractors."""
         dataset1, dataset2 = small_image_datasets
         ed = metrics.energy_distance_features(
-            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example.org:3128"
+            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
         )
         assert isinstance(ed, (float, np.floating))
 
@@ -1053,6 +1030,13 @@ class TestMMDRBFKernel:
         Y = np.random.randn(50, 10)
         mmd = metrics.MMD_rbf_kernel(X, Y, sigma=1.0)
         assert mmd >= 0
+
+    def test_dimension_mismatch_raises_value_error(self):
+        """Mismatched feature dimensions should fail explicitly."""
+        X = np.random.randn(30, 10)
+        Y = np.random.randn(30, 8)
+        with pytest.raises(ValueError, match="Feature dimensions must match"):
+            metrics.MMD_rbf_kernel(X, Y, sigma=1.0)
 
 
 # ============================================================================
@@ -1438,7 +1422,7 @@ class TestCentroidDistanceExtended:
         cd_inception = metrics.centroid_distance([dataset1, dataset2], model_name="inception_v3", batch_size=5, use_cache=False)
 
         cd_dino = metrics.centroid_distance(
-            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example.org:3128"
+            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
         )
 
         assert cd_inception >= 0
@@ -1466,7 +1450,7 @@ class TestFeatureVarianceExtended:
         fv_inception = metrics.feature_variance([dataset1], model_name="inception_v3", batch_size=5, use_cache=False)
 
         fv_dino = metrics.feature_variance(
-            [dataset1], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example.org:3128"
+            [dataset1], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
         )
 
         assert fv_inception > 0
@@ -1484,7 +1468,7 @@ class TestVendiScoreExtended:
         vs_inception = metrics.vendi_score([dataset1], model_name="inception_v3", batch_size=5, use_cache=False)
 
         vs_dino = metrics.vendi_score(
-            [dataset1], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example.org:3128"
+            [dataset1], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
         )
 
         assert vs_inception > 0
@@ -1612,7 +1596,7 @@ class TestDifferentExtractors:
 
         kwargs = {"batch_size": 5, "use_cache": False}
         if "dinov2" in model_name:
-            kwargs["proxy"] = "http://proxy.example.org:3128"
+            kwargs["proxy"] = "http://proxy.example:3128"
 
         mmd = metrics.MMD([dataset1, dataset2], model_name=model_name, **kwargs)
         assert isinstance(mmd, (float, np.floating))
@@ -1624,7 +1608,7 @@ class TestDifferentExtractors:
 
         kwargs = {"batch_size": 5, "use_cache": False}
         if "dinov2" in model_name:
-            kwargs["proxy"] = "http://proxy.example.org:3128"
+            kwargs["proxy"] = "http://proxy.example:3128"
 
         ed = metrics.energy_distance_features([dataset1, dataset2], model_name=model_name, **kwargs)
         assert isinstance(ed, (float, np.floating))
@@ -1636,7 +1620,7 @@ class TestDifferentExtractors:
 
         kwargs = {"batch_size": 5, "use_cache": False}
         if "dinov2" in model_name:
-            kwargs["proxy"] = "http://proxy.example.org:3128"
+            kwargs["proxy"] = "http://proxy.example:3128"
 
         swd = metrics.sliced_wasserstein_distance([dataset1, dataset2], model_name=model_name, **kwargs)
         assert swd >= 0
@@ -1648,7 +1632,7 @@ class TestDifferentExtractors:
 
         kwargs = {"batch_size": 5, "use_cache": False}
         if "dinov2" in model_name:
-            kwargs["proxy"] = "http://proxy.example.org:3128"
+            kwargs["proxy"] = "http://proxy.example:3128"
 
         result = metrics.KS_multivariate_test([dataset1, dataset2], model_name=model_name, **kwargs)
         assert isinstance(result, dict)

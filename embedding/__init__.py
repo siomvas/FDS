@@ -67,20 +67,48 @@ See Also
 - evaluation.metrics: Metrics using these embeddings
 """
 
-from .cache_manager import CacheManager
-from .embedding_extractors import (
-    ModelRegistry,
-    EmbeddingExtractor,
-    InceptionExtractor,
-    DINOv2Extractor,
-    CLIPExtractor,
-    SigLIPExtractor,
-    MAEExtractor,
-    RawPixelResizerExtractor,
-    SparseRandomProjectionResizerExtractor,
-    UntrainedAutoEncoderExtractor,
-    WaveletScatteringExtractor,
-)
+from __future__ import annotations
+
+from importlib import import_module
+
+_EXPORTS = {
+    "CacheManager": ("embedding.cache_manager", "CacheManager"),
+    "ModelRegistry": ("embedding.embedding_extractors", "ModelRegistry"),
+    "EmbeddingExtractor": ("embedding.embedding_extractors", "EmbeddingExtractor"),
+    "InceptionExtractor": ("embedding.embedding_extractors", "InceptionExtractor"),
+    "DINOv2Extractor": ("embedding.embedding_extractors", "DINOv2Extractor"),
+    "CLIPExtractor": ("embedding.embedding_extractors", "CLIPExtractor"),
+    "SigLIPExtractor": ("embedding.embedding_extractors", "SigLIPExtractor"),
+    "MAEExtractor": ("embedding.embedding_extractors", "MAEExtractor"),
+    "RawPixelResizerExtractor": ("embedding.embedding_extractors", "RawPixelResizerExtractor"),
+    "SparseRandomProjectionResizerExtractor": (
+        "embedding.embedding_extractors",
+        "SparseRandomProjectionResizerExtractor",
+    ),
+    "UntrainedAutoEncoderExtractor": (
+        "embedding.embedding_extractors",
+        "UntrainedAutoEncoderExtractor",
+    ),
+    "WaveletScatteringExtractor": (
+        "embedding.embedding_extractors",
+        "WaveletScatteringExtractor",
+    ),
+}
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module_name, attr_name = _EXPORTS[name]
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))
 
 __all__ = [
     # Cache Management

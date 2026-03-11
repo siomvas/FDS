@@ -107,6 +107,45 @@ def test_generate_embedding_partitions_dry_run_allows_missing_base_path(monkeypa
     assert module.main() == 0
 
 
+def test_generate_embedding_partitions_rejects_inconsistent_lastk_pooling(monkeypatch):
+    module = _load_module(
+        "generate_embedding_partitions_lastk_for_test",
+        "scripts/generate_embedding_partitions.py",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_embedding_partitions.py",
+            "--dataset",
+            "tiny_imagenet",
+            "--base_path",
+            "/tmp/fake-dataset-root",
+            "--extractor",
+            "dinov2-small",
+            "--clustering",
+            "hdbscan",
+            "--hdbscan_metric",
+            "euclidean",
+            "--tokens",
+            "k_last_cls",
+            "--lastk_k",
+            "4",
+            "--layer_aggregation",
+            "mean",
+            "--pooling",
+            "mean",
+            "--dry-run",
+        ],
+    )
+    try:
+        module.main()
+    except ValueError as exc:
+        assert "--pooling must be 'lastk'" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for inconsistent last-k pooling configuration.")
+
+
 def test_generate_report_dry_run_allows_missing_input(monkeypatch):
     module = _load_module("generate_report_for_test", "scripts/generate_report.py")
     monkeypatch.setattr(

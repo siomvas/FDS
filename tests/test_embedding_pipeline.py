@@ -20,6 +20,7 @@ from partitioning.embedding_utils.clustering_methods import (
 from partitioning.embedding_utils.config import (
     EmbeddingConfig,
     PoolingConfig,
+    create_custom_config,
     get_preset_config,
 )
 
@@ -179,6 +180,22 @@ def test_embedding_config_json_round_trip(tmp_path):
     assert loaded.model.model_type == config.model.model_type
     assert loaded.pooling.strategy == config.pooling.strategy
     assert loaded.clustering.method == config.clustering.method
+
+
+def test_embedding_config_from_dict_requires_core_keys():
+    with pytest.raises(KeyError, match="missing required keys"):
+        EmbeddingConfig.from_dict(
+            {
+                "model": {"model_type": "dinov2", "variant": "base"},
+                "pooling": {"strategy": "cls"},
+                "n_clients": 4,
+            }
+        )
+
+
+def test_create_custom_config_rejects_unexpected_kwargs():
+    with pytest.raises(TypeError, match="Unexpected custom config kwargs"):
+        create_custom_config(n_clients=4, not_a_real_option=True)
 
 
 def test_pooling_config_rejects_invalid_strategy():

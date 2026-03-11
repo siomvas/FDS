@@ -62,19 +62,16 @@ docs/RESEARCH_SUMMARY.md : Detailed explanation of metrics and their use cases.
 
 import logging
 import numpy as np
-from torchvision import models, transforms
 import torch
 import scipy
 from scipy import stats
 from scipy.spatial.distance import cdist
-from sklearn.decomposition import PCA
 from PIL import Image
 import os
+from pathlib import Path
 from typing import List, Dict, Optional, Any, Union
-from vendi_score import vendi
 
 from embedding.cache_manager import CacheManager
-from embedding.embedding_extractors import ModelRegistry
 
 from data_loading.dataset import ImageDataset
 
@@ -83,7 +80,37 @@ log = logging.getLogger(__name__)
 ID_ESTIMATION_ERRORS = (RuntimeError, ValueError, TypeError, FloatingPointError, OSError)
 
 
-def get_global_cache(cache_dir: str = "/path/to/gtai/FDS/embedding_cache") -> CacheManager:
+def _get_model_registry():
+    from embedding.embedding_extractors import ModelRegistry
+
+    return ModelRegistry
+
+
+def _get_pca_class():
+    try:
+        from sklearn.decomposition import PCA
+    except ImportError as exc:
+        raise ImportError(
+            "PCA-backed KS testing requires the optional dependency 'scikit-learn'."
+        ) from exc
+    return PCA
+
+
+def _score_vendi(features: np.ndarray, q: float = 1, normalize: bool = True) -> float:
+    try:
+        from vendi_score import vendi
+    except ImportError as exc:
+        raise ImportError(
+            "Vendi score requires the optional dependency 'vendi-score'."
+        ) from exc
+    return float(vendi.score_dual(features, q=q, normalize=normalize))
+
+
+def _default_cache_dir() -> str:
+    return os.environ.get("FDS_CACHE_DIR", str(Path.cwd() / "embedding_cache"))
+
+
+def get_global_cache(cache_dir: Optional[Union[str, os.PathLike]] = None) -> CacheManager:
     """Get or create the global CacheManager instance.
 
     Uses a singleton pattern to reuse the same cache manager across
@@ -91,8 +118,9 @@ def get_global_cache(cache_dir: str = "/path/to/gtai/FDS/embedding_cache") -> Ca
 
     Parameters
     ----------
-    cache_dir : str, optional
-        Directory for cache storage. If different from current cache,
+    cache_dir : str or path-like, optional
+        Directory for cache storage. If omitted, uses ``FDS_CACHE_DIR`` or
+        ``./embedding_cache``. If different from current cache,
         creates a new instance.
 
     Returns
@@ -100,6 +128,7 @@ def get_global_cache(cache_dir: str = "/path/to/gtai/FDS/embedding_cache") -> Ca
     CacheManager
         The global cache manager instance.
     """
+    cache_dir = str(cache_dir or _default_cache_dir())
     global _GLOBAL_CACHE
     if _GLOBAL_CACHE is not None and str(_GLOBAL_CACHE.cache_dir) != str(cache_dir):
         _GLOBAL_CACHE = None
@@ -114,9 +143,9 @@ def _extract_features(
     device: Optional[str] = None,
     batch_size: int = 200,
     use_cache: bool = True,
-    cache_dir: str = "/path/to/gtai/FDS/embedding_cache",
+    cache_dir: Optional[Union[str, os.PathLike]] = None,
     dataset_name: Optional[str] = None,
-    base_path: Optional[str] = "/path/to/gtai/FDS/",
+    base_path: Optional[str] = None,
     proxy: Optional[str] = None,
     **extractor_kwargs: Any,
 ) -> List[np.ndarray]:
@@ -146,8 +175,9 @@ def _extract_features(
         Batch size for feature extraction. Default: 200.
     use_cache : bool, optional
         Whether to cache extracted features. Default: True.
-    cache_dir : str, optional
-        Directory for cache storage.
+    cache_dir : str or path-like, optional
+        Directory for cache storage. If omitted, uses ``FDS_CACHE_DIR`` or
+        ``./embedding_cache``.
     dataset_name : str, optional
         Dataset identifier for cache lookup. Required for effective caching.
     base_path : str, optional
@@ -178,7 +208,7 @@ def _extract_features(
 
     # Create extractor using ModelRegistry
     try:
-        extractor = ModelRegistry.create(
+        extractor = _get_model_registry().create(
             model_name,
             device=device,
             batch_size=batch_size,
@@ -725,7 +755,7 @@ def KS_multivariate_test(
         all_features = np.vstack(features)
 
         if pca_variance is not None:
-            pca_temp = PCA()
+            pca_temp = _get_pca_class()()
             pca_temp.fit(all_features)
             cumsum_var = np.cumsum(pca_temp.explained_variance_ratio_)
             n_components = int(np.argmax(cumsum_var >= pca_variance) + 1)
@@ -733,7 +763,7 @@ def KS_multivariate_test(
         else:
             n_components = pca_components
 
-        pca = PCA(n_components=n_components)
+        pca = _get_pca_class()(n_components=n_components)
         pca.fit(all_features)
         features = [pca.transform(f) for f in features]
         log.info("PCA: Reduced from %s to %s dimensions", all_features.shape[1], n_components)
@@ -805,7 +835,7 @@ def vendi_score(dataset_list, q=1, normalize=True, return_all=False, **kwargs):
         Machine Learning" (2023)
     """
     features = _extract_features(dataset_list, **kwargs)
-    scores = [float(vendi.score_dual(f, q=q, normalize=normalize)) for f in features]
+    scores = [_score_vendi(f, q=q, normalize=normalize) for f in features]
     return scores if return_all else float(np.mean(scores))
 
 
@@ -1165,7 +1195,8 @@ def MMD_rbf_kernel(
     if m < 2 or n < 2:
         raise ValueError("Each sample must have at least 2 points for unbiased MMD.")
 
-    assert d == d2, "Feature dimensions must match."
+    if d != d2:
+        raise ValueError("Feature dimensions must match.")
 
     # --- 1. Convert to torch tensors on specified device ---
     X = torch.from_numpy(X).to(device).float()

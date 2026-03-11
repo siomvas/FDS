@@ -785,21 +785,18 @@ class TestEdgeCases:
         assert retrieved is not None
         assert retrieved.shape == (1, 768)
 
-    def test_mismatched_embeddings_paths_length(self, cache_manager, capsys):
-        """Mismatched embeddings and paths length prints warning."""
+    def test_mismatched_embeddings_paths_length(self, cache_manager):
+        """Mismatched embeddings and paths length fails fast."""
         embeddings = np.random.randn(5, 768).astype(np.float32)
         paths = ["/tmp/img_0.jpg", "/tmp/img_1.jpg"]  # Only 2 paths
 
-        # Should print warning and return early
-        cache_manager.put(
-            embeddings=embeddings,
-            model_name="test_model",
-            image_paths=paths,
-            dataset_name="test_dataset"
-        )
-
-        captured = capsys.readouterr()
-        assert "Warning: Cache put failed" in captured.out
+        with pytest.raises(ValueError, match="matching numbers of embeddings and image paths"):
+            cache_manager.put(
+                embeddings=embeddings,
+                model_name="test_model",
+                image_paths=paths,
+                dataset_name="test_dataset"
+            )
 
     def test_corrupted_npz_file_graceful_fail(self, tmp_cache_dir, capsys):
         """Corrupted NPZ file returns None gracefully."""

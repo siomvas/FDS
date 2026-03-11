@@ -6,27 +6,19 @@ from utils.proxy_config import hpc_proxy
 log = logging.getLogger(__name__)
 
 def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Module:
-
     log.info(f"Initializing Timm Model: {name} | Classes: {num_classes}")
 
-    # Timm handles head replacement automatically via num_classes.
-    # It also standardizes 'pretrained=True' vs 'pretrained=False'.
-    
-    # Extract 'pretrained' from kwargs if present, for now force user to specify it
-    pretrained_value = kwargs.pop("pretrained", None)
-    pretrained = bool(pretrained_value) if pretrained_value is not None else False
-    if pretrained_value is None:
-        log.info("Pretrained not specified for timm model; defaulting to False.")
-    
-    with hpc_proxy():
+    pretrained = bool(kwargs.pop("pretrained", False))
+    proxy = kwargs.pop("proxy", None)
+
+    with hpc_proxy(proxy):
         try:
-            model = timm.create_model(
+            return timm.create_model(
                 name,
                 pretrained=pretrained,
                 num_classes=num_classes,
-                **kwargs
+                **kwargs,
             )
-            return model
         except (RuntimeError, ValueError, TypeError) as e:
             log.error(f"Failed to create timm model '{name}'. Available models: timm.list_models()")
             raise RuntimeError(f"Unable to create timm model '{name}'.") from e

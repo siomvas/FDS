@@ -11,7 +11,7 @@ import torch
 import nvflare.client as flare
 from nvflare.client.tracking import SummaryWriter
 
-from fl_training.models.factory import create_model
+from fl_training.models.factory import create_model, validate_model_contract
 from fl_training.engines.classification import ClassificationEngine
 from fl_training.engines.segmentation import SegmentationEngine
 from fl_training.engines.detection import DetectionEngine
@@ -46,6 +46,8 @@ def validate_client_config(cfg: Dict[str, Any], task_type: str) -> None:
         raise ValueError("Client config 'dataset' section must be a mapping.")
     if not isinstance(training_cfg, dict):
         raise ValueError("Client config 'training' section must be a mapping.")
+    if not isinstance(cfg["model"], dict):
+        raise ValueError("Client config 'model' section must be a mapping.")
     if not isinstance(fed_cfg, dict):
         raise ValueError("Client config 'fed' section must be a mapping.")
 
@@ -79,6 +81,35 @@ def validate_client_config(cfg: Dict[str, Any], task_type: str) -> None:
 
     if "seed" not in cfg:
         raise ValueError("Config is missing required 'seed' value.")
+
+    validate_model_contract(
+        cfg["model"],
+        task_type=requested_task,
+        num_classes=int(training_cfg["num_classes"]),
+    )
+
+
+def build_datamodule_args(cfg: Dict[str, Any], client_name: str) -> Dict[str, Any]:
+    dataset_cfg = cfg["dataset"]
+    training_cfg = cfg["training"]
+
+    dataset_args = dataset_cfg.get("args", {})
+    if not isinstance(dataset_args, dict):
+        raise ValueError("dataset.args must be a mapping.")
+
+    dm_args = dict(dataset_args)
+    dm_args["client_idx"] = extract_client_idx(client_name)
+    dm_args["seed"] = cfg["seed"]
+    dm_args["batch_size"] = training_cfg["batch_size"]
+
+    if "root" in dm_args and "data_dir" not in dm_args:
+        dm_args["data_dir"] = dm_args.pop("root")
+    if "dataset_splits" in dataset_cfg and "split_file" not in dm_args:
+        dm_args["split_file"] = dataset_cfg["dataset_splits"]
+    if "label_map" in dataset_cfg and "label_map" not in dm_args:
+        dm_args["label_map"] = dataset_cfg["label_map"]
+
+    return dm_args
 
 def get_data_module(class_path: str, args: Dict[str, Any]):
     """
@@ -143,18 +174,7 @@ def main():
 
     # 4. Resources: Data & Model
     dm_cfg = cfg['dataset']
-    dm_args = {
-        **dm_cfg['args'],
-        "client_idx": extract_client_idx(client_name),
-        "seed": cfg['seed'],
-        "batch_size": cfg['training']['batch_size']
-    }
-    if "root" in dm_args and "data_dir" not in dm_args:
-        dm_args["data_dir"] = dm_args.pop("root")
-    if "dataset_splits" in dm_cfg and "split_file" not in dm_args:
-        dm_args["split_file"] = dm_cfg["dataset_splits"]
-    if "label_map" in dm_cfg and "label_map" not in dm_args:
-        dm_args["label_map"] = dm_cfg["label_map"]
+    dm_args = build_datamodule_args(cfg, client_name)
 
     log.info(f"Instantiating DataModule: {dm_cfg['class_path']} with args: {dm_args}")
     data_module = get_data_module(dm_cfg['class_path'], dm_args)

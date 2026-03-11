@@ -215,53 +215,34 @@ else
     log_warn "Embedding directory not found (skipping)"
 fi
 
-echo -e "${GREEN}[4/5] Aggregating results...${NC}"
+echo -e "${GREEN}[4/5] Building canonical results index...${NC}"
 if [[ "${DRY_RUN}" == "true" ]]; then
-    log_info "CMD: aggregate evaluation JSONs into ${RESULTS_DIR}/all_results.csv"
+    log_info "CMD: python - ${RESULTS_DIR}  # write canonical results_index.*"
 else
     python - "${RESULTS_DIR}" <<'PY'
-import json
-import logging
-import pandas as pd
 from pathlib import Path
 import sys
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-logger = logging.getLogger("benchmark.aggregate")
+from research import write_results_index
 
 results_dir = Path(sys.argv[1])
-json_files = list(results_dir.glob("*_eval.json"))
-if not json_files:
-    logger.info("No evaluation results found.")
-    raise SystemExit(0)
-
-rows = []
-for jf in json_files:
-    try:
-        with open(jf, "r", encoding="utf-8") as f:
-            rows.append(json.load(f))
-    except (json.JSONDecodeError, OSError, ValueError) as exc:
-        logger.warning("Skipping invalid file %s: %s", jf, exc)
-
-if rows:
-    out = results_dir / "all_results.csv"
-    pd.DataFrame(rows).to_csv(out, index=False)
-    logger.info("Aggregated %d results into %s", len(rows), out)
-else:
-    logger.info("No valid rows to aggregate.")
+rows = write_results_index(results_dir, result_type="partition_eval")
+if not rows:
+    raise SystemExit(f"No canonical partition_eval artifacts found in {results_dir}")
+print(f"Indexed {len(rows)} canonical runs in {results_dir}")
 PY
 fi
 
 echo -e "${GREEN}[5/5] Generating report...${NC}"
 if [[ "${DRY_RUN}" == "true" ]]; then
-    log_info "CMD: python ${GENERATE_REPORT} --input ${RESULTS_DIR}/all_results.csv --output ${REPORT_FILE} --dataset ${DATASET}"
-elif [[ -f "${RESULTS_DIR}/all_results.csv" ]]; then
+    log_info "CMD: python ${GENERATE_REPORT} --input ${RESULTS_DIR}/results_index.csv --output ${REPORT_FILE} --dataset ${DATASET}"
+elif [[ -f "${RESULTS_DIR}/results_index.csv" ]]; then
     run_cmd python "${GENERATE_REPORT}" \
-        --input "${RESULTS_DIR}/all_results.csv" \
+        --input "${RESULTS_DIR}/results_index.csv" \
         --output "${REPORT_FILE}" \
         --dataset "${DATASET}"
     log_success "Report generated: ${REPORT_FILE}"
 else
-    log_error "No results CSV found. Report generation skipped."
+    log_error "No canonical results_index.csv found. Report generation skipped."
     exit 1
 fi

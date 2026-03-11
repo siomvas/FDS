@@ -8,6 +8,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from torch.amp import autocast, GradScaler
+from ._common import build_scheduler, cycle_batches, move_optimizer_state
 
 log = logging.getLogger(__name__)
 
@@ -61,14 +62,11 @@ class ClassificationEngine:
         self.grad_clipping_value = self.config["training"]["grad_clipping_value"]
 
     def configure_optimizer(self):
-        training_cfg = self.config.get("training", {})
-        optimizer_cfg = training_cfg.get("optimizer")
-        if optimizer_cfg is None:
-            raise ValueError("Missing optimizer configuration. Expected `training.optimizer`.")
-
+        training_cfg = self.config["training"]
+        optimizer_cfg = training_cfg["optimizer"]
         opt_class_name = optimizer_cfg["class_name"]
         opt_args = optimizer_cfg["args"]
-        lr = self.config["training"]["lr"]
+        lr = float(training_cfg["lr"])
         OptimizerClass = getattr(optim, opt_class_name)
         self.optimizer = OptimizerClass(self.model.parameters(), lr=lr, **opt_args)
 
@@ -76,46 +74,13 @@ class ClassificationEngine:
         if self.optim_resume == "resume" and self.optimizer_state:
             self.optimizer.load_state_dict(self.optimizer_state)
 
-        # Scheduler support
-        scheduler_name = self.config["training"]["scheduler"].lower()
-        if scheduler_name == "none":
-            self.scheduler = torch.optim.lr_scheduler.ConstantLR(
-                self.optimizer, factor=1, total_iters=self.max_steps
-            )
-
-        elif scheduler_name == "step":
-            self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=self.config.get("lr_step_size", 1000), gamma=0.1)
-        elif scheduler_name == "cosine":
-            # Cosine Annealing
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=self.max_steps, eta_min=self.lr_min)
-        elif scheduler_name == "onecycle":
-            self.scheduler = optim.lr_scheduler.OneCycleLR(
-                self.optimizer,
-                max_lr=lr,
-                total_steps=self.max_steps,
-                pct_start=0.3,
-                anneal_strategy='cos',
-                final_div_factor=1e4
-            )
-        else:
-            log.warning(f"Unknown scheduler: {scheduler_name}. No scheduler will be used.")
-            self.scheduler = torch.optim.lr_scheduler.ConstantLR(
-                self.optimizer, factor=1, total_iters=self.max_steps
-            )
+        self.scheduler = build_scheduler(self.optimizer, training_cfg, max_steps=self.max_steps)
         
         if self.scheduler_state:
             self.scheduler.load_state_dict(self.scheduler_state)
     
     def _get_batch_iterator(self, dataloader: DataLoader) -> Iterator:
-        it = iter(dataloader)
-        while True:
-            try:
-                batch = next(it)
-            except StopIteration:
-                it = iter(dataloader)
-                batch = next(it)
-            yield batch
+        return cycle_batches(dataloader)
 
 
     def train_one_round(
@@ -213,10 +178,7 @@ class ClassificationEngine:
 
         # Save optimizer and scheduler states for next round
         self.model.to(self.cpu_device)
-        for state in self.optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(self.cpu_device)
+        move_optimizer_state(self.optimizer, self.cpu_device)
         self.optimizer_state = deepcopy(self.optimizer.state_dict()) if self.optim_resume == "resume" else None
         self.scheduler_state = deepcopy(self.scheduler.state_dict())
         self.optimizer = None

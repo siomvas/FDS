@@ -322,12 +322,8 @@ class ServerGradientTracker:
         diversity_metrics = {}
 
         for metric_type, metric_computer in self.metrics.items():
-            try:
-                diversity_score = metric_computer.compute(client_gradients)
-                diversity_metrics[f"{metric_type}_diversity"] = float(diversity_score)
-            except (ValueError, RuntimeError, TypeError) as e:
-                log.warning("Failed to compute %s diversity: %s", metric_type, e)
-                diversity_metrics[f"{metric_type}_diversity"] = 0.0
+            diversity_score = metric_computer.compute(client_gradients)
+            diversity_metrics[f"{metric_type}_diversity"] = float(diversity_score)
 
         # Also compute number of clients
         diversity_metrics["num_clients_contributing"] = len(client_gradients)
@@ -385,52 +381,3 @@ def create_gradient_tracker(
         )
     else:
         raise ValueError(f"Unknown side '{side}'. Must be 'client' or 'server'")
-
-
-if __name__ == "__main__":
-    # Example usage and testing
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
-    log.info("Testing gradient_tracker.py...")
-
-    # Create a dummy model
-    model = nn.Sequential(
-        nn.Linear(10, 20),
-        nn.ReLU(),
-        nn.Linear(20, 5)
-    )
-
-    # Client-side tracking
-    log.info("Client-side tracking:")
-    client_tracker = ClientGradientTracker()
-
-    # Store initial weights
-    client_tracker.store_initial_weights(model)
-
-    # Simulate training (create fake gradients)
-    for param in model.parameters():
-        param.grad = torch.randn_like(param) * 0.01
-
-    # Compute metrics
-    client_metrics = client_tracker.compute_all_metrics(model)
-    for key, value in client_metrics.items():
-        log.info("%s: %.6f", key, value)
-
-    # Server-side tracking
-    log.info("Server-side tracking:")
-    server_tracker = ServerGradientTracker()
-
-    # Simulate multiple clients
-    client_grads = []
-    for i in range(3):
-        grads = {
-            name: torch.randn_like(param) * (0.01 * (i + 1))
-            for name, param in model.named_parameters()
-        }
-        client_grads.append(grads)
-
-    # Compute diversity
-    server_metrics = server_tracker.compute_diversity_metrics(client_grads)
-    for key, value in server_metrics.items():
-        log.info("%s: %.6f", key, value)
-
-    log.info("Gradient tracker module ready.")

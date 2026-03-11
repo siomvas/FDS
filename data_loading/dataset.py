@@ -593,10 +593,27 @@ class BaseDataset(Dataset):
             # "label_distribution": {label: self.labels.count(label) for label in set(self.labels)},
         }
 
-# Helper function converting from list of strings to ImageDataset
-def to_image_dataset(images: List[str], transform: Callable = None, processor: Any = None) -> ImageDataset:
-    file_dataset = [{"image": path} for path in images]
+# Helper function converting image references into an ImageDataset
+def to_image_dataset(
+    images: List[Any],
+    transform: Callable = None,
+    processor: Any = None,
+) -> ImageDataset:
+    file_dataset = []
+    for item in images:
+        if isinstance(item, dict):
+            if "image" not in item:
+                raise KeyError("Image records passed to to_image_dataset() must include an 'image' key.")
+            file_dataset.append({"image": item["image"]})
+        else:
+            file_dataset.append({"image": item})
     return ImageDataset(file_dataset=file_dataset, transform=transform, processor=processor)
+
+
+def _require_file(path: Path, *, context: str) -> Path:
+    if not path.exists():
+        raise FileNotFoundError(f"{context} does not exist: {path}")
+    return path
 
 @BaseDataset.register_dataset("tiny_imagenet")
 def _load_tiny_imagenet(self) -> None:
@@ -663,14 +680,9 @@ def _load_food101(self):
     for label, img_list in split_data.items():
         for img_rel_path in img_list:
             img_path = images_dir / f"{img_rel_path}.jpg"
-            if img_path.exists():
-                self.data.append(str(img_path))
-                self.labels.append(label)
-            else:
-                warnings.warn(
-                    f"Image path {img_path} does not exist; skipping sample.",
-                    RuntimeWarning,
-                )
+            _require_file(img_path, context=f"Food-101 image for label '{label}'")
+            self.data.append(str(img_path))
+            self.labels.append(label)
 
 
 @BaseDataset.register_dataset("ade20k")
@@ -692,15 +704,12 @@ def _load_ade20k(self):
         for file in files:
             if file.endswith(".jpg"):
                 img_file = Path(root) / file
+                mask_file = _require_file(
+                    img_file.with_name(img_file.stem + "_seg.png"),
+                    context=f"ADE20K mask for image '{img_file.name}'",
+                )
                 self.data.append(str(img_file))
-                mask_file = img_file.with_name(img_file.stem + "_seg.png")
-                if mask_file.exists():
-                    self.labels.append(str(mask_file))
-                else:
-                    warnings.warn(
-                        f"Mask file {mask_file} does not exist; skipping sample.",
-                        RuntimeWarning,
-                    )
+                self.labels.append(str(mask_file))
 
 @BaseDataset.register_dataset("PascalVOC")
 def _load_pascal_voc(self):
@@ -725,14 +734,10 @@ def _load_pascal_voc(self):
     for img_name in img_names:
         img_path = images_dir / f"{img_name}.jpg"
         mask_path = labels_dir / f"{img_name}.txt"
-        if img_path.exists() and mask_path.exists():
-            self.data.append(str(img_path))
-            self.labels.append(str(mask_path))
-        else:
-            warnings.warn(
-                f"Image or mask for {img_name} does not exist; skipping sample.",
-                RuntimeWarning,
-            )
+        _require_file(img_path, context=f"Pascal VOC image '{img_name}'")
+        _require_file(mask_path, context=f"Pascal VOC annotation '{img_name}'")
+        self.data.append(str(img_path))
+        self.labels.append(str(mask_path))
 
 @BaseDataset.register_dataset("BDD100K") # Berkeley DeepDrive 100K
 def _load_bdd100k(self):
@@ -753,23 +758,9 @@ def _load_bdd100k(self):
 
     for img_file in sorted(images_dir.glob("*.jpg")):
         mask_file = masks_dir / (img_file.stem + ".png")
-        if mask_file.exists():
-            self.data.append(str(img_file))
-            self.labels.append(str(mask_file))
-        else:
-            warnings.warn(
-                f"Mask file {mask_file} does not exist; skipping sample.",
-                RuntimeWarning,
-            )
-
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
-
-    dataset = BaseDataset("ade20k", "/path/to/gtai/FDS", "train")
-    logger.info("Dataset size: %d", len(dataset))
-    logger.info("Summary: %s", dataset.get_summary())
-
-    img_path, label = dataset[0]
-    logger.info("First sample - Path: %s, Label: %s", img_path, label)
+        mask_file = _require_file(
+            masks_dir / (img_file.stem + ".png"),
+            context=f"BDD100K mask for image '{img_file.name}'",
+        )
+        self.data.append(str(img_file))
+        self.labels.append(str(mask_file))

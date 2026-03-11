@@ -103,7 +103,7 @@ class CacheManager:
 
     def __init__(
         self,
-        cache_dir: Union[str, Path] = "/path/to/gtai/FDS/embedding_cache",
+        cache_dir: Union[str, Path, None] = None,
         enabled: bool = True,
     ):
         """Initialize the cache manager.
@@ -113,7 +113,8 @@ class CacheManager:
             enabled: Whether caching is active. If False, get() always returns None
                 and put() does nothing.
         """
-        self.cache_dir = Path(cache_dir)
+        resolved_cache_dir = cache_dir or os.environ.get("FDS_CACHE_DIR", ".embedding_cache")
+        self.cache_dir = Path(resolved_cache_dir)
         self.enabled = enabled
         self._memory_cache = {}  # In-memory store for loaded .npz content
 
@@ -126,17 +127,18 @@ class CacheManager:
         self.metadata_file = self.cache_dir / "metadata.json"
 
         if self.metadata_file.exists():
-            with open(self.metadata_file, "r") as f:
+            with open(self.metadata_file, "r", encoding="utf-8") as f:
                 try:
                     self.metadata = json.load(f)
                 except json.JSONDecodeError:
                     self.metadata = {"version": "1.0", "entries": {}}
+                    self._save_metadata()
         else:
             self.metadata = {"version": "1.0", "entries": {}}
             self._save_metadata()
 
     def _save_metadata(self) -> None:
-        with open(self.metadata_file, "w") as f:
+        with open(self.metadata_file, "w", encoding="utf-8") as f:
             json.dump(self.metadata, f, indent=2)
 
     def _to_relative(self, paths: List[str], base_path: Optional[str]) -> List[str]:
@@ -395,22 +397,24 @@ class CacheManager:
             **kwargs
         }
 
+        is_path_dict_input = isinstance(embeddings, dict) and all(
+            isinstance(k, str) for k in embeddings.keys()
+        )
+        if ((dataset_name is not None) or is_path_dict_input) and not isinstance(embeddings, dict):
+            if len(embeddings) != len(rel_paths):
+                raise ValueError(
+                    "Cache put requires matching numbers of embeddings and image paths "
+                    f"in dataset mode, got embeddings={len(embeddings)} and paths={len(rel_paths)}."
+                )
+
         try:
             save_dict = {}
             
             # 1. Dataset Mode OR Dictionary of Path->Embedding provided
-            if (dataset_name is not None) or (isinstance(embeddings, dict) and all(isinstance(k, str) for k in embeddings.keys())):
+            if (dataset_name is not None) or is_path_dict_input:
 
                 # If it's a list/array, we align it with rel_paths
                 if not isinstance(embeddings, dict):
-                    if len(embeddings) != len(rel_paths):
-                        logger.warning(
-                            "Cache put skipped for %s due to length mismatch: embeddings=%d, paths=%d",
-                            cache_key,
-                            len(embeddings),
-                            len(rel_paths),
-                        )
-                        return
                     # Create pairs
                     path_emb_pairs = zip(rel_paths, embeddings)
                 else:

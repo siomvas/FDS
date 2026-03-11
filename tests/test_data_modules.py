@@ -414,8 +414,8 @@ class TestBaseDatasetRegistry:
         assert dataset.dataset_name == "BDD100K"
         assert len(dataset) == 1
 
-    def test_food101_missing_image_emits_warning(self, tmp_path):
-        """Food101 loader warns and skips when metadata references missing images."""
+    def test_food101_missing_image_raises(self, tmp_path):
+        """Food101 loader fails fast when metadata references missing images."""
         food101_root = tmp_path / "food101"
         meta_dir = food101_root / "meta"
         images_dir = food101_root / "images"
@@ -427,10 +427,8 @@ class TestBaseDatasetRegistry:
         with open(split_file, "w", encoding="utf-8") as handle:
             json.dump(split_payload, handle)
 
-        with pytest.warns(RuntimeWarning, match="does not exist; skipping sample"):
-            dataset = BaseDataset("food101", str(tmp_path), "train")
-
-        assert len(dataset) == 0
+        with pytest.raises(FileNotFoundError, match="Food-101 image"):
+            BaseDataset("food101", str(tmp_path), "train")
 
     def test_get_summary(self, tmp_path):
         """Test dataset summary generation."""

@@ -1,62 +1,46 @@
-"""
-Comprehensive Comparison of Data Partitioning Methods for Federated Learning.
+"""Compare partitioning methods using canonical research artifacts.
 
-Compares four partitioning approaches:
-1. Random - IID baseline
-2. Dirichlet - Label-based heterogeneity
-3. VLM - Multivariate Dirichlet with VLM clustering
-4. Embedding - Semantic clustering
-
-Usage:
-    python compare_partitioning_methods.py \
-      --base_path /path/to/dataset \
-      --methods random dirichlet vlm \
-      --cluster_labels_dir /path/to/cluster_labels \
-      --metrics both
+This script generates partitioning experiments, evaluates them, and writes one
+canonical run artifact per experiment under the chosen output directory.
+Aggregate outputs are derived from those artifacts:
+- ``results_index.csv`` / ``results_index.json``
+- ``report.html``
+- ``method_summary.csv``
+- ``metric_rankings.csv``
+- ``pairwise_deltas.csv``
 """
 
-import os
+from __future__ import annotations
+
 import argparse
-import json
-import time
 import logging
+import sys
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from dataclasses import dataclass, asdict, field
-from typing import Dict, List, Optional, Any
-from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 from tqdm import tqdm
 
-from partitioning.random_splitter import RandomSplitter
+from data_loading.dataset import BaseDataset
+from evaluation import metrics
+from evaluation.eval_config import MetricResults
+from evaluation.statistics import available_metrics, pairwise_method_deltas, rank_methods, summarize_methods
+from partitioning.base_splitter import BaseDatasetSplitter, DatasetSplits
 from partitioning.dirichlet_splitter import DirichletSplitter
-from partitioning.multivariate_dirichlet_splitter import MultivariateDirichletSplitter
 from partitioning.embedding_splitter import EmbeddingSplitter
 from partitioning.embedding_utils.config import get_preset_config
-from data_loading.dataset import BaseDataset
-from partitioning.base_splitter import BaseDatasetSplitter, DatasetSplits
-from evaluation import metrics
+from partitioning.multivariate_dirichlet_splitter import MultivariateDirichletSplitter
+from partitioning.random_splitter import RandomSplitter
+from research import create_manifest, create_result, file_sha256, scan_results, write_manifest, write_result, write_results_index
+from scripts.generate_report import generate_report
 
 log = logging.getLogger(__name__)
 
-EXPERIMENT_RUN_ERRORS = (
-    RuntimeError,
-    ValueError,
-    TypeError,
-    KeyError,
-    FileNotFoundError,
-    OSError,
-)
 
-
-# ============================================================================
-# Data Classes
-# ============================================================================
-
-@dataclass
+@dataclass(frozen=True)
 class ExperimentConfig:
     method: str
     n_clients: int
@@ -65,87 +49,40 @@ class ExperimentConfig:
     embedding_preset: Optional[str] = None
     cluster_labels_dir: Optional[str] = None
 
-    def get_experiment_id(self) -> str:
-        if self.method == "embedding" and self.embedding_preset:
-            return f"embedding-{self.embedding_preset}_n{self.n_clients}_a{self.heterogeneity}_s{self.seed}"
-        return f"{self.method}_n{self.n_clients}_a{self.heterogeneity}_s{self.seed}"
+    def run_id(self, dataset_name: str) -> str:
+        preset = f"_{self.embedding_preset}" if self.embedding_preset else ""
+        return (
+            f"compare_{dataset_name}_{self.method}{preset}_"
+            f"n{self.n_clients}_a{self.heterogeneity}_s{self.seed}"
+        )
 
-    def get_display_name(self) -> str:
+    def display_method(self) -> str:
         if self.method == "embedding" and self.embedding_preset:
             return f"Embedding ({self.embedding_preset})"
-        return self.method.capitalize()
-
-
-@dataclass
-class MetricResults:
-    # Label metrics
-    JS_divergence_mean: float = 0.0
-    JS_divergence_std: float = 0.0
-    tv_labels_mean: float = 0.0
-    tv_labels_std: float = 0.0
-    jsd_global_mean: float = 0.0
-    jsd_global_std: float = 0.0
-
-    # Feature metrics
-    fid_mean: Optional[float] = None
-    fid_std: Optional[float] = None
-    mmd_features_mean: Optional[float] = None
-    mmd_features_std: Optional[float] = None
-    wasserstein_mean: Optional[float] = None
-    wasserstein_std: Optional[float] = None
-    energy_dist_mean: Optional[float] = None
-    energy_dist_std: Optional[float] = None
-    ks_multivariate_reject_rate: Optional[float] = None
-    ks_multivariate_min_pvalue: Optional[float] = None
-    vendi_score_mean: Optional[float] = None
-    vendi_score_std: Optional[float] = None
-    
-    # New Feature Metrics
-    id_mean: Optional[float] = None
-    id_std: Optional[float] = None
-    knn_sep_mean: Optional[float] = None
-    knn_sep_std: Optional[float] = None
-    centroid_dist_mean: Optional[float] = None
-    centroid_dist_std: Optional[float] = None
-    feature_variance_mean: Optional[float] = None
-    feature_variance_std: Optional[float] = None
-
-    # Balance metrics
-    samples_per_client_mean: float = 0.0
-    samples_per_client_std: float = 0.0
-    samples_per_client_min: int = 0
-    samples_per_client_max: int = 0
-    coefficient_of_variation: float = 0.0
-
-    # Timing
-    split_time: float = 0.0
-    label_metrics_time: float = 0.0
-    feature_metrics_time: Optional[float] = None
-
-
-@dataclass
-class ExperimentResult:
-    config: ExperimentConfig
-    metrics: MetricResults
-    timestamp: str
-
-    def to_dict(self) -> Dict[str, Any]:
         return {
-            "config": asdict(self.config),
-            "metrics": asdict(self.metrics),
-            "timestamp": self.timestamp,
-        }
+            "random": "Random",
+            "dirichlet": "Dirichlet",
+            "vlm": "VLM",
+            "embedding": "Embedding",
+        }.get(self.method, self.method)
 
 
-# ============================================================================
-# Splitter Factory
-# ============================================================================
+def validate_experiment_request(
+    *,
+    methods: List[str],
+    embedding_presets: List[str],
+    cluster_labels_dir: Optional[str],
+) -> None:
+    if "vlm" in methods and not cluster_labels_dir:
+        raise ValueError("--cluster_labels_dir is required when --methods includes 'vlm'.")
+    if "embedding" in methods and not embedding_presets:
+        raise ValueError("--embedding_presets must not be empty when --methods includes 'embedding'.")
+
 
 def create_splitter(
     exp_config: ExperimentConfig,
     train_dataset: BaseDataset,
     val_dataset: Optional[BaseDataset],
-    base_path: str
 ) -> BaseDatasetSplitter:
     if exp_config.method == "random":
         return RandomSplitter(
@@ -157,7 +94,7 @@ def create_splitter(
             seed=exp_config.seed,
         )
 
-    elif exp_config.method == "dirichlet":
+    if exp_config.method == "dirichlet":
         return DirichletSplitter(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
@@ -168,10 +105,9 @@ def create_splitter(
             min_samples_per_client=10,
         )
 
-    elif exp_config.method == "vlm":
+    if exp_config.method == "vlm":
         if not exp_config.cluster_labels_dir:
-            raise ValueError("VLM method requires cluster_labels_dir")
-
+            raise ValueError("VLM method requires cluster_labels_dir.")
         return MultivariateDirichletSplitter(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
@@ -183,21 +119,21 @@ def create_splitter(
             min_samples_per_client=10,
         )
 
-    elif exp_config.method == "embedding":
+    if exp_config.method == "embedding":
         preset = exp_config.embedding_preset or "default"
         config = get_preset_config(preset, n_clients=exp_config.n_clients)
-
-        if hasattr(config.model, 'proxy') and config.model.proxy is None:
-            config.model.proxy = os.environ.get('HTTP_PROXY', 'http://proxy.example.org:3128')
-
+        if hasattr(config.model, "proxy") and config.model.proxy is None:
+            config.model.proxy = None
         if config.clustering.method == "hdbscan":
-            base_size = len(train_dataset) // (exp_config.n_clients * 3)
-            min_size = max(5, int(base_size * (1.0 - exp_config.heterogeneity)))
-            config.clustering.params["min_cluster_size"] = min_size
+            base_size = len(train_dataset) // max(exp_config.n_clients * 3, 1)
+            config.clustering.params["min_cluster_size"] = max(
+                5, int(base_size * (1.0 - exp_config.heterogeneity))
+            )
         elif config.clustering.method == "kmeans":
-            n_clusters = max(exp_config.n_clients, int(exp_config.n_clients * (1.0 + 2.0 * exp_config.heterogeneity)))
-            config.clustering.params["n_clusters"] = n_clusters
-
+            config.clustering.params["n_clusters"] = max(
+                exp_config.n_clients,
+                int(exp_config.n_clients * (1.0 + 2.0 * exp_config.heterogeneity)),
+            )
         return EmbeddingSplitter(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
@@ -208,730 +144,493 @@ def create_splitter(
             seed=exp_config.seed,
         )
 
-    else:
-        raise ValueError(f"Unknown method: {exp_config.method}")
+    raise ValueError(f"Unknown method: {exp_config.method}")
 
 
-# ============================================================================
-# Dataset Extraction
-# ============================================================================
-
-def get_or_create_wnid_mapping(dataset_name: str, train_dataset: BaseDataset) -> Optional[Dict[str, int]]:
+def get_or_create_label_mapping(train_dataset: BaseDataset) -> Optional[Dict[str, int]]:
+    if len(train_dataset) == 0:
+        return None
     first_label = train_dataset[0][1]
-
     if isinstance(first_label, int):
         return None
-
     if isinstance(first_label, str):
-        mapping_file = Path(__file__).parent.parent / f"{dataset_name}_wnid_mapping.json"
-
-        if mapping_file.exists():
-            with open(mapping_file, 'r') as f:
-                return json.load(f)
-
-        log.info("Creating WNID mapping for %s...", dataset_name)
-        all_labels = sorted(set(train_dataset[i][1] for i in range(len(train_dataset))))
-        mapping = {label: idx for idx, label in enumerate(all_labels)}
-
-        with open(mapping_file, 'w') as f:
-            json.dump(mapping, f, indent=2)
-
-        return mapping
-
+        labels = sorted(set(train_dataset[i][1] for i in range(len(train_dataset))))
+        return {label: idx for idx, label in enumerate(labels)}
     return None
-
-
-def apply_label_mapping(dataset: List[Dict], mapping: Optional[Dict[str, int]]) -> List[Dict]:
-    if mapping is None:
-        return dataset
-    return [{"image": item["image"], "label": mapping[item["label"]]} for item in dataset]
 
 
 def extract_client_datasets(
     splits: DatasetSplits,
     train_dataset: Optional[BaseDataset] = None,
-    use_original_labels: bool = False
-) -> List[List[Dict]]:
-    """Extract client datasets, optionally remapping to original labels."""
+    use_original_labels: bool = False,
+) -> List[List[Dict[str, Any]]]:
     if use_original_labels and train_dataset is not None:
-        original_label_map = {train_dataset[i][0]: train_dataset[i][1] for i in range(len(train_dataset))}
+        original_label_map = {str(train_dataset[i][0]): train_dataset[i][1] for i in range(len(train_dataset))}
 
-    client_datasets = []
+    client_datasets: List[List[Dict[str, Any]]] = []
     for client_name in sorted(splits["clients"].keys()):
         client_split = splits["clients"][client_name]
-
         if use_original_labels and train_dataset is not None:
             client_data = [
-                {"image": item["image"], "label": original_label_map[item["image"]]}
+                {"image": item["image"], "label": original_label_map[str(item["image"])]}
                 for item in client_split["train"]
             ]
         else:
-            client_data = client_split["train"]
-
+            client_data = list(client_split["train"])
         client_datasets.append(client_data)
-
     return client_datasets
 
 
-def subsample_datasets(
-    client_datasets: List[List[Dict]],
-    max_samples: int,
-    seed: int
-) -> List[List[Dict]]:
-    """Randomly subsample each client dataset."""
-    rng = np.random.default_rng(seed)
-    subsampled = []
+def apply_label_mapping(dataset: List[Dict[str, Any]], mapping: Optional[Dict[str, int]]) -> List[Dict[str, Any]]:
+    if mapping is None:
+        return dataset
+    return [{"image": item["image"], "label": mapping[item["label"]]} for item in dataset]
 
+
+def subsample_datasets(
+    client_datasets: List[List[Dict[str, Any]]],
+    max_samples: int,
+    seed: int,
+) -> List[List[Dict[str, Any]]]:
+    if max_samples <= 0:
+        return client_datasets
+    rng = np.random.default_rng(seed)
+    subsampled: List[List[Dict[str, Any]]] = []
     for dataset in client_datasets:
         if len(dataset) <= max_samples:
             subsampled.append(dataset)
-        else:
-            indices = rng.choice(len(dataset), size=max_samples, replace=False)
-            subsampled.append([dataset[i] for i in indices])
-
+            continue
+        indices = rng.choice(len(dataset), size=max_samples, replace=False)
+        subsampled.append([dataset[i] for i in indices])
     return subsampled
 
 
-# ============================================================================
-# Metric Computation
-# ============================================================================
-
-def compute_balance_metrics(client_datasets: List[List[Dict]]) -> Dict[str, float]:
-    samples_per_client = [len(d) for d in client_datasets]
-    mean_samples = np.mean(samples_per_client)
-    std_samples = np.std(samples_per_client)
-
+def compute_balance_metrics(client_datasets: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
+    sizes = [len(dataset) for dataset in client_datasets]
+    mean_size = np.mean(sizes)
+    std_size = np.std(sizes)
     return {
-        "samples_per_client_mean": float(mean_samples),
-        "samples_per_client_std": float(std_samples),
-        "samples_per_client_min": int(np.min(samples_per_client)),
-        "samples_per_client_max": int(np.max(samples_per_client)),
-        "coefficient_of_variation": float(std_samples / (mean_samples + 1e-10)),
+        "samples_per_client_mean": float(mean_size),
+        "samples_per_client_std": float(std_size),
+        "samples_per_client_min": int(np.min(sizes)),
+        "samples_per_client_max": int(np.max(sizes)),
+        "balance_cv": float(std_size / (mean_size + 1e-10)),
+        "min_size": int(np.min(sizes)),
+        "max_size": int(np.max(sizes)),
     }
 
 
-def compute_label_metrics(
-    client_datasets: List[List[Dict]],
-    num_classes: int
-) -> Dict[str, float]:
-    """Compute all label-based metrics using the refactored API."""
-    results = {}
-
-    # JS divergence
-    JS_all = metrics.JS_divergence(client_datasets, num_classes, return_all=True)
-    results['JS_divergence_mean'] = float(np.mean(JS_all))
-    results['JS_divergence_std'] = float(np.std(JS_all))
-
-    # Total Variation
-    tv_all = metrics.TV_label_distributions(client_datasets, num_classes, return_all=True)
-    results['tv_labels_mean'] = float(np.mean(tv_all))
-    results['tv_labels_std'] = float(np.std(tv_all))
-
-    # JSD Client to Global
+def compute_label_metrics(client_datasets: List[List[Dict[str, Any]]], num_classes: int) -> Dict[str, Any]:
+    jsd_all = metrics.JS_divergence(client_datasets, num_classes, return_all=True)
     jsd_global_all = metrics.JSD_client_to_global(client_datasets, num_classes, return_all=True)
-    results['jsd_global_mean'] = float(np.mean(jsd_global_all))
-    results['jsd_global_std'] = float(np.std(jsd_global_all))
-
-    return results
+    tv_all = metrics.TV_label_distributions(client_datasets, num_classes, return_all=True)
+    return {
+        "JSD_mean": float(np.mean(jsd_all)),
+        "JSD_std": float(np.std(jsd_all)),
+        "JSD_global_mean": float(np.mean(jsd_global_all)),
+        "JSD_global_std": float(np.std(jsd_global_all)),
+        "TV_mean": float(np.mean(tv_all)),
+        "TV_std": float(np.std(tv_all)),
+    }
 
 
 def compute_feature_metrics(
-    client_datasets: List[List[Dict]],
-    feature_model: str = "dinov2-small",
-    batch_size: int = 50,
-    use_cache: bool = True,
-    cache_dir: str = "/path/to/gtai/FDS/embedding_cache"
-) -> Dict[str, float]:
-    """Compute all feature-based metrics using the refactored API."""
-    results = {}
-    
-    # Common kwargs for feature extraction
+    client_datasets: List[List[Dict[str, Any]]],
+    *,
+    dataset_name: str,
+    base_path: str,
+    feature_model: str,
+    batch_size: int,
+    use_cache: bool,
+    cache_dir: str,
+) -> Dict[str, Any]:
     ext_kwargs = {
+        "dataset_name": dataset_name,
+        "base_path": base_path,
         "model_name": feature_model,
         "batch_size": batch_size,
         "use_cache": use_cache,
-        "cache_dir": cache_dir
+        "cache_dir": cache_dir,
+    }
+    fid_all = metrics.FID_distance(client_datasets, return_all=True, **ext_kwargs)
+    mmd_all = metrics.MMD(client_datasets, return_all=True, **ext_kwargs)
+    wass_all = metrics.sliced_wasserstein_distance(client_datasets, return_all=True, **ext_kwargs)
+    energy_all = metrics.energy_distance_features(client_datasets, return_all=True, **ext_kwargs)
+    id_all = metrics.intrinsic_dimensionality(client_datasets, method="two_nn", return_all=True, **ext_kwargs)
+    id_clean = [value for value in id_all if not np.isnan(value)]
+    knn_all = metrics.knn_separability(client_datasets, k=5, return_all=True, **ext_kwargs)
+    centroid_all = metrics.centroid_distance(client_datasets, return_all=True, **ext_kwargs)
+    vendi_all = metrics.vendi_score(client_datasets, return_all=True, **ext_kwargs)
+    variance_all = metrics.feature_variance(client_datasets, return_all=True, **ext_kwargs)
+    return {
+        "fid_mean": float(np.mean(fid_all)),
+        "fid_std": float(np.std(fid_all)),
+        "mmd_features_mean": float(np.mean(mmd_all)),
+        "mmd_features_std": float(np.std(mmd_all)),
+        "wasserstein_mean": float(np.mean(wass_all)),
+        "wasserstein_std": float(np.std(wass_all)),
+        "energy_dist_mean": float(np.mean(energy_all)),
+        "energy_dist_std": float(np.std(energy_all)),
+        "id_mean": float(np.mean(id_clean)) if id_clean else None,
+        "id_std": float(np.std(id_clean)) if id_clean else None,
+        "knn_sep_mean": float(np.mean(knn_all)),
+        "knn_sep_std": float(np.std(knn_all)),
+        "centroid_dist_mean": float(np.mean(centroid_all)),
+        "centroid_dist_std": float(np.std(centroid_all)),
+        "vendi_score_mean": float(np.mean(vendi_all)),
+        "vendi_score_std": float(np.std(vendi_all)),
+        "feature_variance_mean": float(np.mean(variance_all)),
+        "feature_variance_std": float(np.std(variance_all)),
     }
 
-    log.info("Computing FID (InceptionV3)...")
-    # FID always uses InceptionV3 regardless of feature_model
-    fid_all = metrics.FID_distance(
-        client_datasets, batch_size=batch_size, return_all=True,
-        use_cache=use_cache, cache_dir=cache_dir
-    )
-    results['fid_mean'] = float(np.mean(fid_all))
-    results['fid_std'] = float(np.std(fid_all))
 
-    log.info("Computing MMD features (%s)...", feature_model)
-    mmd_all = metrics.MMD(
-        client_datasets, return_all=True, **ext_kwargs
+def _persist_result(
+    *,
+    output_dir: Path,
+    run_id: str,
+    dataset_name: str,
+    base_path: str,
+    exp_config: ExperimentConfig,
+    split_path: Path,
+    feature_model: str,
+    metrics_mode: str,
+    subsample: int,
+    use_cache: bool,
+    cache_dir: str,
+    status: str,
+    summary: Dict[str, Any],
+    metrics_payload: Dict[str, Any],
+    failure: Optional[Dict[str, Any]] = None,
+) -> None:
+    run_dir = output_dir / run_id
+    manifest = create_manifest(
+        run_id=run_id,
+        script_name="evaluation/_compare_partitions.py",
+        command=list(sys.argv),
+        resolved_config={
+            "experiment": asdict(exp_config),
+            "feature_model": feature_model,
+            "metrics_mode": metrics_mode,
+            "subsample": subsample,
+            "use_cache": use_cache,
+            "cache_dir": cache_dir,
+        },
+        dataset={
+            "name": dataset_name,
+            "base_path": base_path,
+            "split": "train+val",
+        },
+        partition={
+            "path": str(split_path),
+            "filename": split_path.name,
+            "sha256": file_sha256(split_path) if split_path.exists() else None,
+            "method": exp_config.display_method(),
+            "n_clients": exp_config.n_clients,
+            "heterogeneity": exp_config.heterogeneity,
+        },
+        model={
+            "name": feature_model,
+            "task_type": "embedding_feature_evaluation",
+        },
+        seed=exp_config.seed,
+        artifacts={
+            "run_dir": str(run_dir),
+            "manifest_path": str(run_dir / "run_manifest.json"),
+            "result_path": str(run_dir / "result.json"),
+            "split_path": str(split_path),
+        },
     )
-    results['mmd_features_mean'] = float(np.mean(mmd_all))
-    results['mmd_features_std'] = float(np.std(mmd_all))
-
-    log.info("Computing Wasserstein distance (%s)...", feature_model)
-    wass_all = metrics.sliced_wasserstein_distance(
-        client_datasets, return_all=True, **ext_kwargs
+    write_manifest(run_dir, manifest)
+    write_result(
+        run_dir,
+        create_result(
+            run_id=run_id,
+            result_type="partition_eval",
+            status=status,
+            summary=summary,
+            metrics=metrics_payload,
+            artifacts={"split_path": str(split_path), "run_dir": str(run_dir)},
+            failure=failure,
+        ),
     )
-    results['wasserstein_mean'] = float(np.mean(wass_all))
-    results['wasserstein_std'] = float(np.std(wass_all))
 
-    log.info("Computing Energy Distance (%s)...", feature_model)
-    ed_all = metrics.energy_distance_features(
-        client_datasets, return_all=True, **ext_kwargs
-    )
-    results['energy_dist_mean'] = float(np.mean(ed_all))
-    results['energy_dist_std'] = float(np.std(ed_all))
-
-    log.info("Computing Feature Variance (%s)...", feature_model)
-    fv_all = metrics.feature_variance(
-        client_datasets, return_all=True, **ext_kwargs
-    )
-    results['feature_variance_mean'] = float(np.mean(fv_all))
-    results['feature_variance_std'] = float(np.std(fv_all))
-
-    log.info("Computing Intrinsic Dimensionality (%s)...", feature_model)
-    id_all = metrics.intrinsic_dimensionality(
-        client_datasets, method="two_nn", return_all=True, **ext_kwargs
-    )
-    # Filter out NaNs
-    id_clean = [x for x in id_all if not np.isnan(x)]
-    if id_clean:
-        results['id_mean'] = float(np.mean(id_clean))
-        results['id_std'] = float(np.std(id_clean))
-    
-    log.info("Computing k-NN Separability (%s)...", feature_model)
-    knn_all = metrics.knn_separability(
-        client_datasets, k=5, return_all=True, **ext_kwargs
-    )
-    results['knn_sep_mean'] = float(np.mean(knn_all))
-    results['knn_sep_std'] = float(np.std(knn_all))
-    
-    log.info("Computing Centroid Distance (%s)...", feature_model)
-    cd_all = metrics.centroid_distance(
-        client_datasets, return_all=True, **ext_kwargs
-    )
-    results['centroid_dist_mean'] = float(np.mean(cd_all))
-    results['centroid_dist_std'] = float(np.std(cd_all))
-
-    log.info("Computing KS multivariate test (%s)...", feature_model)
-    ks_all = metrics.KS_multivariate_test(
-        client_datasets, pca_variance=0.95, return_all=True, **ext_kwargs
-    )
-    results['ks_multivariate_reject_rate'] = float(np.mean([r['reject_null'] for r in ks_all]))
-    # p-values might be small, handle safely
-    min_pvals = [r['min_pvalue'] for r in ks_all]
-    results['ks_multivariate_min_pvalue'] = float(np.min(min_pvals)) if min_pvals else 0.0
-
-    log.info("Computing Vendi score (%s)...", feature_model)
-    vendi_all = metrics.vendi_score(
-        client_datasets, return_all=True, **ext_kwargs
-    )
-    results['vendi_score_mean'] = float(np.mean(vendi_all))
-    results['vendi_score_std'] = float(np.std(vendi_all))
-
-    return results
-
-
-# ============================================================================
-# Experiment Execution
-# ============================================================================
 
 def run_experiment(
+    *,
     exp_config: ExperimentConfig,
+    dataset_name: str,
     train_dataset: BaseDataset,
     val_dataset: BaseDataset,
     base_path: str,
     num_classes: int,
     metrics_mode: str,
-    subsample: Optional[int],
-    wnid_mapping: Optional[Dict[str, int]],
+    subsample: int,
+    label_mapping: Optional[Dict[str, int]],
     feature_model: str,
     use_cache: bool,
     cache_dir: str,
-) -> ExperimentResult:
-    """Execute a single experiment."""
-    # Create and run splitter
-    splitter = create_splitter(exp_config, train_dataset, val_dataset, base_path)
+    output_dir: Path,
+) -> str:
+    run_id = exp_config.run_id(dataset_name)
+    run_dir = output_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    split_path = run_dir / "split.json"
+    stage = "split"
+    timing = {"split_time": 0.0, "label_metrics_time": 0.0, "feature_metrics_time": 0.0}
 
-    start_time = time.time()
-    splits = splitter.get_client_splits()
-    split_time = time.time() - start_time
+    try:
+        splitter = create_splitter(exp_config, train_dataset, val_dataset)
+        start = time.time()
+        splits = splitter.get_client_splits()
+        splitter.validate_splits(splits)
+        timing["split_time"] = round(time.time() - start, 4)
+        splitter.store_client_splits(str(split_path), format="json")
 
-    # Extract client datasets
-    use_original = exp_config.method in ["vlm", "embedding"]
-    client_datasets = extract_client_datasets(
-        splits,
-        train_dataset if use_original else None,
-        use_original_labels=use_original
-    )
-
-    # Apply WNID mapping if needed
-    if wnid_mapping is not None:
-        client_datasets = [apply_label_mapping(d, wnid_mapping) for d in client_datasets]
-
-    # Subsample for feature metrics if requested
-    if subsample:
-        client_datasets_sub = subsample_datasets(client_datasets, subsample, exp_config.seed)
-    else:
-        client_datasets_sub = client_datasets
-
-    # Compute balance metrics
-    balance = compute_balance_metrics(client_datasets)
-    metric_results = MetricResults(split_time=split_time, **balance)
-
-    # Compute label metrics
-    if metrics_mode in ["label", "both"]:
-        log.info("Computing label metrics...")
-        start_time = time.time()
-        label_results = compute_label_metrics(client_datasets, num_classes)
-        metric_results.label_metrics_time = time.time() - start_time
-
-        for key, value in label_results.items():
-            setattr(metric_results, key, value)
-
-    # Compute feature metrics
-    if metrics_mode in ["feature", "both"]:
-        log.info("Computing feature metrics...")
-        start_time = time.time()
-        feature_results = compute_feature_metrics(
-            client_datasets_sub,
-            feature_model=feature_model,
-            use_cache=use_cache,
-            cache_dir=cache_dir
+        use_original_labels = exp_config.method in {"vlm", "embedding"}
+        client_datasets = extract_client_datasets(
+            splits,
+            train_dataset=train_dataset if use_original_labels else None,
+            use_original_labels=use_original_labels,
         )
-        metric_results.feature_metrics_time = time.time() - start_time
+        if label_mapping is not None:
+            client_datasets = [apply_label_mapping(dataset, label_mapping) for dataset in client_datasets]
 
-        for key, value in feature_results.items():
-            setattr(metric_results, key, value)
+        metrics_payload: Dict[str, Any] = {}
+        metrics_obj = MetricResults(**compute_balance_metrics(client_datasets))
 
-    return ExperimentResult(
-        config=exp_config,
-        metrics=metric_results,
-        timestamp=datetime.now().isoformat(),
-    )
+        if metrics_mode in {"label", "both"}:
+            stage = "label_metrics"
+            start = time.time()
+            for key, value in compute_label_metrics(client_datasets, num_classes).items():
+                setattr(metrics_obj, key, value)
+            timing["label_metrics_time"] = round(time.time() - start, 4)
+
+        if metrics_mode in {"feature", "both"}:
+            stage = "feature_metrics"
+            feature_input = subsample_datasets(client_datasets, subsample, exp_config.seed) if subsample else client_datasets
+            start = time.time()
+            for key, value in compute_feature_metrics(
+                feature_input,
+                dataset_name=dataset_name,
+                base_path=base_path,
+                feature_model=feature_model,
+                batch_size=50,
+                use_cache=use_cache,
+                cache_dir=cache_dir,
+            ).items():
+                setattr(metrics_obj, key, value)
+            timing["feature_metrics_time"] = round(time.time() - start, 4)
+
+        metrics_payload = asdict(metrics_obj)
+        summary = {
+            "method": exp_config.display_method(),
+            "method_family": exp_config.method,
+            "embedding_preset": exp_config.embedding_preset,
+            "n_clients": exp_config.n_clients,
+            "heterogeneity": exp_config.heterogeneity,
+            "seed": exp_config.seed,
+            **timing,
+        }
+        _persist_result(
+            output_dir=output_dir,
+            run_id=run_id,
+            dataset_name=dataset_name,
+            base_path=base_path,
+            exp_config=exp_config,
+            split_path=split_path,
+            feature_model=feature_model,
+            metrics_mode=metrics_mode,
+            subsample=subsample,
+            use_cache=use_cache,
+            cache_dir=cache_dir,
+            status="success",
+            summary=summary,
+            metrics_payload=metrics_payload,
+        )
+    except Exception as exc:  # noqa: BLE001 - comparison sweep should continue
+        log.exception("Experiment failed: %s", run_id)
+        _persist_result(
+            output_dir=output_dir,
+            run_id=run_id,
+            dataset_name=dataset_name,
+            base_path=base_path,
+            exp_config=exp_config,
+            split_path=split_path,
+            feature_model=feature_model,
+            metrics_mode=metrics_mode,
+            subsample=subsample,
+            use_cache=use_cache,
+            cache_dir=cache_dir,
+            status="failed",
+            summary={
+                "method": exp_config.display_method(),
+                "method_family": exp_config.method,
+                "embedding_preset": exp_config.embedding_preset,
+                "n_clients": exp_config.n_clients,
+                "heterogeneity": exp_config.heterogeneity,
+                "seed": exp_config.seed,
+                **timing,
+            },
+            metrics_payload={},
+            failure={
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "stage": stage,
+            },
+        )
+    return run_id
 
 
 def generate_experiment_configs(
+    *,
     methods: List[str],
     n_clients_list: List[int],
     heterogeneity_list: List[float],
     embedding_presets: List[str],
     cluster_labels_dir: Optional[str],
-    seed: int
+    seed: int,
 ) -> List[ExperimentConfig]:
-    """Generate all experiment configurations."""
-    experiments = []
-
+    experiments: List[ExperimentConfig] = []
     for n_clients in n_clients_list:
         for heterogeneity in heterogeneity_list:
-            for method in ["random", "dirichlet"]:
+            for method in ("random", "dirichlet"):
                 if method in methods:
-                    experiments.append(ExperimentConfig(
-                        method=method,
-                        n_clients=n_clients,
-                        heterogeneity=heterogeneity,
-                        seed=seed
-                    ))
-
+                    experiments.append(
+                        ExperimentConfig(
+                            method=method,
+                            n_clients=n_clients,
+                            heterogeneity=heterogeneity,
+                            seed=seed,
+                        )
+                    )
             if "vlm" in methods:
-                if not cluster_labels_dir:
-                    raise ValueError("VLM method requires --cluster_labels_dir")
-                experiments.append(ExperimentConfig(
-                    method="vlm",
-                    n_clients=n_clients,
-                    heterogeneity=heterogeneity,
-                    seed=seed,
-                    cluster_labels_dir=cluster_labels_dir
-                ))
-
-            if "embedding" in methods:
-                for preset in embedding_presets:
-                    experiments.append(ExperimentConfig(
-                        method="embedding",
+                experiments.append(
+                    ExperimentConfig(
+                        method="vlm",
                         n_clients=n_clients,
                         heterogeneity=heterogeneity,
                         seed=seed,
-                        embedding_preset=preset
-                    ))
-
+                        cluster_labels_dir=cluster_labels_dir,
+                    )
+                )
+            if "embedding" in methods:
+                for preset in embedding_presets:
+                    experiments.append(
+                        ExperimentConfig(
+                            method="embedding",
+                            n_clients=n_clients,
+                            heterogeneity=heterogeneity,
+                            seed=seed,
+                            embedding_preset=preset,
+                        )
+                    )
     return experiments
 
 
-# ============================================================================
-# Results Export & Visualization
-# ============================================================================
-
-def results_to_dataframe(results: List[ExperimentResult]) -> pd.DataFrame:
-    """Convert results to a pandas DataFrame."""
-    rows = []
-    for r in results:
-        row = {
-            "method": r.config.get_display_name(),
-            "n_clients": r.config.n_clients,
-            "heterogeneity": r.config.heterogeneity,
-            **asdict(r.metrics)
-        }
-        rows.append(row)
-    return pd.DataFrame(rows)
+def _successful_dataframe(output_dir: Path) -> pd.DataFrame:
+    rows = scan_results(output_dir, result_type="partition_eval")
+    if not rows:
+        raise ValueError(f"No canonical partition_eval artifacts found in {output_dir}")
+    df = pd.DataFrame(rows)
+    successful = df[df["status"] == "success"].copy()
+    if successful.empty:
+        raise ValueError(f"No successful comparison runs found in {output_dir}")
+    return successful
 
 
-def export_results(results: List[ExperimentResult], output_dir: Path):
-    """Export results to CSV and JSON."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # JSON
-    json_path = output_dir / "results.json"
-    with open(json_path, 'w') as f:
-        json.dump({
-            "timestamp": datetime.now().isoformat(),
-            "results": [r.to_dict() for r in results]
-        }, f, indent=2)
-    log.info("Results saved to %s", json_path)
-
-    # CSV
-    df = results_to_dataframe(results)
-    csv_path = output_dir / "results.csv"
-    df.to_csv(csv_path, index=False)
-    log.info("Results saved to %s", csv_path)
-
-    return df
+def write_statistics_bundle(output_dir: Path, df: pd.DataFrame) -> None:
+    metrics_list = available_metrics(df)
+    summarize_methods(df, metrics_list).to_csv(output_dir / "method_summary.csv", index=False)
+    rank_methods(df, metrics_list).to_csv(output_dir / "metric_rankings.csv", index=False)
+    pairwise_method_deltas(df, metrics_list).to_csv(output_dir / "pairwise_deltas.csv", index=False)
 
 
-def create_metric_comparison_plot(
-    df: pd.DataFrame,
-    metric_col: str,
-    title: str,
-    ylabel: str,
-    output_path: Path,
-    std_col: Optional[str] = None
-):
-    """Create a grouped bar chart comparing methods across configurations."""
-    fig, ax = plt.subplots(figsize=(12, 6))
-
-    methods = df['method'].unique()
-    x_labels = df.groupby(['n_clients', 'heterogeneity']).ngroups
-    configs = df[['n_clients', 'heterogeneity']].drop_duplicates().values
-
-    x = np.arange(len(configs))
-    width = 0.8 / len(methods)
-
-    for i, method in enumerate(methods):
-        method_df = df[df['method'] == method]
-        values = []
-        errors = []
-
-        for n_clients, het in configs:
-            row = method_df[(method_df['n_clients'] == n_clients) & (method_df['heterogeneity'] == het)]
-            if len(row) > 0:
-                values.append(row[metric_col].values[0])
-                if std_col and std_col in row.columns:
-                    errors.append(row[std_col].values[0])
-                else:
-                    errors.append(0)
-            else:
-                values.append(0)
-                errors.append(0)
-
-        offset = (i - len(methods)/2 + 0.5) * width
-        bars = ax.bar(x + offset, values, width, label=method, yerr=errors if std_col else None, capsize=3)
-
-    ax.set_xlabel('Configuration (n_clients, α)')
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.set_xticks(x)
-    ax.set_xticklabels([f'({n}, {h})' for n, h in configs], rotation=45, ha='right')
-    ax.legend(loc='upper right')
-    ax.grid(axis='y', alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-
-
-def create_heatmap(
-    df: pd.DataFrame,
-    metric_col: str,
-    title: str,
-    output_path: Path
-):
-    """Create heatmaps for each method showing metric across n_clients and heterogeneity."""
-    methods = df['method'].unique()
-    n_methods = len(methods)
-
-    fig, axes = plt.subplots(1, n_methods, figsize=(5 * n_methods, 4), squeeze=False)
-
-    for i, method in enumerate(methods):
-        method_df = df[df['method'] == method]
-        pivot = method_df.pivot(index='heterogeneity', columns='n_clients', values=metric_col)
-
-        ax = axes[0, i]
-        sns.heatmap(pivot, annot=True, fmt='.3f', cmap='viridis', ax=ax, cbar=True)
-        ax.set_title(f'{method}')
-        ax.set_xlabel('n_clients')
-        ax.set_ylabel('α (heterogeneity)')
-
-    fig.suptitle(title, fontsize=14, y=1.02)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-
-
-def create_visualizations(df: pd.DataFrame, output_dir: Path):
-    """Generate all visualization plots."""
-    plots_dir = output_dir / "plots"
-    plots_dir.mkdir(exist_ok=True)
-
-    # Label metrics
-    label_metrics = [
-        ('JS_divergence_mean', 'JS_divergence_std', 'JS Divergence', 'JS Divergence'),
-        ('tv_labels_mean', 'tv_labels_std', 'Total Variation (Labels)', 'TV'),
-        ('jsd_global_mean', 'jsd_global_std', 'JSD (Client vs Global)', 'JSD'),
-    ]
-
-    for metric, std, title, ylabel in label_metrics:
-        if metric in df.columns and df[metric].notna().any():
-            create_metric_comparison_plot(
-                df, metric, title, ylabel,
-                plots_dir / f"{metric}_comparison.png", std
-            )
-            create_heatmap(df, metric, title, plots_dir / f"{metric}_heatmap.png")
-
-    # Feature metrics
-    feature_metrics = [
-        ('fid_mean', 'fid_std', 'FID Score', 'FID'),
-        ('mmd_features_mean', 'mmd_features_std', 'MMD (Features)', 'MMD'),
-        ('wasserstein_mean', 'wasserstein_std', 'Wasserstein Distance', 'Distance'),
-        ('energy_dist_mean', 'energy_dist_std', 'Energy Distance', 'Distance'),
-        ('id_mean', 'id_std', 'Intrinsic Dimensionality', 'Dim'),
-        ('knn_sep_mean', 'knn_sep_std', 'k-NN Separability', 'Score'),
-        ('centroid_dist_mean', 'centroid_dist_std', 'Centroid Distance', 'Distance'),
-        ('vendi_score_mean', 'vendi_score_std', 'Vendi Score', 'Score'),
-        ('feature_variance_mean', 'feature_variance_std', 'Feature Variance', 'Variance'),
-        ('ks_multivariate_reject_rate', None, 'KS Multivariate Reject Rate', 'Rate'),
-    ]
-
-    for metric, std, title, ylabel in feature_metrics:
-        if metric in df.columns and df[metric].notna().any():
-            create_metric_comparison_plot(
-                df, metric, title, ylabel,
-                plots_dir / f"{metric}_comparison.png", std
-            )
-            create_heatmap(df, metric, title, plots_dir / f"{metric}_heatmap.png")
-
-    # Balance metrics
-    create_metric_comparison_plot(
-        df, 'coefficient_of_variation', 'Sample Distribution Balance (CV)',
-        'Coefficient of Variation',
-        plots_dir / "balance_cv_comparison.png"
-    )
-
-    log.info("Visualizations saved to %s", plots_dir)
-
-
-def generate_summary_report(df: pd.DataFrame, output_dir: Path, metrics_mode: str):
-    """Generate formatted markdown summary report."""
-    report = []
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-    report.append("# Partitioning Methods Comparison Report\n")
-    report.append(f"**Generated:** {timestamp}\n")
-    report.append(f"**Total experiments:** {len(df)}\n")
-    report.append(f"**Methods:** {', '.join(df['method'].unique())}\n")
-    report.append(f"**Client counts:** {sorted(df['n_clients'].unique())}\n")
-    report.append(f"**Heterogeneity values:** {sorted(df['heterogeneity'].unique())}\n")
-
-    # Summary statistics
-    report.append("\n---\n")
-    report.append("## Summary Statistics\n")
-
-    # Label metrics table
-    if metrics_mode in ["label", "both"]:
-        report.append("### Label Distribution Metrics\n")
-        report.append("| Method | n | α | JS Div | TV | JSD (Global) |\n")
-        report.append("|--------|---|---|--------|----|--------------|\n")
-
-        for _, row in df.iterrows():
-            report.append(
-                f"| {row['method']} | {row['n_clients']} | {row['heterogeneity']} | "
-                f"{row['JS_divergence_mean']:.4f} | {row['tv_labels_mean']:.4f} | "
-                f"{row['jsd_global_mean']:.4f} |\n"
-            )
-
-    # Feature metrics table
-    if metrics_mode in ["feature", "both"] and 'fid_mean' in df.columns and df['fid_mean'].notna().any():
-        report.append("\n### Feature Distribution Metrics\n")
-        report.append("| Method | n | α | FID | MMD | Wass | Energy | ID | KNN | CenDist | Vendi | Var |\n")
-        report.append("|--------|---|---|-----|-----|------|--------|---|-----|---------|-------|-----|\n")
-
-        for _, row in df.iterrows():
-            fid = f"{row['fid_mean']:.2f}" if pd.notna(row.get('fid_mean')) else "N/A"
-            mmd = f"{row['mmd_features_mean']:.4f}" if pd.notna(row.get('mmd_features_mean')) else "N/A"
-            wass = f"{row['wasserstein_mean']:.4f}" if pd.notna(row.get('wasserstein_mean')) else "N/A"
-            eng = f"{row['energy_dist_mean']:.4f}" if pd.notna(row.get('energy_dist_mean')) else "N/A"
-            id_val = f"{row['id_mean']:.2f}" if pd.notna(row.get('id_mean')) else "N/A"
-            knn = f"{row['knn_sep_mean']:.3f}" if pd.notna(row.get('knn_sep_mean')) else "N/A"
-            cd = f"{row['centroid_dist_mean']:.2f}" if pd.notna(row.get('centroid_dist_mean')) else "N/A"
-            vendi = f"{row['vendi_score_mean']:.2f}" if pd.notna(row.get('vendi_score_mean')) else "N/A"
-            var = f"{row['feature_variance_mean']:.2f}" if pd.notna(row.get('feature_variance_mean')) else "N/A"
-
-            report.append(
-                f"| {row['method']} | {row['n_clients']} | {row['heterogeneity']} | "
-                f"{fid} | {mmd} | {wass} | {eng} | {id_val} | {knn} | {cd} | {vendi} | {var} |\n"
-            )
-
-    # Balance metrics table
-    report.append("\n### Data Balance Metrics\n")
-    report.append("| Method | n | α | Mean Samples | Std | Min | Max | CV |\n")
-    report.append("|--------|---|---|--------------|-----|-----|-----|----|\n")
-
-    for _, row in df.iterrows():
-        report.append(
-            f"| {row['method']} | {row['n_clients']} | {row['heterogeneity']} | "
-            f"{row['samples_per_client_mean']:.1f} | {row['samples_per_client_std']:.1f} | "
-            f"{row['samples_per_client_min']} | {row['samples_per_client_max']} | "
-            f"{row['coefficient_of_variation']:.4f} |\n"
-        )
-
-    # Method rankings
-    report.append("\n---\n")
-    report.append("## Method Rankings\n")
-    report.append("*Lower is better for distance/divergence metrics, higher is better for Vendi score*\n")
-
-    ranking_metrics = [
-        ('JS_divergence_mean', 'JS Divergence', True),
-        ('tv_labels_mean', 'Total Variation (Labels)', True),
-        ('fid_mean', 'FID', True),
-        ('knn_sep_mean', 'KNN Separability', False), # Higher is better (more separable/heterogeneous)
-        ('vendi_score_mean', 'Vendi Score', False),  # Higher is better (more diverse intra-client)
-        ('feature_variance_mean', 'Feature Variance', False),
-        ('coefficient_of_variation', 'Balance (CV)', True),
-    ]
-
-    for metric, name, lower_better in ranking_metrics:
-        if metric in df.columns and df[metric].notna().any():
-            ranked = df.groupby('method')[metric].mean().sort_values(ascending=lower_better)
-            report.append(f"\n**{name}:** ")
-            rankings = [f"{i+1}. {m} ({v:.4f})" for i, (m, v) in enumerate(ranked.items())]
-            report.append(" → ".join(rankings) + "\n")
-
-    # Visualizations reference
-    report.append("\n---\n")
-    report.append("## Visualizations\n")
-    report.append("See the `plots/` directory for:\n")
-    report.append("- Bar charts comparing methods across configurations\n")
-    report.append("- Heatmaps showing metric values across n_clients × heterogeneity\n")
-
-    # Save report
-    report_path = output_dir / "report.md"
-    with open(report_path, 'w') as f:
-        f.write("".join(report))
-
-    log.info("Summary report saved to %s", report_path)
-
-
-# ============================================================================
-# Main
-# ============================================================================
-
-def main():
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-
-    parser = argparse.ArgumentParser(description="Compare data partitioning methods")
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+    parser = argparse.ArgumentParser(description="Compare data partitioning methods.")
     parser.add_argument("--dataset", type=str, default="tiny_imagenet")
-    parser.add_argument("--base_path", type=str, default="/path/to/gtai/FDS/")
+    parser.add_argument("--base_path", type=str, required=True)
     parser.add_argument("--n_clients", type=int, nargs="+", default=[3, 6])
     parser.add_argument("--heterogeneity", type=float, nargs="+", default=[0.1, 10.0])
     parser.add_argument("--methods", type=str, nargs="+", default=["random", "dirichlet", "vlm"])
     parser.add_argument("--embedding_presets", type=str, nargs="+", default=["default", "fast"])
-    parser.add_argument("--cluster_labels_dir", type=str, default="../data_partitioning/legacy_vlm/data/tiny_imagenet")
+    parser.add_argument("--cluster_labels_dir", type=str, default=None)
     parser.add_argument("--metrics", type=str, default="both", choices=["label", "feature", "both"])
     parser.add_argument("--subsample", type=int, default=1000)
-    parser.add_argument("--feature_model", type=str, default="dinov2-small", 
-                        help="Model to use for feature extraction metrics")
-    parser.add_argument("--output_dir", type=str, default="../results")
+    parser.add_argument("--feature_model", type=str, default="dinov2-small")
+    parser.add_argument("--output_dir", type=str, default=str(Path.cwd() / "results"))
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--use_cache", action="store_true", default=True)
     parser.add_argument("--no_cache", action="store_true")
-    parser.add_argument("--cache_dir", type=str, default="/path/to/gtai/FDS/embedding_cache")
-
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=str(Path(Path.cwd()) / "embedding_cache"),
+    )
     args = parser.parse_args()
     use_cache = args.use_cache and not args.no_cache
-
-    log.info("%s", "=" * 80)
-    log.info("PARTITIONING METHODS COMPARISON")
-    log.info("%s", "=" * 80)
-    log.info("Feature Model: %s", args.feature_model)
-
+    validate_experiment_request(
+        methods=args.methods,
+        embedding_presets=args.embedding_presets,
+        cluster_labels_dir=args.cluster_labels_dir,
+    )
     output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load datasets
-    log.info("Loading datasets...")
+    log.info("Loading datasets for %s from %s", args.dataset, args.base_path)
     train_dataset = BaseDataset(args.dataset, args.base_path, "train")
     val_dataset = BaseDataset(args.dataset, args.base_path, "val")
-    log.info("Training samples: %d", len(train_dataset))
-    log.info("Validation samples: %d", len(val_dataset))
+    label_mapping = get_or_create_label_mapping(train_dataset)
+    if label_mapping is None:
+        num_classes = len(set(train_dataset[i][1] for i in range(len(train_dataset))))
+    else:
+        num_classes = len(label_mapping)
 
-    # Get number of classes
-    all_labels = set(train_dataset[i][1] for i in range(len(train_dataset)))
-    num_classes = len(all_labels)
-    log.info("Number of classes: %d", num_classes)
-
-    # WNID mapping
-    wnid_mapping = get_or_create_wnid_mapping(args.dataset, train_dataset)
-
-    # Generate experiments
     experiments = generate_experiment_configs(
         methods=args.methods,
         n_clients_list=args.n_clients,
         heterogeneity_list=args.heterogeneity,
         embedding_presets=args.embedding_presets,
         cluster_labels_dir=args.cluster_labels_dir,
-        seed=args.seed
+        seed=args.seed,
     )
+    log.info("Running %s comparison experiments", len(experiments))
 
-    log.info("Total experiments: %d", len(experiments))
+    for exp_config in tqdm(experiments, desc="Comparisons"):
+        run_experiment(
+            exp_config=exp_config,
+            dataset_name=args.dataset,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            base_path=args.base_path,
+            num_classes=num_classes,
+            metrics_mode=args.metrics,
+            subsample=args.subsample,
+            label_mapping=label_mapping,
+            feature_model=args.feature_model,
+            use_cache=use_cache,
+            cache_dir=args.cache_dir,
+            output_dir=output_dir,
+        )
 
-    # Run experiments
-    results = []
-    for exp_config in tqdm(experiments, desc="Running experiments"):
-        exp_id = exp_config.get_experiment_id()
-        log.info("[%s]", exp_id)
+    write_results_index(output_dir, result_type="partition_eval")
+    df = _successful_dataframe(output_dir)
+    generate_report(df=df, output_path=output_dir / "report.html", dataset_name=args.dataset)
+    write_statistics_bundle(output_dir, df)
 
-        try:
-            result = run_experiment(
-                exp_config=exp_config,
-                train_dataset=train_dataset,
-                val_dataset=val_dataset,
-                base_path=args.base_path,
-                num_classes=num_classes,
-                metrics_mode=args.metrics,
-                subsample=args.subsample,
-                wnid_mapping=wnid_mapping,
-                feature_model=args.feature_model,
-                use_cache=use_cache,
-                cache_dir=args.cache_dir,
+    failures = pd.DataFrame(scan_results(output_dir, result_type="partition_eval"))
+    failed_rows = failures[failures["status"] != "success"]
+    if not failed_rows.empty:
+        preview = failed_rows[["run_id", "error_type", "error_message"]].head(5)
+        raise RuntimeError(
+            "One or more comparison runs failed:\n"
+            + "\n".join(
+                f"{row.run_id}: {row.error_type}: {row.error_message}" for row in preview.itertuples()
             )
-            results.append(result)
-
-        except EXPERIMENT_RUN_ERRORS:
-            log.exception("Experiment failed: %s", exp_id)
-            raise
-
-    # Export results
-    log.info("%s", "=" * 80)
-    log.info("EXPORTING RESULTS")
-    log.info("%s", "=" * 80)
-
-    df = export_results(results, output_dir)
-    create_visualizations(df, output_dir)
-    generate_summary_report(df, output_dir, args.metrics)
-
-    log.info("%s", "=" * 80)
-    log.info("ALL EXPERIMENTS COMPLETED")
-    log.info("%s", "=" * 80)
+        )
+    log.info("Comparison artifacts written to %s", output_dir)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

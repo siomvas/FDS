@@ -8,8 +8,8 @@ uniformly at random, creating balanced, homogeneous client datasets.
 import numpy as np
 import logging
 from typing import List
-from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
 from data_loading.dataset import BaseDataset
+from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
 
 logger = logging.getLogger(__name__)
 
@@ -180,20 +180,3 @@ class RandomSplitter(BaseDatasetSplitter):
             splits["clients"][client_id] = ClientSplit(train=client_train_data, val=[])
         logger.info("Random splitting without validation completed.")
         return splits
-
-    
-if __name__ == "__main__":
-    # Test the RandomSplitter with Tiny ImageNet
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
-    train_dataset = BaseDataset("tiny_imagenet", "/path/to/gtai/FDS/", "train")
-    val_dataset = BaseDataset("tiny_imagenet", "/path/to/gtai/FDS/", "val")
-    logger.info("Testing with global validation set:")
-    splitter = RandomSplitter(train_dataset, val_dataset, n_clients=5, heterogeneity=0.5, valset_type="global", seed=42)
-    logger.info("Split summary: %s", splitter.get_split_summary())
-    logger.info("Testing with local validation sets:")
-    splitter = RandomSplitter(train_dataset, val_dataset, n_clients=5, heterogeneity=0.5, valset_type="local", seed=42)
-    logger.info("Split summary: %s", splitter.get_split_summary())
-    logger.info("Testing without validation sets:")
-    splitter = RandomSplitter(train_dataset, None, n_clients=5, heterogeneity=0.5, valset_type="none", seed=42)
-    logger.info("Split summary: %s", splitter.get_split_summary())
-    

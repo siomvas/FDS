@@ -36,6 +36,7 @@ def create_model(name: str, num_classes: int, **kwargs) -> nn.Module:
     }
     
     clean_name = arch_name_map.get(name.lower(), name)
+    proxy = kwargs.pop("proxy", None)
     
     if not hasattr(smp, clean_name):
         raise ValueError(
@@ -66,7 +67,7 @@ def create_model(name: str, num_classes: int, **kwargs) -> nn.Module:
     # Note: We translate our standard 'num_classes' to SMP's 'classes'
     model_fn = getattr(smp, clean_name)
     
-    with hpc_proxy():
+    with hpc_proxy(proxy):
         model = model_fn(
             encoder_name=encoder_name,
             encoder_weights=encoder_weights,

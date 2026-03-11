@@ -141,6 +141,8 @@ def _validate_cfg_structure(cfg: Dict[str, Any]) -> None:
 
     if "rounds" not in fed_cfg:
         raise ValueError("fed.rounds is required.")
+    if "seed" not in cfg:
+        raise ValueError("seed is required.")
 
 
 def _load_datamodule_class(class_path: str):
@@ -158,9 +160,10 @@ def _build_datamodule_args(cfg: Dict[str, Any], client_idx: int) -> Dict[str, An
     dataset_cfg = cfg["dataset"]
     training_cfg = cfg["training"]
 
-    dm_args = dict(dataset_cfg.get("args") or {})
-    if not isinstance(dm_args, dict):
+    dataset_args = dataset_cfg.get("args", {})
+    if not isinstance(dataset_args, dict):
         raise ValueError("dataset.args must be a mapping if provided.")
+    dm_args = dict(dataset_args)
 
     if "root" in dm_args and "data_dir" not in dm_args:
         dm_args["data_dir"] = dm_args.pop("root")
@@ -179,7 +182,7 @@ def _build_datamodule_args(cfg: Dict[str, Any], client_idx: int) -> Dict[str, An
         raise ValueError("Missing datamodule data_dir. Provide dataset.args.data_dir (or legacy root).")
 
     dm_args.setdefault("client_idx", client_idx)
-    dm_args.setdefault("seed", int(cfg.get("seed", 42)))
+    dm_args.setdefault("seed", int(cfg["seed"]))
     dm_args.setdefault("batch_size", int(training_cfg["batch_size"]))
     dm_args.setdefault("num_workers", 0)
 
@@ -198,18 +201,10 @@ def _coerce_client_idx_for_available_splits(dm: Any, splits: Dict[str, Any]) -> 
     if requested in clients:
         return
 
-    first_id = next(iter(clients.keys()))
-    try:
-        fallback_idx = int(str(first_id).split("_")[-1])
-    except ValueError:
-        fallback_idx = 0
-
-    log.warning(
-        "Requested client '%s' missing from splits. Falling back to '%s' for preflight checks.",
-        requested,
-        first_id,
+    raise ValueError(
+        f"Requested client '{requested}' is missing from split payload. "
+        "Fix the client index or the split file instead of relying on fallback selection."
     )
-    dm.client_idx = fallback_idx
 
 
 def _iter_sample_groups(train_data: List[Dict[str, Any]], val_data: List[Dict[str, Any]]) -> Iterable[Tuple[str, List[Dict[str, Any]]]]:
@@ -329,13 +324,19 @@ def run_preflight(args: argparse.Namespace) -> int:
             max_path_check=int(args.max_path_check),
         )
 
-    n_clients = len(splits.get("clients", {}))
+    n_clients = len(splits["clients"])
     n_train = len(train_data)
     n_val = len(val_data)
     split_file = dm_args["split_file"]
 
     log.info("Preflight OK")
-    log.info("task=%s num_classes=%d provider=%s model=%s", task_type, num_classes, cfg["model"].get("provider", "timm"), cfg["model"].get("name"))
+    log.info(
+        "task=%s num_classes=%d provider=%s model=%s",
+        task_type,
+        num_classes,
+        cfg["model"]["provider"],
+        cfg["model"]["name"],
+    )
     log.info("datamodule=%s split_file=%s n_clients=%d train=%d val=%d", dm_class_path, split_file, n_clients, n_train, n_val)
 
     if args.dry_run:

@@ -418,14 +418,10 @@ def build_token_params(args):
             raise ValueError("--layer_aggregation is required for k_last_cls or k_last_all token extraction")
         params["lastk_k"] = args.lastk_k
         params["layer_aggregation"] = args.layer_aggregation
-        
-        # Set pooling to 'lastk' if not already specified as such and raise warning
         if args.pooling != "lastk":
-            log.warning(
-                "Overriding pooling strategy to 'lastk' for %s token extraction",
-                args.tokens,
+            raise ValueError(
+                f"--pooling must be 'lastk' when using {args.tokens} token extraction."
             )
-            args.pooling = "lastk"
 
     return params
 
