@@ -3,6 +3,7 @@
 import pytest
 import numpy as np
 import torch
+import os
 from pathlib import Path
 import tempfile
 import shutil
@@ -11,6 +12,8 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import warnings
 
 from evaluation import metrics
+
+DOWNLOAD_PROXY = os.environ.get("FDS_HPC_PROXY")
 
 
 # ============================================================================
@@ -269,7 +272,7 @@ class TestExtractFeatures:
         """Test feature extraction with DINOv2."""
         dataset1, dataset2 = small_image_datasets
         features = metrics._extract_features(
-            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
+            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy=DOWNLOAD_PROXY
         )
         assert len(features) == 2
         assert features[0].shape[1] == 384  # DINOv2-small dim
@@ -291,7 +294,7 @@ class TestExtractFeatures:
             use_cache=False,
             return_which_tokens="k_last_cls",
             k_last=2,
-            proxy="http://proxy.example:3128",
+            proxy=DOWNLOAD_PROXY,
         )
         # k_last=2 with dim 384 = 768
         assert features[0].shape[1] == 768
@@ -611,7 +614,7 @@ class TestMMD:
         mmd_inception = metrics.MMD([dataset1, dataset2], model_name="inception_v3", batch_size=5, use_cache=False)
 
         mmd_dino = metrics.MMD(
-            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
+            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy=DOWNLOAD_PROXY
         )
 
         # Both should be valid
@@ -650,7 +653,7 @@ class TestEnergyDistance:
         """Test with different feature extractors."""
         dataset1, dataset2 = small_image_datasets
         ed = metrics.energy_distance_features(
-            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
+            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy=DOWNLOAD_PROXY
         )
         assert isinstance(ed, (float, np.floating))
 
@@ -1422,7 +1425,7 @@ class TestCentroidDistanceExtended:
         cd_inception = metrics.centroid_distance([dataset1, dataset2], model_name="inception_v3", batch_size=5, use_cache=False)
 
         cd_dino = metrics.centroid_distance(
-            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
+            [dataset1, dataset2], model_name="dinov2-small", batch_size=5, use_cache=False, proxy=DOWNLOAD_PROXY
         )
 
         assert cd_inception >= 0
@@ -1450,7 +1453,7 @@ class TestFeatureVarianceExtended:
         fv_inception = metrics.feature_variance([dataset1], model_name="inception_v3", batch_size=5, use_cache=False)
 
         fv_dino = metrics.feature_variance(
-            [dataset1], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
+            [dataset1], model_name="dinov2-small", batch_size=5, use_cache=False, proxy=DOWNLOAD_PROXY
         )
 
         assert fv_inception > 0
@@ -1468,7 +1471,7 @@ class TestVendiScoreExtended:
         vs_inception = metrics.vendi_score([dataset1], model_name="inception_v3", batch_size=5, use_cache=False)
 
         vs_dino = metrics.vendi_score(
-            [dataset1], model_name="dinov2-small", batch_size=5, use_cache=False, proxy="http://proxy.example:3128"
+            [dataset1], model_name="dinov2-small", batch_size=5, use_cache=False, proxy=DOWNLOAD_PROXY
         )
 
         assert vs_inception > 0
@@ -1596,7 +1599,7 @@ class TestDifferentExtractors:
 
         kwargs = {"batch_size": 5, "use_cache": False}
         if "dinov2" in model_name:
-            kwargs["proxy"] = "http://proxy.example:3128"
+            kwargs["proxy"] = DOWNLOAD_PROXY
 
         mmd = metrics.MMD([dataset1, dataset2], model_name=model_name, **kwargs)
         assert isinstance(mmd, (float, np.floating))
@@ -1608,7 +1611,7 @@ class TestDifferentExtractors:
 
         kwargs = {"batch_size": 5, "use_cache": False}
         if "dinov2" in model_name:
-            kwargs["proxy"] = "http://proxy.example:3128"
+            kwargs["proxy"] = DOWNLOAD_PROXY
 
         ed = metrics.energy_distance_features([dataset1, dataset2], model_name=model_name, **kwargs)
         assert isinstance(ed, (float, np.floating))
@@ -1620,7 +1623,7 @@ class TestDifferentExtractors:
 
         kwargs = {"batch_size": 5, "use_cache": False}
         if "dinov2" in model_name:
-            kwargs["proxy"] = "http://proxy.example:3128"
+            kwargs["proxy"] = DOWNLOAD_PROXY
 
         swd = metrics.sliced_wasserstein_distance([dataset1, dataset2], model_name=model_name, **kwargs)
         assert swd >= 0
@@ -1632,7 +1635,7 @@ class TestDifferentExtractors:
 
         kwargs = {"batch_size": 5, "use_cache": False}
         if "dinov2" in model_name:
-            kwargs["proxy"] = "http://proxy.example:3128"
+            kwargs["proxy"] = DOWNLOAD_PROXY
 
         result = metrics.KS_multivariate_test([dataset1, dataset2], model_name=model_name, **kwargs)
         assert isinstance(result, dict)

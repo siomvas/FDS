@@ -132,6 +132,7 @@ from tqdm import tqdm
 
 from data_loading.dataset import to_image_dataset
 from embedding.cache_manager import CacheManager
+from utils.proxy_config import hpc_proxy
 
 try:
     from transformers import (
@@ -156,7 +157,6 @@ else:
     _TRANSFORMERS_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
-_PROXY_UNSET = object()
 
 
 def _require_transformers() -> None:
@@ -398,8 +398,7 @@ class EmbeddingExtractor(ABC):
 
         # Use provided CacheManager or create a local one if None is passed but we want caching
         self.cache_manager = cache_manager
-        self._original_https_proxy: Any = _PROXY_UNSET
-        self._proxy_override_active = False
+        self._proxy_context: Optional[Any] = None
 
         self.device = self._resolve_device(device)
 
@@ -426,23 +425,14 @@ class EmbeddingExtractor(ABC):
         return torch.device("cpu")
 
     def _setup_proxy_for_download(self) -> None:
-        self._original_https_proxy = os.environ.get("https_proxy", _PROXY_UNSET)
-        if self.proxy is None:
-            self._proxy_override_active = False
-            return
-        os.environ["https_proxy"] = self.proxy
-        self._proxy_override_active = True
+        self._proxy_context = hpc_proxy(self.proxy)
+        self._proxy_context.__enter__()
 
     def _cleanup_proxy_after_download(self) -> None:
-        if not self._proxy_override_active:
-            self._original_https_proxy = _PROXY_UNSET
+        if self._proxy_context is None:
             return
-        if self._original_https_proxy is _PROXY_UNSET:
-            os.environ.pop("https_proxy", None)
-        else:
-            os.environ["https_proxy"] = self._original_https_proxy
-        self._original_https_proxy = _PROXY_UNSET
-        self._proxy_override_active = False
+        self._proxy_context.__exit__(None, None, None)
+        self._proxy_context = None
 
     def _download_model_with_proxy(self, download_func, *args, **kwargs) -> Any:
         """Wrapper for model downloads with centralized proxy configuration.
@@ -602,10 +592,10 @@ class EmbeddingExtractor(ABC):
                     if return_which_tokens == "k_last_cls":
                         selected_states = outputs.hidden_states[-k_last:]
                         cls_embeddings = [state[:, 0, :] for state in selected_states]
-                        emb = torch.stack(cls_embeddings, dim=1).unsqueeze(2)
+                        emb = torch.cat(cls_embeddings, dim=-1)
                     elif return_which_tokens == "k_last_all":
                         selected_states = outputs.hidden_states[-k_last:]
-                        emb = torch.stack(selected_states, dim=1)
+                        emb = torch.cat(selected_states, dim=-1)
                     else:
                         raise ValueError(f"Invalid return_which_tokens '{return_which_tokens}'")
                 else:

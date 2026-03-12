@@ -11,6 +11,8 @@ from typing import List, Optional, Dict, Any, Type
 import os
 import tempfile
 
+DOWNLOAD_PROXY = os.environ.get("FDS_HPC_PROXY")
+
 
 # ============================================================================
 # Fixtures
@@ -391,31 +393,76 @@ class TestEmbeddingExtractorBase:
         
         assert str(extractor.device).startswith("cuda")
 
-    def test_proxy_setup_and_cleanup(self):
+    def test_proxy_setup_and_cleanup(self, monkeypatch):
         """Test proxy environment variable handling."""
         from embedding.embedding_extractors import ModelRegistry
-        
+
+        monkeypatch.delenv("https_proxy", raising=False)
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        monkeypatch.delenv("http_proxy", raising=False)
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
         extractor = ModelRegistry.create(
             "raw_pixel_resizer-32",
             device="cuda",
             proxy="http://test.proxy:3128"
         )
-        
-        # Test setup
+
         extractor._setup_proxy_for_download()
         assert os.environ.get('https_proxy') == "http://test.proxy:3128"
-        
-        # Test cleanup
+        assert os.environ.get('HTTPS_PROXY') == "http://test.proxy:3128"
+
         extractor._cleanup_proxy_after_download()
         assert 'https_proxy' not in os.environ
+        assert 'HTTPS_PROXY' not in os.environ
 
-    def test_proxy_cleanup_when_not_set(self):
+    def test_proxy_uses_env_default(self, monkeypatch):
+        """Unset proxy argument should honor FDS_HPC_PROXY when configured."""
+        from embedding.embedding_extractors import ModelRegistry
+
+        monkeypatch.delenv("https_proxy", raising=False)
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        monkeypatch.delenv("http_proxy", raising=False)
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
+        monkeypatch.setenv("FDS_HPC_PROXY", "http://env.proxy:3128")
+
+        extractor = ModelRegistry.create("raw_pixel_resizer-32", device="cuda")
+        extractor._setup_proxy_for_download()
+
+        assert os.environ.get("https_proxy") == "http://env.proxy:3128"
+        assert os.environ.get("HTTPS_PROXY") == "http://env.proxy:3128"
+
+        extractor._cleanup_proxy_after_download()
+        assert "https_proxy" not in os.environ
+        assert "HTTPS_PROXY" not in os.environ
+
+    def test_empty_proxy_disables_env_proxy(self, monkeypatch):
+        """Explicit empty proxy should disable proxy env overrides for a run."""
+        from embedding.embedding_extractors import ModelRegistry
+
+        monkeypatch.setenv("FDS_HPC_PROXY", "http://env.proxy:3128")
+        monkeypatch.setenv("https_proxy", "http://ambient.proxy:3128")
+        monkeypatch.setenv("HTTPS_PROXY", "http://ambient.proxy:3128")
+
+        extractor = ModelRegistry.create("raw_pixel_resizer-32", device="cuda", proxy="")
+        extractor._setup_proxy_for_download()
+
+        assert "https_proxy" not in os.environ
+        assert "HTTPS_PROXY" not in os.environ
+
+        extractor._cleanup_proxy_after_download()
+        assert os.environ.get("https_proxy") == "http://ambient.proxy:3128"
+        assert os.environ.get("HTTPS_PROXY") == "http://ambient.proxy:3128"
+
+    def test_proxy_cleanup_when_not_set(self, monkeypatch):
         """Test that cleanup doesn't fail when proxy wasn't set."""
         from embedding.embedding_extractors import ModelRegistry
-        
+
+        monkeypatch.delenv("https_proxy", raising=False)
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        monkeypatch.delenv("http_proxy", raising=False)
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
         extractor = ModelRegistry.create("raw_pixel_resizer-32", device="cuda")
-        
-        # Should not raise even if https_proxy was never set
+
         extractor._cleanup_proxy_after_download()
 
     def test_get_dataloader_raises_without_transform(self, sample_images):
@@ -643,7 +690,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(
@@ -662,7 +709,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(
@@ -682,7 +729,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(
@@ -704,7 +751,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(
@@ -725,7 +772,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         with pytest.raises(ValueError, match="Invalid return_which_tokens"):
@@ -743,7 +790,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(single_image, use_cache=False)
@@ -757,7 +804,7 @@ class TestDINOv2Extractor:
             variant="small",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         emb1 = extractor.extract_embeddings(small_images, use_cache=False)
@@ -772,12 +819,12 @@ class TestDINOv2Extractor:
         ext1 = DINOv2Extractor(
             variant="small", device="cpu", batch_size=2,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         ext2 = DINOv2Extractor(
             variant="small", device="cpu", batch_size=5,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         emb1 = ext1.extract_embeddings(sample_images, use_cache=False)
@@ -793,7 +840,7 @@ class TestDINOv2Extractor:
         extractor = DINOv2Extractor(
             variant="small", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         extractor.extract_embeddings(small_images, use_cache=True)
@@ -808,7 +855,7 @@ class TestDINOv2Extractor:
         extractor = DINOv2Extractor(
             variant="small", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         extractor.load_model()
         
@@ -822,7 +869,7 @@ class TestDINOv2Extractor:
         extractor = DINOv2Extractor(
             variant="small", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -846,7 +893,7 @@ class TestCLIPExtractor:
         """Test embedding dimension for each variant."""
         from embedding.embedding_extractors import CLIPExtractor
         
-        extractor = CLIPExtractor(variant=variant, device="cuda", proxy='http://proxy.example:3128')
+        extractor = CLIPExtractor(variant=variant, device="cuda", proxy=DOWNLOAD_PROXY)
         
         assert extractor.get_embedding_dim() == expected_dim
 
@@ -861,7 +908,7 @@ class TestCLIPExtractor:
         """Test that HuggingFace model paths are correctly mapped."""
         from embedding.embedding_extractors import CLIPExtractor
         
-        extractor = CLIPExtractor(variant="large-patch14", device="cuda", proxy='http://proxy.example:3128')
+        extractor = CLIPExtractor(variant="large-patch14", device="cuda", proxy=DOWNLOAD_PROXY)
         
         assert extractor.hf_model_path == "openai/clip-vit-large-patch14"
 
@@ -873,7 +920,7 @@ class TestCLIPExtractor:
             variant="base-patch32",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -887,7 +934,7 @@ class TestCLIPExtractor:
             variant="base-patch32",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(single_image, use_cache=False)
@@ -901,7 +948,7 @@ class TestCLIPExtractor:
             variant="base-patch32",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         emb1 = extractor.extract_embeddings(small_images, use_cache=False)
@@ -916,12 +963,12 @@ class TestCLIPExtractor:
         ext1 = CLIPExtractor(
             variant="base-patch32", device="cpu", batch_size=2,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         ext2 = CLIPExtractor(
             variant="base-patch32", device="cpu", batch_size=5,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         emb1 = ext1.extract_embeddings(sample_images, use_cache=False)
@@ -937,7 +984,7 @@ class TestCLIPExtractor:
             variant="base-patch32",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         # CLS token
@@ -960,7 +1007,7 @@ class TestCLIPExtractor:
         extractor = CLIPExtractor(
             variant="base-patch32", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         extractor.extract_embeddings(small_images, use_cache=True)
@@ -975,7 +1022,7 @@ class TestCLIPExtractor:
         extractor = CLIPExtractor(
             variant="base-patch32", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -999,7 +1046,7 @@ class TestSigLIPExtractor:
         """Test embedding dimension for each variant."""
         from embedding.embedding_extractors import SigLIPExtractor
         
-        extractor = SigLIPExtractor(variant=variant, device="cuda", proxy='http://proxy.example:3128')
+        extractor = SigLIPExtractor(variant=variant, device="cuda", proxy=DOWNLOAD_PROXY)
         
         assert extractor.get_embedding_dim() == expected_dim
 
@@ -1018,7 +1065,7 @@ class TestSigLIPExtractor:
             variant="base-patch16-224",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1032,7 +1079,7 @@ class TestSigLIPExtractor:
             variant="base-patch16-224",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(single_image, use_cache=False)
@@ -1046,7 +1093,7 @@ class TestSigLIPExtractor:
             variant="base-patch16-224",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         emb1 = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1061,12 +1108,12 @@ class TestSigLIPExtractor:
         ext1 = SigLIPExtractor(
             variant="base-patch16-224", device="cpu", batch_size=2,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         ext2 = SigLIPExtractor(
             variant="base-patch16-224", device="cpu", batch_size=5,
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         emb1 = ext1.extract_embeddings(sample_images, use_cache=False)
@@ -1082,7 +1129,7 @@ class TestSigLIPExtractor:
         extractor = SigLIPExtractor(
             variant="base-patch16-224", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         extractor.extract_embeddings(small_images, use_cache=True)
@@ -1097,7 +1144,7 @@ class TestSigLIPExtractor:
         extractor = SigLIPExtractor(
             variant="base-patch16-224", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1140,7 +1187,7 @@ class TestMAEExtractor:
             variant="base",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1154,7 +1201,7 @@ class TestMAEExtractor:
             variant="base",
             device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(single_image, use_cache=False)
@@ -1170,7 +1217,7 @@ class TestMAEExtractor:
     #         variant="base",
     #         device="cpu",
     #         cache_manager=mock_cache_manager,
-    #         proxy='http://proxy.example:3128'
+    #         proxy=DOWNLOAD_PROXY
     #     )
         
     #     emb1 = extractor.extract_embeddings(small_images, use_cache=False)
@@ -1186,12 +1233,12 @@ class TestMAEExtractor:
     #     ext1 = MAEExtractor(
     #         variant="base", device="cpu", batch_size=2,
     #         cache_manager=mock_cache_manager,
-    #         proxy='http://proxy.example:3128'
+    #         proxy=DOWNLOAD_PROXY
     #     )
     #     ext2 = MAEExtractor(
     #         variant="base", device="cpu", batch_size=5,
     #         cache_manager=mock_cache_manager,
-    #         proxy='http://proxy.example:3128'
+    #         proxy=DOWNLOAD_PROXY
     #     )
         
     #     emb1 = ext1.extract_embeddings(sample_images, use_cache=False)
@@ -1207,7 +1254,7 @@ class TestMAEExtractor:
         extractor = MAEExtractor(
             variant="base", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         extractor.extract_embeddings(small_images, use_cache=True)
@@ -1222,7 +1269,7 @@ class TestMAEExtractor:
         extractor = MAEExtractor(
             variant="base", device="cuda",
             cache_manager=mock_cache_manager,
-            proxy='http://proxy.example:3128'
+            proxy=DOWNLOAD_PROXY
         )
         
         embeddings = extractor.extract_embeddings(small_images, use_cache=False)
