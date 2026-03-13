@@ -21,8 +21,8 @@ name: "${dataset.name}_${model.name}_${fed.method}_seed_${seed}"
 # -----------------------------------------------------------------------------
 fed:
   method: fedavg
-  rounds: 80
-  n_clients: 6
+  rounds: 100
+  n_clients: 10
 
   args: {} # Additional arguments for the FL method can be added here
 
@@ -32,11 +32,11 @@ fed:
 training:
 
   loss: cross_entropy
-  lr: 5e-4
+  lr: 1e-2
   batch_size: 64
-  local_steps: 400 # can be steps or epochs, depending on steps_or_epochs
-  steps_or_epochs: steps
-  scheduler: onecycle
+  local_steps: 1 # can be steps or epochs, depending on steps_or_epochs
+  steps_or_epochs: epochs
+  scheduler: cosine
   optim_resume: resume
   lr_min: 1e-5
   grad_clipping_type: none
@@ -49,8 +49,10 @@ training:
   # Segmentation label validation policy: "error" (fail-fast) or "ignore"
   segmentation_out_of_range_policy: error
   optimizer:
-    class_name: Adam
-    args: {}
+    class_name: SGD
+    args:
+      momentum: 0.9
+      weight_decay: 5e-4
 
 # -----------------------------------------------------------------------------
 # 5. System & Paths

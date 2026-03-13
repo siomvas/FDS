@@ -9,8 +9,22 @@ dataset:
   args:
     data_dir: "${oc.env:DATASETS_ROOT}"
     split_file: "${oc.env:ade20k_chosen_split_path}"
-  
+
+fed:
+  rounds: 80
+
 training:
   task_type: "segmentation"
   num_classes: 150
   loss: dice_loss
+  batch_size: 2
+  lr: 1e-3
+  local_steps: 1
+  steps_or_epochs: epochs
+  scheduler: cosine
+  lr_min: 1e-6
+  optimizer:
+    class_name: SGD
+    args:
+      momentum: 0.9
+      weight_decay: 1e-4

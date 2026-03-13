@@ -9,8 +9,22 @@ dataset:
   args:
     root: "${oc.env:tiny_imagenet_data_root,${hydra:runtime.cwd}/local_data}"
     # other dataset specific settings?
-  
+
+fed:
+  rounds: 100
+
 training:
   task_type: "classification"
   num_classes: 200
   loss: cross_entropy
+  batch_size: 64
+  lr: 1e-2
+  local_steps: 1
+  steps_or_epochs: epochs
+  scheduler: cosine
+  lr_min: 1e-5
+  optimizer:
+    class_name: SGD
+    args:
+      momentum: 0.9
+      weight_decay: 5e-4

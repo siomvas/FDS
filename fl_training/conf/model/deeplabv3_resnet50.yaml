@@ -7,7 +7,7 @@ model:
     weights_backbone: null
 
 training:
-  lr: 5e-4
+  lr: 1e-3
   batch_size: 2
   optimizer:
     class_name: SGD

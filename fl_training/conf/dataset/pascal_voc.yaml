@@ -12,9 +12,23 @@ dataset:
     detection_label_offset: 1
     detection_box_format: "auto"
 
+fed:
+  rounds: 80
+
 training:
   task_type: "detection"
   # Pascal VOC has 20 foreground classes; detection backends usually reserve
   # class 0 for background.
   num_classes: 21
   loss: cross_entropy
+  batch_size: 2
+  lr: 5e-3
+  local_steps: 1
+  steps_or_epochs: epochs
+  scheduler: cosine
+  lr_min: 1e-6
+  optimizer:
+    class_name: SGD
+    args:
+      momentum: 0.9
+      weight_decay: 5e-4
