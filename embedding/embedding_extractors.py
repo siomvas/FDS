@@ -541,7 +541,7 @@ class EmbeddingExtractor(ABC):
         self, 
         images: List[str], 
         return_which_tokens: str = "cls",
-        k_last: int = 4,
+        k_last: int = -1,
         use_cache: bool = True,
         dataset_name: Optional[str] = None,
         base_path: Optional[str] = None,
@@ -674,7 +674,7 @@ class InceptionExtractor(EmbeddingExtractor):
                     "InceptionExtractor does not support loading from model_dir; "
                     "torchvision weights are managed by torch's own cache."
                 )
-            return models.inception_v3(weights='IMAGENET1K_V1', transform_input=False)
+            return models.inception_v3(pretrained=True, transform_input=False)
 
         self.model = self._download_model_with_proxy(_load_inception)
         self.model.fc = nn.Identity()
@@ -891,8 +891,8 @@ class CLIPExtractor(EmbeddingExtractor):
     def load_model(self) -> None:
         _require_transformers()
         logger.info("Loading CLIP %s.", self.variant)
-        self.processor = self._download_model_with_proxy(CLIPImageProcessor.from_pretrained, self.hf_model_path, use_safetensors=True)
-        self.model = self._download_model_with_proxy(CLIPVisionModel.from_pretrained, self.hf_model_path, use_safetensors=True)
+        self.processor = self._download_model_with_proxy(CLIPImageProcessor.from_pretrained, self.hf_model_path)
+        self.model = self._download_model_with_proxy(CLIPVisionModel.from_pretrained, self.hf_model_path)
         if self.model_dir: self._save_model_locally(self.model, self.processor)
         self.model.to(self.device)
         self.model.eval()
