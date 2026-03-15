@@ -541,7 +541,7 @@ class EmbeddingExtractor(ABC):
         self, 
         images: List[str], 
         return_which_tokens: str = "cls",
-        k_last: int = -1,
+        k_last: int = 4,
         use_cache: bool = True,
         dataset_name: Optional[str] = None,
         base_path: Optional[str] = None,
@@ -674,7 +674,7 @@ class InceptionExtractor(EmbeddingExtractor):
                     "InceptionExtractor does not support loading from model_dir; "
                     "torchvision weights are managed by torch's own cache."
                 )
-            return models.inception_v3(pretrained=True, transform_input=False)
+            return models.inception_v3(weights='IMAGENET1K_V1', transform_input=False)
 
         self.model = self._download_model_with_proxy(_load_inception)
         self.model.fc = nn.Identity()

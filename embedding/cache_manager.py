@@ -175,10 +175,12 @@ class CacheManager:
         # by only including non-None params.
         config_dict = {
             "model_name": model_name,
-            "pooling_strategy": pooling_strategy,
-            "layers": layers,
             **{k: v for k, v in kwargs.items() if v is not None},
         }
+        if pooling_strategy is not None:
+            config_dict["pooling_strategy"] = pooling_strategy
+        if layers is not None:
+            config_dict["layers"] = layers
 
         # Sort keys for consistency
         config_str = json.dumps(config_dict, sort_keys=True)
