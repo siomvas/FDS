@@ -12,13 +12,14 @@ export HTTPS_PROXY=http://proxy.example.org:3128
 PARTITIONS=/path/to/FDS/partitions
 
 # --- food101 (classification) ---
-for alpha in 0.1 0.3 0.5 1.0 5.0; do
+for alpha in 0.1 0.3 0.5 1.0; do
     export food101_chosen_split_path=$PARTITIONS/food101/vlm_n10_alpha${alpha}_seed42.json
     echo "Running FL: food101 | vlm | alpha=$alpha"
     python fl_training/run_experiment.py \
         dataset=food101 \
         model=resnet18 \
-        fed.n_clients=10
+        fed.n_clients=10 \
+        "name=food101_resnet18_fedavg_vlm_alpha${alpha}_seed42"
 done
 
 # # --- tiny_imagenet (classification) ---
@@ -28,7 +29,8 @@ done
 #     python fl_training/run_experiment.py \
 #         dataset=tiny_imagenet \
 #         model=resnet18 \
-#         fed.n_clients=10
+#         fed.n_clients=10 \
+#         "name=tiny_imagenet_resnet18_fedavg_vlm_alpha${alpha}_seed42"
 # done
 
 # # --- ade20k (segmentation) ---
