@@ -41,6 +41,8 @@ venv.bak/
 # Miscellaneous
 *.npz
 *pytest_cache/
+.python-version
+logs/
 
 # Tests
 tests/.hypothesis/
