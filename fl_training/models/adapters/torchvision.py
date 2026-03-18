@@ -7,6 +7,28 @@ from utils.proxy_config import hpc_proxy
 
 log = logging.getLogger(__name__)
 
+
+def _candidate_weight_modules(task_type: str):
+    modules = [models]
+    if task_type == "detection" and hasattr(models, "detection"):
+        modules.insert(0, models.detection)
+    elif task_type == "segmentation" and hasattr(models, "segmentation"):
+        modules.insert(0, models.segmentation)
+    return modules
+
+
+def _resolve_weight_enum(value, task_type: str):
+    if not isinstance(value, str) or value == "DEFAULT" or "." not in value:
+        return value
+
+    class_name, member_name = value.rsplit(".", 1)
+    for module in _candidate_weight_modules(task_type):
+        enum_cls = getattr(module, class_name, None)
+        if enum_cls is not None and hasattr(enum_cls, member_name):
+            return getattr(enum_cls, member_name)
+
+    raise ValueError(f"Unknown torchvision weights enum '{value}' for task '{task_type}'.")
+
 def _replace_head(model: nn.Module, num_classes: int, model_name: str):
     """
     Heuristics to replace the final classification layer for common Torchvision families.
@@ -74,6 +96,28 @@ def _replace_detection_head(model: nn.Module, num_classes: int, model_name: str)
             from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
             model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+            return
+        except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+
+    detection_head = getattr(model, "head", None)
+    classification_head = getattr(detection_head, "classification_head", None) if detection_head is not None else None
+    cls_logits = getattr(classification_head, "cls_logits", None) if classification_head is not None else None
+    if isinstance(cls_logits, nn.Conv2d):
+        try:
+            from torchvision.models.detection.fcos import FCOSClassificationHead
+
+            num_anchors = int(getattr(classification_head, "num_anchors"))
+            in_channels = int(cls_logits.in_channels)
+            num_convs = max(1, len(getattr(classification_head, "conv", [])) // 3)
+            norm_layer = lambda channels: nn.GroupNorm(32, channels)
+            detection_head.classification_head = FCOSClassificationHead(
+                in_channels=in_channels,
+                num_anchors=num_anchors,
+                num_classes=num_classes,
+                num_convs=num_convs,
+                norm_layer=norm_layer,
+            )
             return
         except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
             pass
@@ -186,7 +230,9 @@ def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Mo
 
     # kwargs usually contains 'weights'.
     # Modern torchvision uses 'weights="DEFAULT"' instead of 'pretrained=True'
+    has_weights_backbone = "weights_backbone" in kwargs
     weights = kwargs.pop("weights", None)
+    weights_backbone = kwargs.pop("weights_backbone", None)
     pretrained = kwargs.pop("pretrained", False)
     proxy = kwargs.pop("proxy", None)
 
@@ -197,13 +243,16 @@ def create_model(name: str, num_classes: int, task_type: str, **kwargs) -> nn.Mo
         # OR just use "weights='DEFAULT'" which works for newer torchvision versions
         weights = "DEFAULT"
 
+    weights = _resolve_weight_enum(weights, task_type)
+    weights_backbone = _resolve_weight_enum(weights_backbone, task_type)
+
     log.info(f"Initializing Torchvision Model: {name} | Task: {task_type} | Weights: {weights}")
 
     # Instantiate
     model_fn = _resolve_model_fn(name, task_type)
     model_kwargs = dict(kwargs)
-    if task_type in {"segmentation", "detection"}:
-        model_kwargs.setdefault("num_classes", num_classes)
+    if has_weights_backbone:
+        model_kwargs["weights_backbone"] = weights_backbone
 
     with hpc_proxy(proxy):
         model = _instantiate_model(model_fn, weights=weights, pretrained=pretrained, kwargs=model_kwargs)

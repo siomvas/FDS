@@ -140,14 +140,6 @@ class ClassificationEngine:
 
             round_loss += loss.item()
 
-            if metric_callback:
-                batch_metrics = {
-                    "step": self.current_global_step,
-                    "batch_loss": loss.item(),
-                    "lr": self.scheduler.get_last_lr()[-1]
-                }
-                metric_callback(batch_metrics)
-            
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
@@ -158,7 +150,7 @@ class ClassificationEngine:
         
         # Logging metrics via callback
         avg_loss = round_loss / num_steps if num_steps > 0 else 0.0
-        training_accuracy = 100 * correct / total if total > 0 else 0.0
+        training_accuracy = correct / total if total > 0 else 0.0
         metrics = {
             "round": float(self.current_round),
             "train_loss": avg_loss,
@@ -212,7 +204,7 @@ class ClassificationEngine:
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
 
-        accuracy = 100 * correct / total if total > 0 else 0.0
+        accuracy = correct / total if total > 0 else 0.0
         avg_loss = loss_sum / len(val_loader) if len(val_loader) > 0 else 0.0
 
         self.model.to(self.cpu_device)

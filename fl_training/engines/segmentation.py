@@ -153,10 +153,18 @@ class SegmentationEngine:
             return ce + dice
         raise ValueError(f"Unsupported segmentation loss: {self.loss_name}")
 
+    def _model_provider(self) -> str:
+        model_cfg = self.config.get("model", {})
+        if isinstance(model_cfg, dict):
+            return str(model_cfg.get("provider", "")).lower()
+        return ""
+
     def _forward_with_loss(self, images: torch.Tensor, targets: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        try:
-            outputs = self.model(images, labels=targets)
-        except TypeError:
+        provider = self._model_provider()
+
+        if provider in {"hf", "huggingface", "transformers"}:
+            outputs = self.model(pixel_values=images, labels=targets)
+        else:
             outputs = self.model(images)
 
         logits = outputs
@@ -270,18 +278,11 @@ class SegmentationEngine:
             total_correct += step_correct
             total_pixels += step_total
 
-            if metric_callback:
-                metric_callback({
-                    "step": float(self.current_global_step),
-                    "batch_loss": float(loss.item()),
-                    "lr": float(self.scheduler.get_last_lr()[-1]),
-                })
-
             self.current_global_step += 1
             executed_steps += 1
 
         avg_loss = round_loss / executed_steps if executed_steps > 0 else 0.0
-        pixel_accuracy = 100.0 * total_correct / total_pixels if total_pixels > 0 else 0.0
+        pixel_accuracy = total_correct / total_pixels if total_pixels > 0 else 0.0
         mean_iou = self._mean_iou(intersection, union)
 
         metrics = {
@@ -335,7 +336,7 @@ class SegmentationEngine:
                 total_correct += step_correct
                 total_pixels += step_total
 
-        pixel_accuracy = 100.0 * total_correct / total_pixels if total_pixels > 0 else 0.0
+        pixel_accuracy = total_correct / total_pixels if total_pixels > 0 else 0.0
         mean_iou = self._mean_iou(intersection, union)
         avg_loss = total_loss / n_batches if n_batches > 0 else 0.0
 

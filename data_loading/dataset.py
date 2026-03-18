@@ -255,14 +255,35 @@ class DetectionDataset(Dataset):
         transform=None,
         label_offset: int = 1,
         box_format: str = "auto",
+        sync_hflip_prob: float = 0.0,
+        resize_size: Optional[Tuple[int, int]] = None,
     ):
         self.samples = split_data
         self.transform = transform
         self.label_offset = int(label_offset)
         self.box_format = str(box_format).lower()
+        self.sync_hflip_prob = float(sync_hflip_prob)
+        self.resize_size = self._normalize_resize_size(resize_size)
 
     def __len__(self):
         return len(self.samples)
+
+    @staticmethod
+    def _normalize_resize_size(resize_size: Optional[Any]) -> Optional[Tuple[int, int]]:
+        if resize_size is None:
+            return None
+        if isinstance(resize_size, Integral):
+            size = int(resize_size)
+            if size <= 0:
+                raise ValueError("Detection resize_size must be positive.")
+            return (size, size)
+        if isinstance(resize_size, (tuple, list)) and len(resize_size) == 2:
+            height = int(resize_size[0])
+            width = int(resize_size[1])
+            if height <= 0 or width <= 0:
+                raise ValueError("Detection resize_size must contain positive height/width.")
+            return (height, width)
+        raise ValueError("Detection resize_size must be an int or a 2-tuple of ints.")
 
     @staticmethod
     def _empty_target_tensors() -> Tuple[torch.Tensor, torch.Tensor]:
@@ -388,11 +409,38 @@ class DetectionDataset(Dataset):
             labels_tensor = labels_tensor + self.label_offset
         return boxes_tensor, labels_tensor
 
+    @staticmethod
+    def _hflip_boxes(boxes: torch.Tensor, image_width: int) -> torch.Tensor:
+        if boxes.numel() == 0:
+            return boxes
+        flipped = boxes.clone()
+        flipped[:, 0] = float(image_width) - boxes[:, 2]
+        flipped[:, 2] = float(image_width) - boxes[:, 0]
+        return flipped
+
+    @staticmethod
+    def _resize_boxes(
+        boxes: torch.Tensor,
+        old_width: int,
+        old_height: int,
+        new_width: int,
+        new_height: int,
+    ) -> torch.Tensor:
+        if boxes.numel() == 0:
+            return boxes
+        resized = boxes.clone()
+        scale_x = float(new_width) / float(old_width)
+        scale_y = float(new_height) / float(old_height)
+        resized[:, [0, 2]] = resized[:, [0, 2]] * scale_x
+        resized[:, [1, 3]] = resized[:, [1, 3]] * scale_y
+        return resized
+
     def __getitem__(self, idx):
         sample = self.samples[idx]
         image_path = Path(sample["image"])
         image = Image.open(image_path).convert("RGB")
         image_width, image_height = image.size
+        orig_width, orig_height = image_width, image_height
 
         if "boxes" in sample and "labels" in sample:
             boxes, labels = self._parse_inline_annotations(sample)
@@ -404,6 +452,22 @@ class DetectionDataset(Dataset):
                 image_height=image_height,
             )
 
+        if self.sync_hflip_prob > 0.0 and random.random() < self.sync_hflip_prob:
+            image = TF.hflip(image)
+            boxes = self._hflip_boxes(boxes, image_width=image_width)
+
+        if self.resize_size is not None:
+            new_height, new_width = self.resize_size
+            image = TF.resize(image, [new_height, new_width])
+            boxes = self._resize_boxes(
+                boxes,
+                old_width=image_width,
+                old_height=image_height,
+                new_width=new_width,
+                new_height=new_height,
+            )
+            image_width, image_height = new_width, new_height
+
         area = torch.zeros((boxes.shape[0],), dtype=torch.float32)
         if boxes.numel() > 0:
             area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
@@ -414,6 +478,8 @@ class DetectionDataset(Dataset):
             "image_id": torch.tensor([idx], dtype=torch.int64),
             "iscrowd": torch.zeros((labels.shape[0],), dtype=torch.int64),
             "area": area,
+            "orig_size": torch.tensor([orig_height, orig_width], dtype=torch.int64),
+            "size": torch.tensor([image_height, image_width], dtype=torch.int64),
         }
 
         if self.transform:
