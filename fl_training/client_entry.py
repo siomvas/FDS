@@ -92,6 +92,9 @@ def validate_client_config(cfg: Dict[str, Any], task_type: str) -> None:
 def build_datamodule_args(cfg: Dict[str, Any], client_name: str) -> Dict[str, Any]:
     dataset_cfg = cfg["dataset"]
     training_cfg = cfg["training"]
+    model_cfg = cfg["model"]
+    class_path = str(dataset_cfg.get("class_path", ""))
+    task_type = str(training_cfg.get("task_type", "")).lower()
 
     dataset_args = dataset_cfg.get("args", {})
     if not isinstance(dataset_args, dict):
@@ -108,6 +111,12 @@ def build_datamodule_args(cfg: Dict[str, Any], client_name: str) -> Dict[str, An
         dm_args["split_file"] = dataset_cfg["dataset_splits"]
     if "label_map" in dataset_cfg and "label_map" not in dm_args:
         dm_args["label_map"] = dataset_cfg["label_map"]
+    if (
+        "provider" in model_cfg
+        and "detection_provider" not in dm_args
+        and (task_type == "detection" or class_path.endswith("PascalVOCDataModule"))
+    ):
+        dm_args["detection_provider"] = str(model_cfg["provider"]).lower()
 
     return dm_args
 
@@ -137,18 +146,33 @@ def extract_client_idx(client_name: str) -> int:
     raise ValueError(f"Cannot extract client index from '{client_name}'")
 
 
-def metric_callback(metrics: Dict[str, float], writer: SummaryWriter):
-    step_value = metrics.get("step", metrics.get("round", 0))
+def metric_callback(
+    metrics: Dict[str, float],
+    writer: SummaryWriter,
+    *,
+    prefix: str = "",
+    step_override: int | None = None,
+):
+    step_value = step_override if step_override is not None else metrics.get("round", metrics.get("step", 0))
     try:
         step = int(step_value)
     except (TypeError, ValueError):
         step = 0
 
     for key, value in metrics.items():
-        if key in {"step", "round"}:
+        if key in {"step", "round", "num_steps_current_round"}:
             continue
         if isinstance(value, (int, float)):
-            writer.add_scalar(key, value, global_step=step)
+            metric_name = key
+            if prefix == "train":
+                if metric_name.startswith("train_"):
+                    metric_name = metric_name[len("train_") :]
+            elif prefix in {"pre", "val"}:
+                if metric_name.startswith("val_"):
+                    metric_name = metric_name[len("val_") :]
+
+            tag = f"{prefix}/{metric_name}" if prefix else metric_name
+            writer.add_scalar(tag, value, global_step=step)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -224,15 +248,16 @@ def main():
         engine.model.load_state_dict(input_model.params)
         engine.current_round = input_model.current_round
         engine.model.to(device)
+        round_idx = int(input_model.current_round)
 
         if val_loader is not None:
             pre_metrics = engine.evaluate(val_loader=val_loader)
-            metric_callback({f"pre_{k}": v for k, v in pre_metrics.items()}, writer)
+            metric_callback(pre_metrics, writer, prefix="pre", step_override=round_idx)
 
         # Local Training
         train_metrics = engine.train_one_round(
             train_loader,
-            metric_callback=lambda m: metric_callback(m, writer)
+            metric_callback=lambda m: metric_callback(m, writer, prefix="train")
         )
 
         # D. Evaluation (Optional but recommended for Model Selection)
@@ -240,7 +265,7 @@ def main():
         if val_loader is not None:
             val_metrics = engine.evaluate(val_loader)
             log.info(f"Round {input_model.current_round} Validation: {val_metrics}")
-            metric_callback({f"val_{k}": v for k, v in val_metrics.items()}, writer)
+            metric_callback(val_metrics, writer, prefix="val", step_override=round_idx)
 
         # Send Updates
         executed_steps = int(train_metrics.get("num_steps_current_round", 0))

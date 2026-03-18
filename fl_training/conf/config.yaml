@@ -36,7 +36,7 @@ training:
   batch_size: 64
   local_steps: 1 # can be steps or epochs, depending on steps_or_epochs
   steps_or_epochs: epochs
-  scheduler: cosine
+  scheduler: none
   optim_resume: resume
   lr_min: 1e-5
   grad_clipping_type: none
@@ -52,7 +52,7 @@ training:
     class_name: SGD
     args:
       momentum: 0.9
-      weight_decay: 5e-4
+      weight_decay: 0.0
 
 # -----------------------------------------------------------------------------
 # 5. System & Paths

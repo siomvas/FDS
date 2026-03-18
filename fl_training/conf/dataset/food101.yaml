@@ -21,10 +21,10 @@ training:
   lr: 1e-2
   local_steps: 1
   steps_or_epochs: epochs
-  scheduler: cosine
+  scheduler: none
   lr_min: 1e-5
   optimizer:
     class_name: SGD
     args:
       momentum: 0.9
-      weight_decay: 5e-4
+      weight_decay: 0.0

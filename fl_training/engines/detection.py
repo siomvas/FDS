@@ -60,6 +60,11 @@ class _DetectionProviderAdapter:
     ) -> Any:
         raise NotImplementedError
 
+    @property
+    def background_class_at_zero(self) -> bool:
+        """Whether label 0 is reserved for background."""
+        return True
+
 
 class _TorchvisionDetectionAdapter(_DetectionProviderAdapter):
     name = "torchvision"
@@ -87,6 +92,10 @@ class _TorchvisionDetectionAdapter(_DetectionProviderAdapter):
 class _HFDetectionAdapter(_DetectionProviderAdapter):
     name = "hf"
 
+    @property
+    def background_class_at_zero(self) -> bool:
+        return False
+
     @staticmethod
     def _require_tensor_batch(images_tensor: Optional[torch.Tensor]) -> torch.Tensor:
         if images_tensor is None:
@@ -97,11 +106,26 @@ class _HFDetectionAdapter(_DetectionProviderAdapter):
         return images_tensor
 
     @staticmethod
+    def _xyxy_abs_to_cxcywh_norm(boxes: torch.Tensor, img_w: int, img_h: int) -> torch.Tensor:
+        """Convert absolute xyxy boxes to normalised cxcywh."""
+        if boxes.numel() == 0:
+            return boxes
+
+        x1, y1, x2, y2 = boxes.unbind(-1)
+        cx = ((x1 + x2) / 2.0) / float(img_w)
+        cy = ((y1 + y2) / 2.0) / float(img_h)
+        bw = (x2 - x1) / float(img_w)
+        bh = (y2 - y1) / float(img_h)
+        return torch.stack([cx, cy, bw, bh], dim=-1)
+
+    @staticmethod
     def _to_hf_labels(targets: Any, images_list: List[torch.Tensor]) -> List[Dict[str, torch.Tensor]]:
         if targets is None:
             raise ValueError("HF detection training requires targets.")
         if not isinstance(targets, list):
             raise ValueError("HF detection adapter expects list-of-dicts targets.")
+        if len(targets) != len(images_list):
+            raise ValueError("HF detection adapter requires one target dictionary per image.")
 
         labels: List[Dict[str, torch.Tensor]] = []
         for image_tensor, item in zip(images_list, targets):
@@ -117,11 +141,20 @@ class _HFDetectionAdapter(_DetectionProviderAdapter):
 
             h = int(image_tensor.shape[-2])
             w = int(image_tensor.shape[-1])
+            boxes = _HFDetectionAdapter._xyxy_abs_to_cxcywh_norm(boxes, img_w=w, img_h=h)
+
+            if "orig_size" in item:
+                orig_size = torch.as_tensor(item["orig_size"], dtype=torch.int64, device=image_tensor.device).reshape(-1)
+                if orig_size.numel() != 2:
+                    raise ValueError("HF detection target 'orig_size' must contain [height, width].")
+            else:
+                orig_size = torch.tensor([h, w], dtype=torch.int64, device=image_tensor.device)
+
             labels.append(
                 {
                     "class_labels": class_labels,
                     "boxes": boxes,
-                    "orig_size": torch.tensor([h, w], dtype=torch.int64, device=image_tensor.device),
+                    "orig_size": orig_size,
                     "size": torch.tensor([h, w], dtype=torch.int64, device=image_tensor.device),
                 }
             )
@@ -196,8 +229,22 @@ class _GenericDetectionAdapter(_DetectionProviderAdapter):
         raise RuntimeError(f"Unable to run detection inference. Last error: {errors[-1]}")
 
 
-def _resolve_detection_adapter(provider: str) -> _DetectionProviderAdapter:
+def _infer_provider(model: nn.Module) -> str:
+    module_path = getattr(type(model), "__module__", "") or ""
+    if "torchvision" in module_path:
+        return "torchvision"
+    if "transformers" in module_path:
+        return "hf"
+    return "generic"
+
+
+def _resolve_detection_adapter(provider: str, model: Optional[nn.Module] = None) -> _DetectionProviderAdapter:
     normalized = str(provider).lower()
+    if normalized in {"generic", "auto", ""} and model is not None:
+        inferred = _infer_provider(model)
+        if inferred != "generic":
+            log.info("Auto-detected detection provider from model: %s", inferred)
+            normalized = inferred
     if normalized == "torchvision":
         return _TorchvisionDetectionAdapter()
     if normalized in {"hf", "huggingface", "transformers"}:
@@ -237,8 +284,8 @@ class DetectionEngine:
         self.map_iou_threshold = float(training_cfg.get("detection_map_iou_threshold", 0.5))
 
         model_cfg = self.config.get("model")
-        provider = "generic" if model_cfg is None else str(model_cfg["provider"]).lower()
-        self.io_adapter = _resolve_detection_adapter(provider)
+        provider = "generic" if model_cfg is None else str(model_cfg.get("provider", "generic")).lower()
+        self.io_adapter = _resolve_detection_adapter(provider, model=self.model)
         log.info("Detection I/O adapter: provider=%s adapter=%s", provider, self.io_adapter.name)
 
     def configure_optimizer(self):
@@ -330,8 +377,18 @@ class DetectionEngine:
     @staticmethod
     def _loss_from_outputs(outputs: Any) -> torch.Tensor:
         if isinstance(outputs, dict):
-            losses = [value for value in outputs.values() if torch.is_tensor(value)]
+            explicit_loss = outputs.get("loss")
+            if torch.is_tensor(explicit_loss):
+                return explicit_loss
+
+            losses = [
+                value for key, value in outputs.items()
+                if torch.is_tensor(value) and "loss" in str(key).lower()
+            ]
             if not losses:
+                tensor_values = [value for value in outputs.values() if torch.is_tensor(value)]
+                if len(tensor_values) == 1:
+                    return tensor_values[0]
                 raise ValueError("Detection model returned a dict with no tensor losses.")
             return sum(losses)
 
@@ -354,6 +411,103 @@ class DetectionEngine:
         if hasattr(outputs, "pred_boxes") or hasattr(outputs, "logits"):
             return outputs
         return None
+
+    @staticmethod
+    def _extract_size_hw(value: Any) -> Optional[torch.Tensor]:
+        if value is None:
+            return None
+        size = torch.as_tensor(value, dtype=torch.int64).reshape(-1)
+        if size.numel() != 2:
+            return None
+        return size
+
+    @staticmethod
+    def _cxcywh_norm_to_xyxy_abs(boxes: torch.Tensor, img_w: int, img_h: int) -> torch.Tensor:
+        if boxes.numel() == 0:
+            return boxes
+
+        cx, cy, bw, bh = boxes.unbind(-1)
+        x1 = (cx - (bw / 2.0)) * float(img_w)
+        y1 = (cy - (bh / 2.0)) * float(img_h)
+        x2 = (cx + (bw / 2.0)) * float(img_w)
+        y2 = (cy + (bh / 2.0)) * float(img_h)
+        out = torch.stack([x1, y1, x2, y2], dim=-1)
+        out[..., 0::2] = torch.clamp(out[..., 0::2], min=0.0, max=float(img_w))
+        out[..., 1::2] = torch.clamp(out[..., 1::2], min=0.0, max=float(img_h))
+        return out
+
+    def _prediction_target_sizes(
+        self,
+        images_list: List[torch.Tensor],
+        targets: Optional[Any],
+    ) -> torch.Tensor:
+        sizes: List[torch.Tensor] = []
+        targets_list = targets if isinstance(targets, list) and len(targets) == len(images_list) else [None] * len(images_list)
+        for image_tensor, target in zip(images_list, targets_list):
+            size = None
+            if isinstance(target, dict):
+                size = self._extract_size_hw(target.get("size"))
+                if size is None:
+                    size = self._extract_size_hw(target.get("orig_size"))
+            if size is None:
+                size = torch.tensor(
+                    [int(image_tensor.shape[-2]), int(image_tensor.shape[-1])],
+                    dtype=torch.int64,
+                )
+            sizes.append(size)
+        return torch.stack(sizes, dim=0).to(self.compute_device)
+
+    def _normalize_predictions(
+        self,
+        predictions: Any,
+        images_list: List[torch.Tensor],
+        targets: Optional[Any] = None,
+    ) -> Optional[List[Dict[str, torch.Tensor]]]:
+        if isinstance(predictions, list):
+            return predictions
+
+        logits = None
+        pred_boxes = None
+        if isinstance(predictions, dict):
+            logits = predictions.get("logits")
+            pred_boxes = predictions.get("pred_boxes")
+            if "boxes" in predictions and torch.is_tensor(predictions["boxes"]):
+                return [predictions]
+        else:
+            logits = getattr(predictions, "logits", None)
+            pred_boxes = getattr(predictions, "pred_boxes", None)
+
+        if not torch.is_tensor(logits) or not torch.is_tensor(pred_boxes):
+            return None
+        if logits.ndim != 3 or pred_boxes.ndim != 3 or pred_boxes.shape[0] != len(images_list):
+            return None
+
+        target_sizes = self._prediction_target_sizes(images_list, targets)
+        use_focal_loss = bool(getattr(getattr(self.model, "config", None), "use_focal_loss", False))
+        if use_focal_loss:
+            class_scores = torch.sigmoid(logits)
+        else:
+            class_scores = torch.softmax(logits, dim=-1)
+            if class_scores.shape[-1] > 1:
+                class_scores = class_scores[..., :-1]
+
+        scores, labels = torch.max(class_scores, dim=-1)
+        normalized: List[Dict[str, torch.Tensor]] = []
+        for idx, image_tensor in enumerate(images_list):
+            size_hw = target_sizes[idx]
+            boxes_xyxy = self._cxcywh_norm_to_xyxy_abs(
+                pred_boxes[idx],
+                img_w=int(size_hw[1].item()),
+                img_h=int(size_hw[0].item()),
+            )
+            normalized.append(
+                {
+                    "boxes": boxes_xyxy.to(device=image_tensor.device),
+                    "scores": scores[idx].to(device=image_tensor.device),
+                    "labels": labels[idx].to(device=image_tensor.device, dtype=torch.int64),
+                }
+            )
+        return normalized
 
     def _forward_with_loss(
         self,
@@ -387,13 +541,19 @@ class DetectionEngine:
                 f"Detection inference failed for adapter '{self.io_adapter.name}': {exc}"
             ) from exc
 
-    def _count_detections(self, predictions: Any, batch_size: int) -> float:
+    def _count_detections(
+        self,
+        predictions: Any,
+        images_list: List[torch.Tensor],
+        targets: Optional[Any] = None,
+    ) -> float:
         if predictions is None:
             return 0.0
 
-        if isinstance(predictions, list):
+        normalized = self._normalize_predictions(predictions, images_list, targets)
+        if normalized is not None:
             counts = []
-            for pred in predictions:
+            for pred in normalized:
                 if isinstance(pred, dict) and "scores" in pred and torch.is_tensor(pred["scores"]):
                     counts.append(float((pred["scores"] > self.score_threshold).sum().item()))
                 elif isinstance(pred, dict) and "boxes" in pred and torch.is_tensor(pred["boxes"]):
@@ -401,17 +561,6 @@ class DetectionEngine:
                 else:
                     counts.append(0.0)
             return float(sum(counts) / max(len(counts), 1))
-
-        logits = getattr(predictions, "logits", None)
-        if torch.is_tensor(logits):
-            # Common for DETR-like models: [B, num_queries, num_classes(+1 no-object)].
-            class_logits = logits
-            if class_logits.shape[-1] > 1:
-                class_logits = class_logits[..., :-1]
-            probs = torch.softmax(class_logits, dim=-1)
-            max_scores, _ = torch.max(probs, dim=-1)
-            counts = (max_scores > self.score_threshold).sum(dim=-1).float()
-            return float(counts.mean().item())
 
         return 0.0
 
@@ -509,12 +658,15 @@ class DetectionEngine:
         gt_entries: List[Dict[str, torch.Tensor]],
     ) -> Optional[float]:
         """Compute mAP@0.5 over classes present in GT."""
+        skip_zero = self.io_adapter.background_class_at_zero
         class_ids = set()
         for gt in gt_entries:
             labels = gt["labels"]
             for cls in labels.tolist():
-                if int(cls) > 0:
-                    class_ids.add(int(cls))
+                cls_int = int(cls)
+                if skip_zero and cls_int == 0:
+                    continue
+                class_ids.add(cls_int)
 
         if not class_ids:
             return None
@@ -647,14 +799,7 @@ class DetectionEngine:
             self.scheduler.step()
 
             round_loss += float(loss.item())
-            round_detection_count += self._count_detections(predictions, len(images_list))
-
-            if metric_callback:
-                metric_callback({
-                    "step": float(self.current_global_step),
-                    "batch_loss": float(loss.item()),
-                    "lr": float(self.scheduler.get_last_lr()[-1]),
-                })
+            round_detection_count += self._count_detections(predictions, images_list, targets)
 
             self.current_global_step += 1
             executed_steps += 1
@@ -695,6 +840,7 @@ class DetectionEngine:
         all_pred_entries: List[Dict[str, torch.Tensor]] = []
         all_gt_entries: List[Dict[str, torch.Tensor]] = []
         map_supported = True
+        can_compute_eval_loss = self.io_adapter.name != "torchvision"
 
         with torch.no_grad():
             for batch in val_loader:
@@ -703,22 +849,24 @@ class DetectionEngine:
                 targets = self._prepare_targets(raw_targets)
 
                 predictions = None
-                if targets is not None:
+                if targets is not None and can_compute_eval_loss:
                     try:
                         loss, predictions = self._forward_with_loss(images_tensor, images_list, targets)
                         total_loss += float(loss.item())
                         n_loss_batches += 1
-                        if predictions is None:
-                            predictions = self._forward_inference(images_tensor, images_list)
                     except RuntimeError:
+                        predictions = None
+
+                    if predictions is None:
                         predictions = self._forward_inference(images_tensor, images_list)
                 else:
                     predictions = self._forward_inference(images_tensor, images_list)
 
-                total_detection_count += self._count_detections(predictions, len(images_list))
+                total_detection_count += self._count_detections(predictions, images_list, targets)
                 n_batches += 1
 
-                normalized = self._extract_eval_entries(predictions, targets, len(images_list))
+                normalized_predictions = self._normalize_predictions(predictions, images_list, targets)
+                normalized = self._extract_eval_entries(normalized_predictions, targets, len(images_list))
                 if normalized is None:
                     map_supported = False
                 else:

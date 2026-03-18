@@ -111,3 +111,87 @@ def test_main_maps_dataset_arguments_to_datamodule(monkeypatch):
     assert captured["args"]["data_dir"] == "/tmp/data"
     assert captured["args"]["split_file"] == "/tmp/splits.json"
     assert captured["args"]["label_map"] == {"cat": 0, "dog": 1}
+
+
+def test_metric_callback_groups_tags_by_phase_and_filters_internal_keys():
+    events = []
+
+    writer = SimpleNamespace(add_scalar=lambda name, value, global_step: events.append((name, value, global_step)))
+
+    client_entry.metric_callback(
+        {
+            "round": 7,
+            "accuracy": 0.75,
+            "val_loss": 1.25,
+            "num_steps_current_round": 4,
+        },
+        writer,
+        prefix="pre",
+        step_override=3,
+    )
+
+    assert events == [
+        ("pre/accuracy", 0.75, 3),
+        ("pre/loss", 1.25, 3),
+    ]
+
+
+def test_metric_callback_normalizes_train_metric_names():
+    events = []
+
+    writer = SimpleNamespace(add_scalar=lambda name, value, global_step: events.append((name, value, global_step)))
+
+    client_entry.metric_callback(
+        {
+            "round": 5,
+            "train_loss": 0.5,
+            "train_accuracy": 0.8,
+            "mean_iou": 0.3,
+        },
+        writer,
+        prefix="train",
+    )
+
+    assert events == [
+        ("train/loss", 0.5, 5),
+        ("train/accuracy", 0.8, 5),
+        ("train/mean_iou", 0.3, 5),
+    ]
+
+
+def test_build_datamodule_args_propagates_detection_provider():
+    cfg = {
+        "dataset": {
+            "class_path": "data_loading.data_modules.PascalVOCDataModule",
+            "args": {"data_dir": "/tmp/data", "split_file": "/tmp/splits.json"},
+        },
+        "training": {"batch_size": 2, "num_classes": 21},
+        "model": {"name": "facebook/detr-resnet-50", "provider": "hf", "args": {}},
+        "fed": {"rounds": 1},
+        "seed": 5,
+    }
+
+    args = client_entry.build_datamodule_args(cfg, client_name="site-1")
+
+    assert args["client_idx"] == 0
+    assert args["batch_size"] == 2
+    assert args["detection_provider"] == "hf"
+
+
+def test_build_datamodule_args_does_not_inject_detection_provider_for_classification():
+    cfg = {
+        "dataset": {
+            "class_path": "data_loading.data_modules.TinyImageNetDataModule",
+            "args": {"data_dir": "/tmp/data", "split_file": "/tmp/splits.json"},
+        },
+        "training": {"task_type": "classification", "batch_size": 8, "num_classes": 200},
+        "model": {"name": "resnet18", "provider": "timm", "args": {}},
+        "fed": {"rounds": 1},
+        "seed": 5,
+    }
+
+    args = client_entry.build_datamodule_args(cfg, client_name="site-1")
+
+    assert args["client_idx"] == 0
+    assert args["batch_size"] == 8
+    assert "detection_provider" not in args

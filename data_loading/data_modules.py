@@ -337,8 +337,11 @@ class TinyImageNetDataModule(BaseDataModule):
 
     def get_train_transform(self) -> T.Compose:
         """Training transforms with augmentation."""
+        resize_size = 256
+        image_size = 224
         return T.Compose([
-            T.RandomCrop(64, padding=8),
+            T.Resize(resize_size),
+            T.RandomCrop(image_size),
             T.RandomHorizontalFlip(),
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
             T.ToTensor(),
@@ -350,7 +353,11 @@ class TinyImageNetDataModule(BaseDataModule):
 
     def get_val_transform(self) -> T.Compose:
         """Validation transforms without augmentation."""
+        resize_size = 256
+        image_size = 224
         return T.Compose([
+            T.Resize(resize_size),
+            T.CenterCrop(image_size),
             T.ToTensor(),
             T.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -480,23 +487,39 @@ class PascalVOCDataModule(BaseDataModule):
         *args,
         detection_label_offset: int = 1,
         detection_box_format: str = "auto",
+        detection_provider: str = "generic",
+        detection_train_hflip_prob: float = 0.5,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.detection_label_offset = int(detection_label_offset)
         self.detection_box_format = str(detection_box_format).lower()
+        self.detection_provider = str(detection_provider).lower()
+        self.detection_train_hflip_prob = float(detection_train_hflip_prob)
+
+    def _is_hf_detection_provider(self) -> bool:
+        return self.detection_provider in {"hf", "huggingface", "transformers"}
+
+    def _detection_resize_size(self) -> Optional[Tuple[int, int]]:
+        if not self._is_hf_detection_provider():
+            return None
+        image_size = int(self.image_size) if self.image_size is not None else 800
+        return (image_size, image_size)
 
     def setup(self):
         splits = self.load_splits()
         train_data, val_data = self.get_client_data(splits)
         train_transform = self.get_train_transform()
         val_transform = self.get_val_transform()
+        resize_size = self._detection_resize_size()
 
         self.train_dataset = DetectionDataset(
             split_data=train_data,
             transform=train_transform,
             label_offset=self.detection_label_offset,
             box_format=self.detection_box_format,
+            sync_hflip_prob=self.detection_train_hflip_prob,
+            resize_size=resize_size,
         )
 
         if val_data:
@@ -505,14 +528,33 @@ class PascalVOCDataModule(BaseDataModule):
                 transform=val_transform,
                 label_offset=self.detection_label_offset,
                 box_format=self.detection_box_format,
+                sync_hflip_prob=0.0,
+                resize_size=resize_size,
             )
 
     def get_train_transform(self) -> T.Compose:
-        # Keep tensor conversion only. Torchvision detection backends handle
-        # normalization and multi-scale image sizes internally.
+        if self._is_hf_detection_provider():
+            return T.Compose([
+                T.ToTensor(),
+                T.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],
+                ),
+            ])
+        # Torchvision detection backends handle normalization and multi-scale
+        # resizing internally. Geometry transforms happen inside DetectionDataset
+        # so boxes stay aligned with images.
         return T.Compose([T.ToTensor()])
 
     def get_val_transform(self) -> T.Compose:
+        if self._is_hf_detection_provider():
+            return T.Compose([
+                T.ToTensor(),
+                T.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],
+                ),
+            ])
         return T.Compose([T.ToTensor()])
 
     @staticmethod

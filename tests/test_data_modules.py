@@ -570,6 +570,20 @@ class TestBaseDataModule:
         assert "Central" in repr_str
         assert "batch_size=128" in repr_str
 
+    def test_tiny_imagenet_transforms_resize_to_224(self):
+        dm = TinyImageNetDataModule(
+            data_dir="./data",
+            split_file="unused.json",
+            client_idx=0,
+        )
+        image = Image.new("RGB", (64, 64), color=(64, 128, 192))
+
+        train_tensor = dm.get_train_transform()(image)
+        val_tensor = dm.get_val_transform()(image)
+
+        assert tuple(train_tensor.shape) == (3, 224, 224)
+        assert tuple(val_tensor.shape) == (3, 224, 224)
+
     def test_segmentation_datamodule_normalizes_legacy_label_schema(self, tmp_path):
         """ADE20KDataModule converts legacy label masks into canonical mask_path."""
         train_image = tmp_path / "train_img.jpg"

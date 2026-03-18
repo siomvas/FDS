@@ -18,6 +18,7 @@ FL_REQUIRES = [
     "torch>=2.1.0",
     "torchvision>=0.16.0",
     "tensorboard>=2.14.0",
+    "optuna>=3.6.0",
     "timm>=0.9.0",
     "transformers>=4.30.0",
     "segmentation-models-pytorch>=0.3.3",
