@@ -115,7 +115,8 @@ def test_pooling_factory_builds_gem_with_params():
 
 def test_spectral_sharpening_returns_original_for_small_sample_count():
     x = np.random.randn(8, 16)
-    out = SpectralSharpeningPooling(k=20).pool(x)
+    with pytest.deprecated_call():
+        out = SpectralSharpeningPooling(k=20).pool(x)
     np.testing.assert_allclose(out, x)
 
 

@@ -240,6 +240,33 @@ class TestClassificationDataset:
         assert label == 0
 
 
+class _DummyDataModule(BaseDataModule):
+    def get_train_transform(self):
+        return None
+
+    def get_val_transform(self):
+        return None
+
+    def setup(self):
+        self.train_dataset = [0, 1, 2]
+        self.val_dataset = [0]
+
+
+def test_train_dataloader_respects_train_drop_last():
+    dm = _DummyDataModule(
+        data_dir=".",
+        split_file="/tmp/dummy.json",
+        batch_size=2,
+        num_workers=0,
+        train_drop_last=True,
+    )
+    dm.setup()
+
+    loader = dm.train_dataloader
+
+    assert loader.drop_last is True
+
+
 # ============================================================================
 # Test SegmentationDataset
 # ============================================================================

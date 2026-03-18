@@ -71,6 +71,33 @@ class _DummyDetectionModel(nn.Module):
         raise TypeError("Unexpected input format")
 
 
+class _DummyFCOSDetectionModel(nn.Module):
+    """Torchvision FCOS-style training losses without `loss_*` key names."""
+
+    def __init__(self):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, images, targets=None):
+        if isinstance(images, list):
+            if targets is not None:
+                base = (self.scale * 0.0) + torch.stack([img.float().mean() for img in images]).abs().mean()
+                return {
+                    "classification": base,
+                    "bbox_regression": base * 0.5,
+                    "bbox_ctrness": base * 0.25,
+                }
+            return [
+                {
+                    "boxes": torch.tensor([[0.0, 0.0, 1.0, 1.0]], device=images[0].device),
+                    "scores": torch.tensor([0.95], device=images[0].device),
+                    "labels": torch.tensor([1], device=images[0].device),
+                }
+                for _ in images
+            ]
+        raise TypeError("Unexpected input format")
+
+
 class _DummyHFDetectionModel(nn.Module):
     """Lightweight HF-style detection model expecting pixel_values + labels."""
 
@@ -367,6 +394,50 @@ def test_detection_engine_smoke():
     assert "train_loss" in train_metrics
     assert "avg_detections" in val_metrics
     assert "map_50" in val_metrics
+
+
+def test_detection_engine_accepts_fcos_style_torchvision_loss_dict():
+    cfg = {
+        "training": {
+            "steps_or_epochs": "steps",
+            "optim_resume": "resume",
+            "amp_enabled": False,
+            "grad_clipping_type": "none",
+            "grad_clipping_value": 0.0,
+            "local_steps": 1,
+            "lr": 1e-3,
+            "scheduler": "none",
+            "detection_score_threshold": 0.5,
+            "optimizer": {"class_name": "Adam", "args": {}},
+        },
+        "fed": {"rounds": 1},
+    }
+
+    engine = DetectionEngine(_DummyFCOSDetectionModel(), cfg, torch.device("cpu"))
+    base_loader = DataLoader(
+        TensorDataset(
+            torch.randn(2, 3, 16, 16),
+            torch.tensor([[[0.0, 0.0, 1.0, 1.0]]] * 2, dtype=torch.float32),
+            torch.tensor([[1]] * 2, dtype=torch.int64),
+        ),
+        batch_size=2,
+    )
+
+    class WrappedLoader:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def __len__(self):
+            return len(self.wrapped)
+
+        def __iter__(self):
+            for images, boxes, labels in self.wrapped:
+                yield images, {"boxes": boxes, "labels": labels}
+
+    metrics = engine.train_one_round(WrappedLoader(base_loader))
+
+    assert metrics["num_steps_current_round"] == 1.0
+    assert metrics["train_loss"] >= 0.0
 
 
 def test_detection_engine_supports_variable_image_shapes_in_eval():
