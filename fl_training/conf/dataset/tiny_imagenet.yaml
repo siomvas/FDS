@@ -7,7 +7,7 @@ dataset:
   
   # Arguments passed to datamodule __init__
   args:
-    root: "${oc.env:tiny_imagenet_data_root,${hydra:runtime.cwd}/local_data}"
+    root: "${oc.env:tiny_imagenet_data_root,${oc.env:DATASETS_ROOT,${hydra:runtime.cwd}/local_data}}"
     # other dataset specific settings?
 
 fed:

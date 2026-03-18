@@ -39,6 +39,7 @@ class BaseDataModule(ABC):
         central: bool = False,
         batch_size: int = 32,
         num_workers: int = 4,
+        drop_last: bool = False,
         seed: int = 42,
     ):
         """
@@ -49,6 +50,7 @@ class BaseDataModule(ABC):
             central: If True, use all training data (ignore client_idx)
             batch_size: Batch size for dataloaders
             num_workers: Number of dataloader workers
+            drop_last: Drop incomplete final training batch
             seed: Random seed
         """
         self.data_dir = Path(data_dir)
@@ -59,6 +61,7 @@ class BaseDataModule(ABC):
         self.central = central
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.drop_last = drop_last
         self.seed = seed
 
         # Will be set by subclasses
@@ -289,6 +292,7 @@ class BaseDataModule(ABC):
                 self.train_dataset,
                 batch_size=self.batch_size,
                 shuffle=True,
+                drop_last=self.drop_last and len(self.train_dataset) >= self.batch_size,
                 num_workers=self.num_workers,
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=self.num_workers > 0,
