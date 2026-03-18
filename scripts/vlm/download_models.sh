@@ -1,6 +1,6 @@
 #!/bin/bash
-export HF_HOME=/path/to/hyperion1-homedir/.cache/huggingface
-export TORCH_HOME=/path/to/hyperion1-homedir/.cache/torch
+export HF_HOME=/path/to/.cache/huggingface
+export TORCH_HOME=/path/to/.cache/torch
 export TRANSFORMERS_OFFLINE=0
 export http_proxy=http://proxy.example.org:3128
 export HTTP_PROXY=http://proxy.example.org:3128

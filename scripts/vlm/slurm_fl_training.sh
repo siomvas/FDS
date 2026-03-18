@@ -7,13 +7,13 @@
 #SBATCH --time=3-00:00:00
 #SBATCH --output=/path/to/FDS/logs/fl_%A_%a.out
 #SBATCH --error=/path/to/FDS/logs/fl_%A_%a.err
-#SBATCH --array=0-3
+#SBATCH --array=2-3
 
 cd /path/to/FDS
 
-export DATASETS_ROOT=/path/to/hyperion1-homedir/gtai/FDS
-export HF_HOME=/path/to/hyperion1-homedir/.cache/huggingface
-export TORCH_HOME=/path/to/hyperion1-homedir/.cache/torch
+export DATASETS_ROOT=/path/to/gtai/FDS
+export HF_HOME=/path/to/.cache/huggingface
+export TORCH_HOME=/path/to/.cache/torch
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 export http_proxy=http://proxy.example.org:3128
@@ -26,11 +26,15 @@ ALPHA=${ALPHAS[$SLURM_ARRAY_TASK_ID]}
 
 PARTITIONS=/path/to/FDS/partitions
 
-# tiny_imagenet
-export tiny_imagenet_chosen_split_path=$PARTITIONS/tiny_imagenet/vlm_n10_alpha${ALPHA}_seed42.json
-echo "Running FL: tiny_imagenet | vlm | alpha=$ALPHA"
+# food101
+export food101_chosen_split_path=$PARTITIONS/food101/vlm_n10_alpha${ALPHA}_seed42.json
+SCRATCH_OUTPUT=/path/to/data/fds
+mkdir -p "$SCRATCH_OUTPUT"
+
+echo "Running FL: food101 | vlm | alpha=$ALPHA"
 python fl_training/run_experiment.py \
-    dataset=tiny_imagenet \
+    dataset=food101 \
     model=resnet18 \
     fed.n_clients=10 \
-    "name=tiny_imagenet_resnet18_fedavg_vlm_alpha${ALPHA}_seed42"
+    "name=food101_resnet18_fedavg_vlm_alpha${ALPHA}_seed42" \
+    "paths.output_dir=${SCRATCH_OUTPUT}"

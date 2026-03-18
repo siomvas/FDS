@@ -1,7 +1,7 @@
 #!/bin/bash
-export DATASETS_ROOT=/path/to/hyperion1-homedir/gtai/FDS
-export HF_HOME=/path/to/hyperion1-homedir/.cache/huggingface
-export TORCH_HOME=/path/to/hyperion1-homedir/.cache/torch
+export DATASETS_ROOT=/path/to/gtai/FDS
+export HF_HOME=/path/to/.cache/huggingface
+export TORCH_HOME=/path/to/.cache/torch
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 export http_proxy=http://proxy.example.org:3128
@@ -10,16 +10,19 @@ export https_proxy=http://proxy.example.org:3128
 export HTTPS_PROXY=http://proxy.example.org:3128
 
 PARTITIONS=/path/to/FDS/partitions
+SCRATCH_OUTPUT=/path/to/data/fds
+mkdir -p "$SCRATCH_OUTPUT"
 
 # --- food101 (classification) ---
-for alpha in 0.1 0.3 0.5 1.0; do
+for alpha in 0.5 1.0; do
     export food101_chosen_split_path=$PARTITIONS/food101/vlm_n10_alpha${alpha}_seed42.json
     echo "Running FL: food101 | vlm | alpha=$alpha"
     python fl_training/run_experiment.py \
         dataset=food101 \
         model=resnet18 \
         fed.n_clients=10 \
-        "name=food101_resnet18_fedavg_vlm_alpha${alpha}_seed42"
+        "name=food101_resnet18_fedavg_vlm_alpha${alpha}_seed42" \
+        "paths.output_dir=${SCRATCH_OUTPUT}"
 done
 
 # # --- tiny_imagenet (classification) ---

@@ -599,6 +599,119 @@ def fig_grouped_bar(
     return fig
 
 
+def fig_alpha_sweep(
+    df: pd.DataFrame,
+    metric: str,
+    title: Optional[str] = None,
+) -> go.Figure:
+    """
+    Line chart: x=heterogeneity alpha, y=metric value, one line per method.
+    Random baseline drawn as a horizontal dashed line.
+    Only useful when df has heterogeneity column with multiple values.
+    """
+    if metric not in df.columns or "heterogeneity" not in df.columns:
+        return go.Figure().add_annotation(text=f"Alpha sweep not available for {metric}", showarrow=False)
+
+    meta = METRIC_META.get(metric, {})
+    display_name = METRIC_DISPLAY_NAMES.get(metric, metric)
+    if title is None:
+        title = f"{display_name} vs α (heterogeneity level)"
+
+    fig = go.Figure()
+
+    # Separate Random (alpha=0 or heterogeneity==0) from methods with alpha
+    random_rows = df[df["method"].str.lower() == "random"]
+    sweep_rows = df[df["method"].str.lower() != "random"]
+
+    # Draw a horizontal dashed line for Random baseline
+    if not random_rows.empty and metric in random_rows.columns:
+        random_val = random_rows[metric].mean()
+        fig.add_hline(
+            y=random_val,
+            line_dash="dash",
+            line_color=get_method_color("Random"),
+            opacity=0.7,
+            annotation_text="Random",
+            annotation_position="right",
+        )
+
+    # One line per non-Random method
+    for method, mdf in sweep_rows.groupby("method"):
+        mdf_sorted = mdf.sort_values("heterogeneity")
+        fig.add_trace(go.Scatter(
+            x=mdf_sorted["heterogeneity"],
+            y=mdf_sorted[metric],
+            mode="lines+markers",
+            name=method,
+            line=dict(color=get_method_color(method), width=2),
+            marker=dict(size=8),
+            hovertemplate=f"{method}<br>α=%{{x}}<br>{display_name}=%{{y:.4f}}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="α (heterogeneity parameter)",
+        yaxis_title=meta.get("ylabel", display_name),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+        template="plotly_white",
+    )
+
+    return fig
+
+
+def fig_scatter_2d(
+    df: pd.DataFrame,
+    x_metric: str,
+    y_metric: str,
+    title: Optional[str] = None,
+) -> go.Figure:
+    """
+    Scatter plot: x=one metric, y=another.
+    Each point = one partition, colored by method, labeled with alpha.
+    Useful for showing where each method sits in the heterogeneity space.
+    """
+    if x_metric not in df.columns or y_metric not in df.columns:
+        return go.Figure().add_annotation(text=f"Scatter not available ({x_metric} vs {y_metric})", showarrow=False)
+
+    x_name = METRIC_DISPLAY_NAMES.get(x_metric, x_metric)
+    y_name = METRIC_DISPLAY_NAMES.get(y_metric, y_metric)
+    if title is None:
+        title = f"{y_name} vs {x_name}"
+
+    fig = go.Figure()
+
+    for method, mdf in df.groupby("method"):
+        has_alpha = "heterogeneity" in mdf.columns
+        text_labels = mdf["heterogeneity"].apply(lambda a: f"α={a}").tolist() if has_alpha else None
+        hover = (
+            f"{method}<br>{x_name}=%{{x:.4f}}<br>{y_name}=%{{y:.4f}}<br>α=%{{text}}<extra></extra>"
+            if has_alpha else
+            f"{method}<br>{x_name}=%{{x:.4f}}<br>{y_name}=%{{y:.4f}}<extra></extra>"
+        )
+        fig.add_trace(go.Scatter(
+            x=mdf[x_metric],
+            y=mdf[y_metric],
+            mode="markers+text",
+            name=method,
+            text=text_labels,
+            textposition="top center",
+            textfont=dict(size=9),
+            marker=dict(color=get_method_color(method), size=10, opacity=0.8),
+            hovertemplate=hover,
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_name,
+        yaxis_title=y_name,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white",
+    )
+
+    return fig
+
+
 def fig_radar(
     df: pd.DataFrame,
     metrics: List[str],
@@ -1404,11 +1517,57 @@ def generate_report(
 
         return table_df.to_html(index=False, classes="ranking-table sortable", float_format="%.4f")
     
+    # === Section 0: Heterogeneity Overview ===
+    has_alpha = "heterogeneity" in df_capped.columns and df_capped["heterogeneity"].nunique() > 1
+    has_fid = "fid_mean" in available["all"]
+    has_jsd = "JSD_mean" in available["all"]
+
+    overview_parts = []
+
+    # Alpha sweep charts — one per primary metric
+    if has_alpha:
+        sweep_metrics = [m for m in ["fid_mean", "JSD_mean", "mmd_features_mean"] if m in available["all"]]
+        if sweep_metrics:
+            sweep_figs = {}
+            for m in sweep_metrics:
+                fig = fig_alpha_sweep(df_capped, m)
+                sweep_figs[m] = fig_to_html(fig, f"sweep_{m}")
+            overview_parts.append("<h3>How heterogeneity level (α) affects each metric</h3>")
+            overview_parts.append(
+                f'<div class="figure-container">{render_metric_dropdown(sweep_figs, sweep_metrics[0])}</div>'
+            )
+
+    # 2D scatter: FID vs JSD (best overview of feature vs label heterogeneity)
+    if has_fid and has_jsd:
+        fig_2d = fig_scatter_2d(df_capped, "JSD_mean", "fid_mean",
+                                title="Feature distance (FID) vs Label divergence (JSD)")
+        overview_parts.append("<h3>Feature distance vs Label divergence</h3>")
+        overview_parts.append(
+            f'<p style="color:#666; font-size:13px;">Each point is one partition configuration. '
+            f'Top-right = most heterogeneous. Random baseline sits near origin.</p>'
+        )
+        overview_parts.append(
+            f'<div class="figure-container">{fig_to_html(fig_2d, "scatter_fid_jsd")}</div>'
+        )
+    elif has_fid and "mmd_features_mean" in available["all"]:
+        fig_2d = fig_scatter_2d(df_capped, "mmd_features_mean", "fid_mean")
+        overview_parts.append("<h3>Feature distance vs MMD</h3>")
+        overview_parts.append(
+            f'<div class="figure-container">{fig_to_html(fig_2d, "scatter_fid_mmd")}</div>'
+        )
+
+    if overview_parts:
+        content_parts.append(render_accordion(
+            "🗺️ Heterogeneity Overview",
+            '\n'.join(overview_parts),
+            expanded=True
+        ))
+
     # === Section 1: Executive Summary ===
     content_parts.append(render_accordion(
         "📊 Executive Summary",
         render_section_per_config(df_capped, configs, build_summary_content),
-        expanded=True
+        expanded=False
     ))
     
     # === Section 2: Feature Distance (Q1) ===
