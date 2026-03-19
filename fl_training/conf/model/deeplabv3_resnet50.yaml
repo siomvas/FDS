@@ -7,10 +7,10 @@ model:
     weights_backbone: null
 
 training:
-  lr: 1e-3
-  batch_size: 2
+  lr: 4.462965193984174e-05
+  batch_size: 4
+  scheduler: cosine
   optimizer:
-    class_name: SGD
+    class_name: AdamW
     args:
-      momentum: 0.9
-      weight_decay: 1e-4
+      weight_decay: 0.00010234321271245017

@@ -8,9 +8,11 @@ model:
     # e.g. drop_rate: 0.2 for stochastic depth in timm
     
 training:
-  lr: 1e-2
+  lr: 0.011318289829437791
+  batch_size: 32
+  scheduler: cosine
   optimizer:
     class_name: SGD
     args:
-       momentum: 0.9
-       weight_decay: 0.0
+      momentum: 0.9347723825763277
+      weight_decay: 4.501174247598817e-06

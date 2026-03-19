@@ -1,0 +1,16 @@
+# @package _global_
+model:
+  name: fasterrcnn_resnet50_fpn_v2
+  provider: torchvision
+  args:
+    weights: null
+    weights_backbone: null
+
+training:
+  lr: 1.3066739238053272e-05
+  batch_size: 2
+  scheduler: none
+  optimizer:
+    class_name: AdamW
+    args:
+      weight_decay: 0.0015994091701280442

@@ -51,7 +51,6 @@ training:
   optimizer:
     class_name: SGD
     args:
-      momentum: 0.9
       weight_decay: 0.0
 
 # -----------------------------------------------------------------------------

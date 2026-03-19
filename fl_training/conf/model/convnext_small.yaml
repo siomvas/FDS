@@ -1,0 +1,15 @@
+# @package _global_
+model:
+  name: convnext_small
+  provider: timm
+  args:
+    pretrained: true
+
+training:
+  lr: 3.2247852759496085e-05
+  batch_size: 32
+  scheduler: cosine
+  optimizer:
+    class_name: AdamW
+    args:
+      weight_decay: 2.629479738981522e-06
