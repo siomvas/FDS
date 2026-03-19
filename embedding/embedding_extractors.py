@@ -537,6 +537,41 @@ class EmbeddingExtractor(ABC):
             pin_memory=(self.device.type == "cuda"),
         )
 
+    def _supports_streaming_pooling(
+        self,
+        return_which_tokens: str,
+        pooling_strategy: Optional[str],
+    ) -> bool:
+        return (
+            pooling_strategy in {"mean", "max", "gem"}
+            and return_which_tokens in {"all_last", "k_last_all"}
+        )
+
+    def _pool_token_batch(
+        self,
+        embeddings: torch.Tensor,
+        pooling_strategy: str,
+        pooling_params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        if embeddings.ndim != 3:
+            return embeddings
+
+        params = {} if pooling_params is None else dict(pooling_params)
+        if pooling_strategy == "mean":
+            return embeddings.mean(dim=1)
+        if pooling_strategy == "max":
+            return embeddings.max(dim=1).values
+        if pooling_strategy == "gem":
+            p = float(params.get("p", 3.0))
+            eps = float(params.get("eps", 1e-6))
+            signs = torch.sign(embeddings)
+            abs_embeddings = embeddings.abs().add(eps)
+            signed_powered = signs * abs_embeddings.pow(p)
+            mean_powered = signed_powered.mean(dim=1)
+            result_signs = torch.sign(mean_powered)
+            return result_signs * mean_powered.abs().pow(1.0 / p)
+        raise ValueError(f"Unsupported streaming pooling strategy '{pooling_strategy}'.")
+
     def extract_embeddings(
         self, 
         images: List[str], 
@@ -550,13 +585,19 @@ class EmbeddingExtractor(ABC):
         valid_token_modes = {"cls", "all_last", "k_last_cls", "k_last_all"}
         if return_which_tokens not in valid_token_modes:
             raise ValueError(f"Invalid return_which_tokens '{return_which_tokens}'")
-        
+
+        pooling_strategy = kwargs.pop("pooling_strategy", None)
+        pooling_params = kwargs.pop("pooling_params", None)
+        stream_pool = self._supports_streaming_pooling(return_which_tokens, pooling_strategy)
+
         # Define cache parameters
         cache_params = {
             "return_which_tokens": return_which_tokens,
             "k_last": k_last,
-            # **kwargs
         }
+        if stream_pool:
+            cache_params["pooling_strategy"] = pooling_strategy
+            cache_params["pooling_params"] = pooling_params or {}
 
         # 1. Check Unified Cache
         if use_cache and self.cache_manager:
@@ -609,6 +650,8 @@ class EmbeddingExtractor(ABC):
                         emb = outputs.last_hidden_state
                     else:
                         raise ValueError(f"Invalid return_which_tokens '{return_which_tokens}'")
+                if stream_pool:
+                    emb = self._pool_token_batch(emb, pooling_strategy, pooling_params)
                 all_embeddings.append(emb.cpu().numpy())
 
         if not all_embeddings:

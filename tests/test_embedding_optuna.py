@@ -144,8 +144,28 @@ def test_fixed_mode_default_extractors_cover_all_distinct_model_families():
         "raw_pixel_resizer",
         "sparse_random_projection_resizer",
         "uae",
-        "wavelet_scattering",
     }
+
+
+def test_fixed_mode_default_extractors_exclude_wavelet_scattering():
+    assert "wavelet_scattering" not in DEFAULT_EXTRACTORS
+
+
+def test_fixed_mode_default_token_choices_exclude_k_last_all():
+    args = build_arg_parser().parse_args(
+        [
+            "--dataset",
+            "tiny_imagenet",
+            "--base_path",
+            "/tmp/data",
+            "--study_dir",
+            "/tmp/study",
+            "--target_n_clients",
+            "5",
+        ]
+    )
+
+    assert _study_token_choices(args) == ["cls", "all_last", "k_last_cls"]
 
 
 def test_discovery_mode_defaults_use_narrowed_extractors_tokens_and_pooling():
@@ -283,32 +303,31 @@ def test_transformer_k_last_cls_forces_cls_pooling():
     assert [name for name, _ in trial.calls] == ["tokens", "lastk_k"]
 
 
-def test_transformer_k_last_all_uses_non_cls_pooling_choices():
-    args = build_arg_parser().parse_args(
+def test_run_cli_rejects_removed_k_last_all_study_token_choice(tmp_path, monkeypatch):
+    from partitioning.tuning import embedding_optuna
+
+    monkeypatch.setattr(embedding_optuna, "BaseDataset", lambda dataset, base_path, split: _DummyDataset(10))
+    monkeypatch.setattr(
+        sys,
+        "argv",
         [
+            "tune_embedding_partitions.py",
             "--dataset",
             "tiny_imagenet",
             "--base_path",
-            "/tmp/data",
+            str(tmp_path),
             "--study_dir",
-            "/tmp/study",
+            str(tmp_path / "study"),
             "--target_n_clients",
             "5",
-        ]
-    )
-    trial = _DummyTrial({"tokens": "k_last_all", "lastk_k": 2, "pooling": "max"})
-
-    token_choice, token_params, pooling_strategy, pooling_params = _build_token_and_pooling_params(
-        trial,
-        args,
-        extractor_name="siglip-base-patch16-224",
+            "--token_choices",
+            "cls,k_last_all",
+            "--dry-run",
+        ],
     )
 
-    assert token_choice == "k_last_all"
-    assert token_params == {"lastk_k": 2, "layer_aggregation": "mean"}
-    assert pooling_strategy == "max"
-    assert pooling_params == {}
-    assert [name for name, _ in trial.calls] == ["tokens", "lastk_k", "pooling"]
+    with pytest.raises(ValueError, match="--token_choices contains unsupported values"):
+        run_cli()
 
 
 def test_run_cli_rejects_unsupported_study_pooling_choices(tmp_path, monkeypatch):

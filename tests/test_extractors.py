@@ -14,6 +14,24 @@ import tempfile
 DOWNLOAD_PROXY = os.environ.get("FDS_HPC_PROXY")
 
 
+class _DummyVisionOutput:
+    def __init__(self, last_hidden_state=None, pooler_output=None, hidden_states=None):
+        self.last_hidden_state = last_hidden_state
+        self.pooler_output = pooler_output
+        self.hidden_states = hidden_states
+
+
+class _DummyVisionModel(nn.Module):
+    def forward(self, pixel_values, output_hidden_states=False):
+        batch_size = pixel_values.shape[0]
+        base = torch.arange(batch_size * 6, dtype=torch.float32).reshape(batch_size, 3, 2)
+        if output_hidden_states:
+            hidden_a = base + 10.0
+            hidden_b = base + 20.0
+            return _DummyVisionOutput(hidden_states=[hidden_a, hidden_b])
+        return _DummyVisionOutput(last_hidden_state=base, pooler_output=base[:, 0, :])
+
+
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -489,6 +507,70 @@ class TestEmbeddingExtractorBase:
         embeddings = extractor.extract_embeddings(sample_images, use_cache=False)
         
         assert extractor.transform is not None
+
+    def test_streaming_pooling_returns_pooled_2d_embeddings(self):
+        """Streaming pooling should avoid returning full token tensors."""
+        from embedding.embedding_extractors import EmbeddingExtractor
+
+        class DummyExtractor(EmbeddingExtractor):
+            def load_model(self):
+                self.model = _DummyVisionModel()
+                self.processor = object()
+
+            def get_embedding_dim(self):
+                return 2
+
+            def _get_dataloader(self, images):
+                return [
+                    torch.zeros((2, 3, 4, 4), dtype=torch.float32),
+                    torch.zeros((1, 3, 4, 4), dtype=torch.float32),
+                ]
+
+        extractor = DummyExtractor(model_name="dummy", device="cpu")
+
+        pooled = extractor.extract_embeddings(
+            images=["a.jpg", "b.jpg", "c.jpg"],
+            return_which_tokens="all_last",
+            use_cache=False,
+            pooling_strategy="gem",
+            pooling_params={"p": 1.0, "eps": 0.0},
+        )
+
+        assert pooled.shape == (3, 2)
+        expected = np.array(
+            [
+                [2.0, 3.0],
+                [8.0, 9.0],
+                [2.0, 3.0],
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(pooled, expected)
+
+    def test_all_last_without_streaming_pooling_preserves_token_dimension(self):
+        """Legacy raw token extraction should remain available when no pooling is requested."""
+        from embedding.embedding_extractors import EmbeddingExtractor
+
+        class DummyExtractor(EmbeddingExtractor):
+            def load_model(self):
+                self.model = _DummyVisionModel()
+                self.processor = object()
+
+            def get_embedding_dim(self):
+                return 2
+
+            def _get_dataloader(self, images):
+                return [torch.zeros((2, 3, 4, 4), dtype=torch.float32)]
+
+        extractor = DummyExtractor(model_name="dummy", device="cpu")
+
+        raw = extractor.extract_embeddings(
+            images=["a.jpg", "b.jpg"],
+            return_which_tokens="all_last",
+            use_cache=False,
+        )
+
+        assert raw.shape == (2, 3, 2)
 
 
 # ============================================================================

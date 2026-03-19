@@ -36,10 +36,16 @@ EmbeddingConfig : Configuration for selecting clustering methods.
 """
 
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from importlib import import_module
+import os
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.sparse.csgraph import connected_components
+
+
+DEFAULT_CLUSTERING_THREAD_LIMIT = 8
+CLUSTERING_THREAD_LIMIT_ENV = "FDS_CLUSTERING_MAX_THREADS"
 
 
 def _require_sklearn_attr(module_name: str, attr_name: str):
@@ -56,6 +62,32 @@ def _require_sklearn_attr(module_name: str, attr_name: str):
         raise ImportError(
             f"Expected '{attr_name}' in optional dependency module '{module_name}'."
         ) from exc
+
+
+def _get_clustering_thread_limit() -> Optional[int]:
+    raw_limit = os.getenv(CLUSTERING_THREAD_LIMIT_ENV)
+    if raw_limit in (None, ""):
+        return DEFAULT_CLUSTERING_THREAD_LIMIT
+
+    try:
+        parsed_limit = int(raw_limit)
+    except ValueError:
+        return DEFAULT_CLUSTERING_THREAD_LIMIT
+
+    return parsed_limit if parsed_limit > 0 else None
+
+
+def _threadpool_limit_context(limit: Optional[int] = None):
+    effective_limit = _get_clustering_thread_limit() if limit is None else limit
+    if effective_limit is None:
+        return nullcontext()
+
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:
+        return nullcontext()
+
+    return threadpool_limits(limits=effective_limit)
 
 
 class ClusteringMethod(ABC):
@@ -174,7 +206,8 @@ class HDBSCANMethod(ClusteringMethod):
             cluster_selection_method=self.cluster_selection_method,
         )
 
-        self.labels_ = self.clusterer.fit_predict(embeddings)
+        with _threadpool_limit_context():
+            self.labels_ = self.clusterer.fit_predict(embeddings)
         self.probabilities_ = self.clusterer.probabilities_
 
         return self.labels_
@@ -272,7 +305,8 @@ class KMeansMethod(ClusteringMethod):
             max_iter=self.max_iter,
         )
 
-        self.labels_ = self.clusterer.fit_predict(embeddings)
+        with _threadpool_limit_context():
+            self.labels_ = self.clusterer.fit_predict(embeddings)
         self.inertia_ = self.clusterer.inertia_
 
         return self.labels_
@@ -470,7 +504,8 @@ class SpectralMethod(ClusteringMethod):
             # n_jobs=4,
         )
 
-        self.labels_ = self.clusterer.fit_predict(embeddings)
+        with _threadpool_limit_context():
+            self.labels_ = self.clusterer.fit_predict(embeddings)
 
         return self.labels_
 

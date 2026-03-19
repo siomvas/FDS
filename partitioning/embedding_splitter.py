@@ -393,6 +393,12 @@ class EmbeddingSplitter(BaseDatasetSplitter):
 
         logger.info("Starting extraction for %d images.", len(image_paths))
         time_start = time.time()
+        extractor_pooling_strategy = None
+        extractor_pooling_params = None
+        if self.pooling_strategy in {"mean", "max", "gem"}:
+            extractor_pooling_strategy = self.pooling_strategy
+            extractor_pooling_params = self.pooling_params
+
         raw_embeddings = extractor.extract_embeddings(
             images=image_paths,
             return_which_tokens=self.token_extraction_strategy,
@@ -400,6 +406,8 @@ class EmbeddingSplitter(BaseDatasetSplitter):
             use_cache=self.use_cache,
             dataset_name=self.dataset_name,
             base_path=self.base_path,
+            pooling_strategy=extractor_pooling_strategy,
+            pooling_params=extractor_pooling_params,
         )
         time_end = time.time()
         logger.info("Extraction completed in %.2f seconds.", time_end - time_start)
@@ -409,6 +417,9 @@ class EmbeddingSplitter(BaseDatasetSplitter):
         if self.pooling_strategy == "cls":
             # CLS token only, no pooling needed
             logger.debug("Using CLS token only, skipping pooling.")
+            embeddings = raw_embeddings
+        elif raw_embeddings.ndim == 2:
+            logger.info("Extractor returned pooled embeddings directly.")
             embeddings = raw_embeddings
         else:
             if self.pooling_strategy == "lastk":

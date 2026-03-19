@@ -39,6 +39,7 @@ venv.bak/
 .DS_Store
 
 # Miscellaneous
+AGENTS.md
 *.npz
 *pytest_cache/
 

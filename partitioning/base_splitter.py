@@ -195,14 +195,16 @@ class BaseDatasetSplitter(ABC):
             >>> splitter.store_client_splits("splits.json", format="json")
         """
         splits = self.get_client_splits()
+        output_path = Path(filename)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
         normalized_format = format.lower()
         if normalized_format == "json":
-            with open(filename, "w", encoding="utf-8") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 serializable_splits = self._make_serializable(splits)
                 json.dump(serializable_splits, f, indent=2)
         elif normalized_format in {"pkl", "pickle"}:
-            with open(filename, "wb") as f:
+            with open(output_path, "wb") as f:
                 pickle.dump(splits, f)
         else:
             raise ValueError(f"Unsupported format '{format}'. Use 'json' or 'pkl'/'pickle'.")

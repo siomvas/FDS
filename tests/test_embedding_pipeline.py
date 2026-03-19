@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from unittest.mock import patch
 
 from partitioning.embedding_utils.pooling_strategies import (
     GeMLPooling,
@@ -130,6 +131,61 @@ def test_kmeans_cluster_info_matches_requested_clusters():
     assert len(np.unique(labels)) == 3
     assert info["num_clusters"] == 3
     assert sum(info["cluster_sizes"].values()) == x.shape[0]
+
+
+def test_kmeans_limits_threadpool_during_fit(monkeypatch):
+    x = _clusterable_embeddings()
+    captured = {"limit": None}
+
+    class DummyThreadpoolContext:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class DummyKMeans:
+        def __init__(self, **kwargs):
+            self.inertia_ = 1.23
+
+        def fit_predict(self, embeddings):
+            return np.zeros(len(embeddings), dtype=int)
+
+    monkeypatch.setenv("FDS_CLUSTERING_MAX_THREADS", "6")
+
+    def _record_limit(limit=None):
+        captured["limit"] = limit
+        return DummyThreadpoolContext()
+
+    with patch(
+        "partitioning.embedding_utils.clustering_methods._threadpool_limit_context",
+        side_effect=_record_limit,
+    ):
+        with patch(
+            "partitioning.embedding_utils.clustering_methods._require_sklearn_attr",
+            return_value=DummyKMeans,
+        ):
+            method = KMeansMethod(n_clusters=3, random_state=42)
+            labels = method.cluster(x)
+
+    assert captured["limit"] is None
+    assert labels.shape[0] == x.shape[0]
+
+
+def test_thread_limit_env_parsing_defaults_and_disables(monkeypatch):
+    from partitioning.embedding_utils.clustering_methods import (
+        DEFAULT_CLUSTERING_THREAD_LIMIT,
+        _get_clustering_thread_limit,
+    )
+
+    monkeypatch.delenv("FDS_CLUSTERING_MAX_THREADS", raising=False)
+    assert _get_clustering_thread_limit() == DEFAULT_CLUSTERING_THREAD_LIMIT
+
+    monkeypatch.setenv("FDS_CLUSTERING_MAX_THREADS", "invalid")
+    assert _get_clustering_thread_limit() == DEFAULT_CLUSTERING_THREAD_LIMIT
+
+    monkeypatch.setenv("FDS_CLUSTERING_MAX_THREADS", "0")
+    assert _get_clustering_thread_limit() is None
 
 
 def test_knn_graph_method_outputs_labels_and_info():

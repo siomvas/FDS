@@ -29,7 +29,6 @@ DEFAULT_EXTRACTORS = [
     "raw_pixel_resizer-64",
     "sparse_random_projection_resizer",
     "UAE",
-    "wavelet_scattering",
 ]
 DEFAULT_DISCOVERY_EXTRACTORS = [
     "dinov2-base",
@@ -38,7 +37,7 @@ DEFAULT_DISCOVERY_EXTRACTORS = [
 ]
 DEFAULT_FIXED_CLUSTERING = ["kmeans"]
 DEFAULT_DISCOVERY_CLUSTERING = ["hdbscan"]
-DEFAULT_TOKEN_CHOICES = ["cls", "all_last", "k_last_cls", "k_last_all"]
+DEFAULT_TOKEN_CHOICES = ["cls", "all_last", "k_last_cls"]
 DEFAULT_DISCOVERY_TOKEN_CHOICES = ["cls", "all_last"]
 DEFAULT_POOLING_CHOICES = ["mean", "max", "gem"]
 DEFAULT_DISCOVERY_POOLING_CHOICES = ["mean", "gem"]

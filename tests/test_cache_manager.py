@@ -195,6 +195,31 @@ class TestBatchMode:
 
         assert result is None
 
+    def test_corrupted_npz_entry_is_evicted_and_treated_as_miss(self, cache_manager):
+        """Corrupted cache payloads should be deleted instead of crashing callers."""
+        embeddings = np.random.randn(3, 16).astype(np.float32)
+        image_paths = [f"/tmp/img_{i}.jpg" for i in range(3)]
+
+        cache_manager.put(
+            embeddings=embeddings,
+            model_name="test_model",
+            image_paths=image_paths,
+        )
+
+        cache_key = next(iter(cache_manager.metadata["entries"]))
+        cache_file = cache_manager.cache_dir / f"{cache_key}.npz"
+        cache_file.write_bytes(b"not-a-valid-npz")
+        cache_manager._memory_cache.clear()
+
+        result = cache_manager.get(
+            model_name="test_model",
+            image_paths=image_paths,
+        )
+
+        assert result is None
+        assert cache_key not in cache_manager.metadata["entries"]
+        assert not cache_file.exists()
+
     def test_in_memory_cache_hit(self, cache_manager):
         """Second get() uses in-memory cache (no disk I/O)."""
         embeddings = np.random.randn(5, 768).astype(np.float32)
