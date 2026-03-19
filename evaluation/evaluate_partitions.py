@@ -131,7 +131,7 @@ def create_dataset_map(dataset: BaseDataset, label_map: Optional[Dict[str, int]]
     
     for path, raw_label in tqdm(dataset, desc="Indexing Dataset"):
         # Apply mapping if it exists (Food101/TinyIN), otherwise use raw integer (CIFAR)
-        final_label = label_map[raw_label] if label_map else raw_label
+        final_label = label_map.get(raw_label, raw_label) if label_map else raw_label
         
         # Store in the format expected by metrics
         dataset_map[path] = {
@@ -575,6 +575,7 @@ def evaluate_partition(
     use_cache: bool,
     cache_dir: Optional[str],
     subsample: int,
+    feature_only: bool,
     force: bool,
     seed: int,
 ) -> Optional[Any]:
@@ -612,6 +613,7 @@ def evaluate_partition(
             "use_cache": use_cache,
             "cache_dir": cache_dir,
             "subsample": subsample,
+            "feature_only": feature_only,
             "seed": seed,
         },
         dataset_name=dataset_name,
@@ -642,7 +644,7 @@ def evaluate_partition(
         log.info("Loaded %s clients, %s samples", len(client_datasets), sum(len(c) for c in client_datasets))
 
         stage = "detect_labels"
-        has_labels = detect_has_labels(dataset_name, dataset_map)
+        has_labels = detect_has_labels(dataset_name, dataset_map) and not feature_only
         num_classes = get_num_classes(dataset_map) if has_labels else 0
 
         stage = "compute_metrics"
@@ -733,17 +735,29 @@ def evaluate_all(
     cache_dir: Optional[str],
     force: bool,
     subsample: int,
+    feature_only: bool,
     seed: int,
 ) -> List[Any]:
-    
+
     partition_files = sorted(partition_dir.rglob("*.json"))
     log.info("Found %s partitions.", len(partition_files))
-    
+
     results = []
     for p_path in tqdm(partition_files, desc="Evaluating"):
         res = evaluate_partition(
-            p_path, dataset_map, dataset_name, base_path, output_dir,
-            feature_model, batch_size, use_cache, cache_dir, subsample, force, seed
+            p_path,
+            dataset_map,
+            dataset_name,
+            base_path,
+            output_dir,
+            feature_model,
+            batch_size,
+            use_cache,
+            cache_dir,
+            subsample,
+            feature_only,
+            force,
+            seed,
         )
         if res:
             results.append(res)
@@ -771,7 +785,7 @@ def main() -> int:
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--partition", type=str)
     input_group.add_argument("--partition_dir", type=str)
-    
+
     # Data & Output
     add_standard_cli_args(
         parser,
@@ -786,7 +800,7 @@ def main() -> int:
         seed_default=42,
         include_dry_run=True,
     )
-    
+
     # Config
     parser.add_argument("--feature_model", type=str, default="dinov2-small")
     parser.add_argument("--batch_size", type=int, default=100)
@@ -804,8 +818,13 @@ def main() -> int:
         help="Optional directory for persisted string-label mappings.",
     )
     parser.add_argument("--no_cache", action="store_true")
+    parser.add_argument(
+        "--feature_only",
+        action="store_true",
+        help="Compute only feature-based heterogeneity metrics and skip label metrics.",
+    )
     parser.add_argument("--force", action="store_true")
-    
+
     args = parser.parse_args()
     output_dir = Path(args.output)
 
@@ -816,36 +835,58 @@ def main() -> int:
         log.info("[dry-run] Base path: %s", args.base_path)
         log.info("[dry-run] Output directory: %s", output_dir)
         return 0
-    
+
     # 1. Load Dataset
     log.info("Loading %s from %s...", args.dataset, args.base_path)
     dataset = BaseDataset(args.dataset, args.base_path, "train")
-    
+
     # 2. Label Mapping (String -> Int)
     use_cache = not args.no_cache
-    label_map_dir = Path(args.label_map_dir) if args.label_map_dir else None
-    if label_map_dir is None and use_cache and args.cache_dir:
-        label_map_dir = Path(args.cache_dir) / "label_mappings"
-    label_map = get_or_create_label_mapping(args.dataset, dataset, mapping_dir=label_map_dir)
-    
+    label_map: Optional[Dict[str, int]] = None
+    if not args.feature_only:
+        label_map_dir = Path(args.label_map_dir) if args.label_map_dir else None
+        if label_map_dir is None and use_cache and args.cache_dir:
+            label_map_dir = Path(args.cache_dir) / "label_mappings"
+        label_map = get_or_create_label_mapping(args.dataset, dataset, mapping_dir=label_map_dir)
+
     # 3. Create O(1) Map
     dataset_map = create_dataset_map(dataset, label_map)
     log.info("Map created with %s images.", len(dataset_map))
-    
+
     # 4. Run
     if args.partition:
         result = evaluate_partition(
-            Path(args.partition), dataset_map, args.dataset, args.base_path, output_dir,
-            args.feature_model, args.batch_size, use_cache, args.cache_dir, 
-            args.subsample, args.force, args.seed
+            Path(args.partition),
+            dataset_map,
+            args.dataset,
+            args.base_path,
+            output_dir,
+            args.feature_model,
+            args.batch_size,
+            use_cache,
+            args.cache_dir,
+            args.subsample,
+            args.feature_only,
+            args.force,
+            args.seed,
         )
         if result and result.status != "success":
             raise RuntimeError(result.failure.get("error_message", "Partition evaluation failed."))
     else:
         evaluate_all(
-            Path(args.partition_dir), dataset_map, args.dataset, args.base_path, output_dir,
-            args.feature_model, args.batch_size, use_cache, args.cache_dir,
-            args.force, args.subsample, args.seed
+            Path(args.partition_dir),
+            dataset_map,
+            args.dataset,
+            args.base_path,
+            output_dir,
+            args.feature_model,
+            args.batch_size,
+            use_cache,
+            args.cache_dir,
+            args.force,
+            args.subsample,
+            args.feature_only,
+            args.seed,
         )
     return 0
 

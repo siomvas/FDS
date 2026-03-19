@@ -482,6 +482,22 @@ class TestBaseDatasetSplitter:
         assert "clients" in loaded_splits
         assert len(loaded_splits["clients"]) == 3
 
+    def test_store_splits_json_creates_parent_directories(self, mock_train_dataset, tmp_path):
+        """Test storing splits creates missing parent directories."""
+        splitter = RandomSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.0,
+            valset_type="none",
+            seed=42
+        )
+
+        json_path = tmp_path / "study" / "trials" / "trial_0000" / "partition.json"
+        splitter.store_splits(str(json_path), format="json")
+
+        assert json_path.exists()
+
     def test_store_splits_pickle(self, mock_train_dataset, tmp_path):
         """Test storing splits to pickle file."""
         splitter = RandomSplitter(

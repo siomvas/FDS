@@ -2,8 +2,10 @@ import hashlib
 import json
 import logging
 import os
+import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+import zipfile
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -141,6 +143,18 @@ class CacheManager:
         with open(self.metadata_file, "w", encoding="utf-8") as f:
             json.dump(self.metadata, f, indent=2)
 
+    def _evict_cache_entry(self, cache_key: str) -> None:
+        """Remove a corrupted cache entry from memory, metadata, and disk."""
+        self._memory_cache.pop(cache_key, None)
+        entry = self.metadata["entries"].pop(cache_key, None)
+        cache_file = self.cache_dir / (entry["file"] if entry and entry.get("file") else f"{cache_key}.npz")
+        if cache_file.exists():
+            try:
+                cache_file.unlink()
+            except OSError as exc:
+                logger.warning("Failed to remove cache file %s during eviction: %s", cache_file, exc)
+        self._save_metadata()
+
     def _to_relative(self, paths: List[str], base_path: Optional[str]) -> List[str]:
         """Convert paths to relative if base_path is provided."""
         if not base_path:
@@ -273,8 +287,9 @@ class CacheManager:
                 # Note: np.load with mmap_mode=None loads into memory.
                 self._memory_cache[cache_key] = dict(data)
                 data = self._memory_cache[cache_key]
-            except (OSError, ValueError) as e:
+            except (OSError, ValueError, EOFError, pickle.UnpicklingError, zipfile.BadZipFile) as e:
                 logger.warning("Failed to load cache entry %s: %s", cache_key, e)
+                self._evict_cache_entry(cache_key)
                 return None
 
         # Retrieve specific data

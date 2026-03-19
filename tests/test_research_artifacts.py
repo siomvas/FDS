@@ -192,6 +192,7 @@ def test_evaluate_all_writes_canonical_artifacts_and_continues_after_failure(tmp
             cache_dir=None,
             force=False,
             subsample=0,
+            feature_only=False,
             seed=7,
         )
 

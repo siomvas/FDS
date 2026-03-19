@@ -18,6 +18,7 @@ training:
   num_classes: 150
   loss: dice_loss
   batch_size: 2
+  drop_last: true
   lr: 1e-3
   local_steps: 1
   steps_or_epochs: epochs

@@ -44,6 +44,7 @@ EmbeddingConfig : Configuration for selecting pooling strategies.
 
 from abc import ABC, abstractmethod
 import logging
+import warnings
 from typing import Dict, Optional
 import numpy as np
 from scipy.spatial.distance import cdist
@@ -332,6 +333,12 @@ class LastKLayerPooling(PoolingStrategy):
 class SpectralSharpeningPooling(PoolingStrategy):
     """Spectral sharpening via Laplacian eigenvectors.
 
+    Deprecated
+    ----------
+    This pooling strategy is deprecated. It is computationally expensive and its
+    dataset-level graph construction makes it a poor fit for the current embedding
+    partitioning pipeline.
+
     Projects embeddings onto the top-K eigenvectors of the sample similarity
     graph's Laplacian. This "sharpens" the representation by emphasizing the
     dominant cluster structure in the data.
@@ -378,6 +385,11 @@ class SpectralSharpeningPooling(PoolingStrategy):
         sigma: Optional[float] = None,
         use_normalized_laplacian: bool = True,
     ):
+        warnings.warn(
+            "SpectralSharpeningPooling is deprecated and may be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.k = k
         self.sigma = sigma
         self.use_normalized_laplacian = use_normalized_laplacian

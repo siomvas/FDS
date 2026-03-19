@@ -729,7 +729,11 @@ def _load_food101(self):
     if self.split not in valid_splits:
         raise ValueError(f"Invalid split '{self.split}'. Valid options: {valid_splits}")
 
-    data_path: Path = self.base_path / "food101"
+    candidate_paths = [
+        self.base_path / "food101",
+        self.base_path / "food-101",
+    ]
+    data_path = next((path for path in candidate_paths if path.exists()), candidate_paths[0])
 
     split_file = data_path / "meta" / f"{self.split}.json"
     if not split_file.exists():

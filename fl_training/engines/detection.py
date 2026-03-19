@@ -386,9 +386,13 @@ class DetectionEngine:
                 if torch.is_tensor(value) and "loss" in str(key).lower()
             ]
             if not losses:
-                tensor_values = [value for value in outputs.values() if torch.is_tensor(value)]
-                if len(tensor_values) == 1:
-                    return tensor_values[0]
+                tensor_items = [(key, value) for key, value in outputs.items() if torch.is_tensor(value)]
+                if len(tensor_items) == 1:
+                    return tensor_items[0][1]
+                if tensor_items:
+                    prediction_keys = {"boxes", "scores", "labels", "logits", "pred_boxes", "masks"}
+                    if not any(str(key) in prediction_keys for key, _ in tensor_items):
+                        return sum(value for _, value in tensor_items)
                 raise ValueError("Detection model returned a dict with no tensor losses.")
             return sum(losses)
 

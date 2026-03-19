@@ -22,6 +22,9 @@ from fl_training.models.factory import create_model
 
 log = logging.getLogger(__name__)
 
+MOMENTUM_CHOICES: tuple[float, ...] = (0.80, 0.90, 0.95, 0.99)
+WEIGHT_DECAY_CHOICES: tuple[float, ...] = (0.0, 5e-4)
+
 
 @dataclass(frozen=True)
 class SliceSpec:
@@ -59,6 +62,8 @@ class TuningPreset:
     batch_size_choices: tuple[int, ...] = field(default_factory=tuple)
     optimizer_choices: tuple[str, ...] = field(default_factory=tuple)
     scheduler_choices: tuple[str, ...] = field(default_factory=tuple)
+    lr_ranges_by_optimizer: dict[str, tuple[float, float]] = field(default_factory=dict)
+    weight_decay_ranges_by_optimizer: dict[str, tuple[float, float]] = field(default_factory=dict)
     tune_pretrained: bool = False
 
     def default_study_name(self) -> str:
@@ -175,7 +180,7 @@ def _make_optimizer_config(trial, optimizer_name: str, weight_decay: float) -> d
         return {
             "class_name": "SGD",
             "args": {
-                "momentum": trial.suggest_float("momentum", 0.8, 0.99),
+                "momentum": float(trial.suggest_categorical("momentum_grid", list(MOMENTUM_CHOICES))),
                 "weight_decay": weight_decay,
             },
         }
@@ -189,20 +194,18 @@ def _make_optimizer_config(trial, optimizer_name: str, weight_decay: float) -> d
 
 
 def _suggest_hparams(trial, preset: TuningPreset) -> tuple[dict[str, Any], dict[str, Any], int]:
-    task_type = preset.task_type
     optimizer_name = trial.suggest_categorical("optimizer", list(preset.optimizer_choices))
     scheduler_name = trial.suggest_categorical("scheduler", list(preset.scheduler_choices))
     batch_size = int(trial.suggest_categorical("batch_size", list(preset.batch_size_choices)))
 
-    if task_type == "classification":
-        lr = trial.suggest_float("lr", 1e-5, 5e-2, log=True)
-        weight_decay = trial.suggest_float("weight_decay", 1e-6, 5e-2, log=True)
-    elif task_type == "detection":
-        lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
-        weight_decay = trial.suggest_float("weight_decay", 1e-6, 5e-3, log=True)
-    else:
-        lr = trial.suggest_float("lr", 1e-5, 5e-3, log=True)
-        weight_decay = trial.suggest_float("weight_decay", 1e-6, 5e-3, log=True)
+    if optimizer_name not in preset.lr_ranges_by_optimizer:
+        raise KeyError(
+            f"Missing lr range for optimizer '{optimizer_name}' in preset '{preset.key}'."
+        )
+    lr_low, lr_high = preset.lr_ranges_by_optimizer[optimizer_name]
+
+    lr = trial.suggest_float("lr", float(lr_low), float(lr_high), log=True)
+    weight_decay = float(trial.suggest_categorical("weight_decay_choice", list(WEIGHT_DECAY_CHOICES)))
 
     training_cfg = {
         "lr": float(lr),
@@ -226,7 +229,9 @@ def _suggest_hparams(trial, preset: TuningPreset) -> tuple[dict[str, Any], dict[
         "args": dict(preset.model_cfg.get("args", {})),
     }
     if preset.tune_pretrained:
-        model_cfg["args"]["pretrained"] = bool(trial.suggest_categorical("pretrained", [True, False]))
+        model_cfg["args"]["pretrained"] = bool(
+            trial.suggest_categorical("pretrained", [True, False])
+        )
 
     return training_cfg, model_cfg, batch_size
 
