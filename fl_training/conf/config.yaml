@@ -34,6 +34,7 @@ training:
   loss: cross_entropy
   lr: 1e-2
   batch_size: 64
+  drop_last: false
   local_steps: 1 # can be steps or epochs, depending on steps_or_epochs
   steps_or_epochs: epochs
   scheduler: none

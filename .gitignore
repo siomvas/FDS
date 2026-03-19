@@ -59,6 +59,7 @@ local_artifacts/
 
 benchmark_results/
 outputs/
+*.out
 
 # Code audit
 audit/

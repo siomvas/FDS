@@ -104,6 +104,7 @@ def build_datamodule_args(cfg: Dict[str, Any], client_name: str) -> Dict[str, An
     dm_args["client_idx"] = extract_client_idx(client_name)
     dm_args["seed"] = cfg["seed"]
     dm_args["batch_size"] = training_cfg["batch_size"]
+    dm_args["drop_last"] = bool(training_cfg.get("drop_last", False))
 
     if "root" in dm_args and "data_dir" not in dm_args:
         dm_args["data_dir"] = dm_args.pop("root")
