@@ -258,7 +258,7 @@ def test_train_dataloader_respects_train_drop_last():
         split_file="/tmp/dummy.json",
         batch_size=2,
         num_workers=0,
-        train_drop_last=True,
+        drop_last=True,
     )
     dm.setup()
 
