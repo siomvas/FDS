@@ -9,6 +9,7 @@ dataset:
   args:
     data_dir: "${oc.env:DATASETS_ROOT}/PascalVOC"
     split_file: "${oc.env:pascal_voc_chosen_split_path}"
+    num_workers: 0
     detection_label_offset: 1
     detection_box_format: "auto"
 

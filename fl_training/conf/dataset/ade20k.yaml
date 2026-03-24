@@ -9,6 +9,7 @@ dataset:
   args:
     data_dir: "${oc.env:DATASETS_ROOT}"
     split_file: "${oc.env:ade20k_chosen_split_path}"
+    num_workers: 0
 
 fed:
   rounds: 80
