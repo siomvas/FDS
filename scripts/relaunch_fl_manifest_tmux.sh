@@ -6,6 +6,7 @@ MANIFEST_PATH="${1:-${REPO_ROOT}/local_artifacts/experiments/baselines/20260319_
 SESSION_START="${SESSION_START:-101}"
 TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-8}"
+CONDA_ENV="${CONDA_ENV:-new}"
 
 if [[ ! -f "${MANIFEST_PATH}" ]]; then
   echo "Manifest not found: ${MANIFEST_PATH}" >&2
@@ -15,6 +16,12 @@ fi
 cd "${REPO_ROOT}"
 source "$(conda info --base)/etc/profile.d/conda.sh"
 CONDA_BASE="$(conda info --base)"
+
+if ! conda env list | awk '{print $1}' | grep -qx "${CONDA_ENV}"; then
+  if [[ -d "/path/to/.conda/new" ]]; then
+    CONDA_ENV="/path/to/.conda/new"
+  fi
+fi
 
 STAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="${REPO_ROOT}/local_artifacts/experiments/baselines/tmux_relaunch_${STAMP}"
@@ -106,6 +113,24 @@ PY
   fi
 }
 
+ensure_script_has_conda_env() {
+  local slurm_script="$1"
+  local resolved_env="$2"
+  if grep -q 'conda activate new' "${slurm_script}"; then
+    python - "${slurm_script}" "${resolved_env}" <<'PY'
+import sys
+from pathlib import Path
+
+script_path = Path(sys.argv[1])
+resolved_env = sys.argv[2]
+text = script_path.read_text(encoding="utf-8")
+updated = text.replace("conda activate new", f"conda activate {resolved_env}")
+script_path.write_text(updated, encoding="utf-8")
+print(f"[repair] rewrote conda env in {script_path} -> {resolved_env}")
+PY
+  fi
+}
+
 choose_partition() {
   local dataset="$1"
   local idx="$2"
@@ -120,7 +145,7 @@ choose_partition() {
       gres="gpu:a100_80g:1"
       mem="80G"
       ;;
-    tiny_imagenet|food101)
+    tiny_imagenet)
       # n10/n20 classification runs must avoid gpu-a100 (40GB VRAM).
       if (( n_clients >= 10 )); then
         if (( idx % 2 == 0 )); then
@@ -140,6 +165,16 @@ choose_partition() {
           gres="gpu:a100:1"
         fi
       fi
+      mem="64G"
+      ;;
+    food101)
+      # Food101 repeatedly OOMs on gpu-a100; force A100-80GB for all client counts.
+      if (( idx % 2 == 0 )); then
+        partition="gtai"
+      else
+        partition="preemptgpu"
+      fi
+      gres="gpu:a100_80g:1"
       mem="64G"
       ;;
     *)
@@ -174,6 +209,7 @@ while IFS=, read -r job_id job_name dataset splitter partition_path run_name slu
   else
     echo "[warn] could not infer n_clients from partition path for ${job_name}: ${partition_path}" >&2
   fi
+  ensure_script_has_conda_env "${slurm_script}" "${CONDA_ENV}"
 
   session=$((SESSION_START + idx))
   if tmux has-session -t "${session}" 2>/dev/null; then
@@ -183,7 +219,7 @@ while IFS=, read -r job_id job_name dataset splitter partition_path run_name slu
   IFS=',' read -r partition gres mem <<< "$(choose_partition "${dataset}" "${idx}" "${n_clients}")"
   log_file="${LOG_DIR}/${session}_${job_name}.log"
 
-  inner_cmd="cd ${REPO_ROOT} && source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate new && source scripts/hpc_session_env.sh >/dev/null && exec > >(tee -a ${log_file}) 2>&1 && echo [START] \$(date -Is) session=${session} job=${job_name} partition=${partition} && srun -p ${partition} --job-name=${job_name} --gres=${gres} --cpus-per-task=${CPUS_PER_TASK} --mem=${mem} --time=${TIME_LIMIT} --pty bash -lc 'set -e; cd ${REPO_ROOT}; source ${CONDA_BASE}/etc/profile.d/conda.sh; conda activate new; source scripts/hpc_session_env.sh >/dev/null; bash ${slurm_script}' ; rc=\$?; echo [END] \$(date -Is) rc=\$rc; exec bash -l"
+  inner_cmd="cd ${REPO_ROOT} && source ${CONDA_BASE}/etc/profile.d/conda.sh && conda activate ${CONDA_ENV} && source scripts/hpc_session_env.sh >/dev/null && exec > >(tee -a ${log_file}) 2>&1 && echo [START] \$(date -Is) session=${session} job=${job_name} partition=${partition} && srun -p ${partition} --job-name=${job_name} --gres=${gres} --cpus-per-task=${CPUS_PER_TASK} --mem=${mem} --time=${TIME_LIMIT} --pty bash -lc 'set -e; cd ${REPO_ROOT}; source ${CONDA_BASE}/etc/profile.d/conda.sh; conda activate ${CONDA_ENV}; source scripts/hpc_session_env.sh >/dev/null; bash ${slurm_script}' ; rc=\$?; echo [END] \$(date -Is) rc=\$rc; exec bash -l"
 
   tmux new-session -d -s "${session}" "${inner_cmd}"
   echo "${session},${job_name},${dataset},${partition},${gres},${mem},${slurm_script},${log_file}" >> "${OUT_MANIFEST}"

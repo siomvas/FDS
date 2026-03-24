@@ -17,6 +17,14 @@ from research import create_manifest, create_result, file_sha256, write_manifest
 log = logging.getLogger(__name__)
 
 
+def _is_success_status(raw_status: object) -> bool:
+    normalized = str(raw_status).strip().lower()
+    if not normalized:
+        return False
+    success_tokens = ("success", "succeeded", "complete", "completed", "ok", "done", "finished")
+    return any(token in normalized for token in success_tokens)
+
+
 def _normalize_gpu_config(raw_gpu_ids) -> str:
     """Normalize Hydra/OmegaConf GPU config to NVFlare SimEnv string format."""
     if OmegaConf.is_config(raw_gpu_ids):
@@ -241,13 +249,15 @@ def run_job(cfg: DictConfig):
         )
         stage = "execute"
         run_status = recipe.execute(env=env)
+        status_text = str(run_status.get_status())
+        result_status = "success" if _is_success_status(status_text) else "failed"
 
-        log.info("Job Status: %s", run_status.get_status())
+        log.info("Job Status: %s", status_text)
         log.info("Result Path: %s", run_status.get_result())
         result = create_result(
             run_id=str(cfg.name),
             result_type="fl_run",
-            status="success",
+            status=result_status,
             summary={
                 "name": str(cfg.name),
                 "task_type": str(cfg.training.task_type),
@@ -262,7 +272,14 @@ def run_job(cfg: DictConfig):
                 "nvflare_result": str(run_status.get_result()),
             },
             metrics={
-                "status_text": str(run_status.get_status()),
+                "status_text": status_text,
+            },
+            failure=None
+            if result_status == "success"
+            else {
+                "error_type": "NVFlareRunFailed",
+                "error_message": f"NVFlare run ended with status: {status_text}",
+                "stage": stage,
             },
         )
         write_result(workspace_path, result)

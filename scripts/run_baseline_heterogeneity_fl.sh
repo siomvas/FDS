@@ -150,12 +150,12 @@ submit_fl_job() {
   model.provider=timm \
   model.args.pretrained=true \
   training.batch_size=32 \
-  training.lr=0.011318289829437791 \
+  training.lr=0.0113 \
   training.scheduler=cosine \
-  training.lr_min=0.00011318289829437791 \
+  training.lr_min=0.000113 \
   training.optimizer.class_name=SGD \
-  training.optimizer.args.momentum=0.9347723825763277 \
-  training.optimizer.args.weight_decay=4.501174247598817e-06
+  training.optimizer.args.momentum=0.935 \
+  training.optimizer.args.weight_decay=4.5e-06
 EOS
 )
       ;;
@@ -165,12 +165,12 @@ EOS
   model.provider=timm \
   model.args.pretrained=true \
   training.batch_size=32 \
-  training.lr=3.2247852759496085e-05 \
+  training.lr=3.22e-05 \
   training.scheduler=cosine \
-  training.lr_min=3.224785275949608e-07 \
+  training.lr_min=3.22e-07 \
   training.optimizer.class_name=AdamW \
   ~training.optimizer.args.momentum \
-  training.optimizer.args.weight_decay=2.629479738981522e-06
+  training.optimizer.args.weight_decay=2.63e-06
 EOS
 )
       ;;
@@ -181,12 +181,12 @@ EOS
   +model.args.weights=DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1 \
   +model.args.weights_backbone=null \
   training.batch_size=4 \
-  training.lr=4.462965193984174e-05 \
+  training.lr=4.46e-05 \
   training.scheduler=cosine \
-  training.lr_min=4.462965193984174e-07 \
+  training.lr_min=4.46e-07 \
   training.optimizer.class_name=AdamW \
   ~training.optimizer.args.momentum \
-  training.optimizer.args.weight_decay=0.00010234321271245017
+  training.optimizer.args.weight_decay=1.02e-04
 EOS
 )
       ;;
@@ -197,7 +197,7 @@ EOS
   +model.args.weights=FasterRCNN_ResNet50_FPN_V2_Weights.COCO_V1 \
   +model.args.weights_backbone=null \
   training.batch_size=2 \
-  training.lr=1.096580630626157e-05 \
+  training.lr=1.10e-05 \
   training.scheduler=none \
   training.optimizer.class_name=AdamW \
   ~training.optimizer.args.momentum \

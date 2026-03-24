@@ -244,6 +244,8 @@ def main():
 
     method_hook = method_hook_from_config(cfg, task_type)
 
+    pre_round_eval = bool(cfg["training"].get("pre_round_eval", False))
+
     # 6. Federated Learning Loop
     while flare.is_running():
         # Receive Global Weights
@@ -264,7 +266,7 @@ def main():
         )
         method_hook.on_round_start(engine.model, method_ctx)
 
-        if val_loader is not None:
+        if pre_round_eval and val_loader is not None:
             pre_metrics = engine.evaluate(val_loader=val_loader)
             metric_callback(pre_metrics, writer, prefix="pre", step_override=round_idx)
 
