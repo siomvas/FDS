@@ -8,8 +8,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import time
-from typing import Dict, List
+from typing import Dict, List, Set
 
 
 def _run(cmd: List[str]) -> str:
@@ -128,6 +129,7 @@ def write_outputs(rows: List[Dict[str, str]], output_csv: Path, output_md: Path)
         "state",
         "elapsed",
         "reason",
+        "slurm_script",
         "log_file",
         "launch_dir",
         "updated_at_utc",
@@ -196,6 +198,7 @@ def build_rows(repo_root: Path, user: str) -> List[Dict[str, str]]:
                 "state": "UNKNOWN",
                 "elapsed": "",
                 "reason": "",
+                "slurm_script": row.get("slurm_script", ""),
                 "log_file": str(log_file),
                 "launch_dir": row.get("launch_dir", ""),
                 "updated_at_utc": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
@@ -222,10 +225,75 @@ def build_rows(repo_root: Path, user: str) -> List[Dict[str, str]]:
     return rows
 
 
-def monitor(repo_root: Path, user: str, output_csv: Path, output_md: Path, interval: int, loop: bool) -> None:
+def _is_terminal_state(state: str) -> bool:
+    state_upper = (state or "").strip().upper()
+    terminal_states = {
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "TIMEOUT",
+        "OUT_OF_MEMORY",
+        "PREEMPTED",
+    }
+    return state_upper in terminal_states
+
+
+def _infer_run_roots(rows: List[Dict[str, str]]) -> Set[Path]:
+    run_roots: Set[Path] = set()
+    for row in rows:
+        slurm_script = (row.get("slurm_script") or "").strip()
+        if not slurm_script:
+            continue
+        script_path = Path(slurm_script)
+        if script_path.parent.name != "slurm_scripts":
+            continue
+        run_root = script_path.parent.parent
+        if run_root.exists():
+            run_roots.add(run_root.resolve())
+    return run_roots
+
+
+def _finalize_run_root(repo_root: Path, run_root: Path) -> bool:
+    finalize_script = repo_root / "scripts" / "finalize_fl_run_root.py"
+    if not finalize_script.exists():
+        print(f"[finalize] missing script: {finalize_script}")
+        return False
+
+    cmd = [sys.executable, str(finalize_script), "--run-root", str(run_root)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        print(f"[finalize] failed for {run_root} (rc={proc.returncode})")
+        if proc.stdout.strip():
+            print(proc.stdout.strip())
+        if proc.stderr.strip():
+            print(proc.stderr.strip())
+        return False
+
+    print(f"[finalize] completed for {run_root}")
+    if proc.stdout.strip():
+        print(proc.stdout.strip())
+    return True
+
+
+def monitor(
+    repo_root: Path,
+    user: str,
+    output_csv: Path,
+    output_md: Path,
+    interval: int,
+    loop: bool,
+    finalize_results: bool,
+) -> None:
+    finalized_roots: Set[Path] = set()
     while True:
         rows = build_rows(repo_root, user)
         write_outputs(rows, output_csv, output_md)
+        if finalize_results and rows and all(_is_terminal_state(row.get("state", "")) for row in rows):
+            for run_root in sorted(_infer_run_roots(rows)):
+                if run_root in finalized_roots:
+                    continue
+                if _finalize_run_root(repo_root, run_root):
+                    finalized_roots.add(run_root)
         print(f"[{dt.datetime.now(dt.UTC).isoformat(timespec='seconds')}] updated {len(rows)} rows")
         if not loop:
             return
@@ -248,6 +316,11 @@ def main() -> int:
     )
     parser.add_argument("--interval", type=int, default=600, help="Polling interval in seconds.")
     parser.add_argument("--loop", action="store_true", help="Continuously refresh every --interval seconds.")
+    parser.add_argument(
+        "--finalize-results",
+        action="store_true",
+        help="When all jobs are terminal, finalize FL result artifacts for inferred run roots.",
+    )
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
@@ -261,6 +334,7 @@ def main() -> int:
         output_md=output_md,
         interval=max(10, int(args.interval)),
         loop=bool(args.loop),
+        finalize_results=bool(args.finalize_results),
     )
     return 0
 
