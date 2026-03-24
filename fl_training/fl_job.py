@@ -8,9 +8,9 @@ import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
 
 # NVFlare Imports
-from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe
 from nvflare.recipe import SimEnv, add_experiment_tracking
 
+from fl_training.fed_methods import build_recipe, validate_method_task_compatibility
 from fl_training.models.factory import create_model, validate_model_contract
 from research import create_manifest, create_result, file_sha256, write_manifest, write_result
 
@@ -154,7 +154,7 @@ def _dataset_metadata(cfg: DictConfig) -> dict:
 
 def run_job(cfg: DictConfig):
     """
-    Builds and executes the FedAvgRecipe using the Config Payload pattern.
+    Builds and executes the configured FL recipe using the Config Payload pattern.
     """
     workspace_path = Path(cfg.paths.output_dir) / cfg.name
     workspace_path.mkdir(parents=True, exist_ok=True)
@@ -164,6 +164,13 @@ def run_job(cfg: DictConfig):
         OmegaConf.to_container(cfg.model, resolve=True),
         task_type=str(cfg.training.task_type),
         num_classes=int(cfg.training.num_classes),
+    )
+    validate_method_task_compatibility(
+        {
+            "fed": OmegaConf.to_container(cfg.fed, resolve=True),
+            "training": {"task_type": str(cfg.training.task_type)},
+        },
+        str(cfg.training.task_type),
     )
 
     manifest = create_manifest(
@@ -209,13 +216,15 @@ def run_job(cfg: DictConfig):
         stage = "initial_model"
         initial_model = get_initial_model(cfg)
 
-        recipe = FedAvgRecipe(
-            name=cfg.name,
+        recipe = build_recipe(
+            str(cfg.fed.method),
+            name=str(cfg.name),
             initial_model=initial_model,
-            min_clients=cfg.fed.n_clients,
-            num_rounds=cfg.fed.rounds,
+            min_clients=int(cfg.fed.n_clients),
+            num_rounds=int(cfg.fed.rounds),
             train_script=str(Path(__file__).parent / "client_entry.py"),
             train_args=train_args,
+            method_args=OmegaConf.to_container(cfg.fed.args, resolve=True) if OmegaConf.is_config(cfg.fed.args) else dict(cfg.fed.args or {}),
         )
 
         add_experiment_tracking(recipe, tracking_type="tensorboard")
@@ -244,6 +253,7 @@ def run_job(cfg: DictConfig):
                 "task_type": str(cfg.training.task_type),
                 "n_clients": int(cfg.fed.n_clients),
                 "rounds": int(cfg.fed.rounds),
+                "method": str(cfg.fed.method),
                 "workspace_root": str(workspace_path),
             },
             artifacts={

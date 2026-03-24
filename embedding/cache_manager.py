@@ -162,6 +162,9 @@ class CacheManager:
         
         rel_paths = []
         for p in paths:
+            if isinstance(p, str) and "://" in p:
+                rel_paths.append(str(p))
+                continue
             try:
                 # Resolve paths to handle ../ etc, though usually inputs are clean
                 rel = os.path.relpath(str(p), start=str(base_path))

@@ -11,6 +11,7 @@ import torch
 import nvflare.client as flare
 from nvflare.client.tracking import SummaryWriter
 
+from fl_training.fed_methods import MethodContext, method_hook_from_config, validate_method_task_compatibility
 from fl_training.models.factory import create_model, validate_model_contract
 from fl_training.engines.classification import ClassificationEngine
 from fl_training.engines.segmentation import SegmentationEngine
@@ -87,6 +88,7 @@ def validate_client_config(cfg: Dict[str, Any], task_type: str) -> None:
         task_type=requested_task,
         num_classes=int(training_cfg["num_classes"]),
     )
+    validate_method_task_compatibility(cfg, requested_task)
 
 
 def build_datamodule_args(cfg: Dict[str, Any], client_name: str) -> Dict[str, Any]:
@@ -240,6 +242,8 @@ def main():
     else:
         raise ValueError(f"Unknown task type: {args.task_type}")
 
+    method_hook = method_hook_from_config(cfg, task_type)
+
     # 6. Federated Learning Loop
     while flare.is_running():
         # Receive Global Weights
@@ -250,6 +254,15 @@ def main():
         engine.current_round = input_model.current_round
         engine.model.to(device)
         round_idx = int(input_model.current_round)
+        input_meta = dict(getattr(input_model, "meta", {}) or {})
+        global_params = {name: tensor.detach().clone().cpu() for name, tensor in input_model.params.items()}
+        method_ctx = MethodContext(
+            method_name=str(cfg.get("fed", {}).get("method", "fedavg")).lower(),
+            round_idx=round_idx,
+            global_params=global_params,
+            input_meta=input_meta,
+        )
+        method_hook.on_round_start(engine.model, method_ctx)
 
         if val_loader is not None:
             pre_metrics = engine.evaluate(val_loader=val_loader)
@@ -258,7 +271,9 @@ def main():
         # Local Training
         train_metrics = engine.train_one_round(
             train_loader,
-            metric_callback=lambda m: metric_callback(m, writer, prefix="train")
+            metric_callback=lambda m: metric_callback(m, writer, prefix="train"),
+            method_hook=method_hook,
+            method_ctx=method_ctx,
         )
 
         # D. Evaluation (Optional but recommended for Model Selection)
@@ -270,10 +285,18 @@ def main():
 
         # Send Updates
         executed_steps = int(train_metrics.get("num_steps_current_round", 0))
+        method_hook.on_round_end(engine.model, method_ctx)
+        train_samples = len(getattr(train_loader, "dataset", []))
+        round_meta = method_hook.export_round_meta(
+            model=engine.model,
+            ctx=method_ctx,
+            executed_steps=executed_steps,
+            train_samples=int(train_samples),
+        )
         output_model = flare.FLModel(
             params=engine.model.cpu().state_dict(),
             metrics={**train_metrics, **val_metrics},
-            meta={"NUM_STEPS_CURRENT_ROUND": executed_steps}
+            meta={"NUM_STEPS_CURRENT_ROUND": executed_steps, **round_meta}
         )
         
         flare.send(output_model)

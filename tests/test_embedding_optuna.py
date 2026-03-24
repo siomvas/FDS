@@ -107,7 +107,7 @@ def test_run_cli_dry_run_writes_stage_manifest(tmp_path, monkeypatch):
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert payload["dataset"] == "tiny_imagenet"
     assert payload["train_total"] == 40
-    assert [stage["train_selected"] for stage in payload["stages"]] == [4, 14, 40]
+    assert [stage["train_selected"] for stage in payload["stages"]] == [40]
 
 
 def test_run_cli_fixed_mode_requires_target_n_clients(tmp_path, monkeypatch):
@@ -185,10 +185,10 @@ def test_discovery_mode_defaults_use_narrowed_extractors_tokens_and_pooling():
     assert _study_extractor_choices(args) == [
         "dinov2-base",
         "clip-base-patch16",
-        "siglip-base-patch16-224",
+        "mae-base",
     ]
     assert _study_token_choices(args) == ["cls", "all_last"]
-    assert _study_pooling_choices(args) == ["mean", "gem"]
+    assert _study_pooling_choices(args) == ["mean", "max"]
 
 
 def test_non_transformer_extractors_force_cls_only_search_space():

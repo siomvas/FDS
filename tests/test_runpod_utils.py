@@ -50,6 +50,27 @@ def test_build_pod_create_payload_includes_optional_fields():
     assert payload["minRAMPerGPU"] == 32
 
 
+def test_build_pod_create_payload_supports_cpu_pods():
+    payload = build_pod_create_payload(
+        RunpodPodConfig(
+            name="fds-cpu-test",
+            image_name="runpod/base:test",
+            network_volume_id="vol-123",
+            compute_type="CPU",
+            cpu_flavor_ids=("cpu3m",),
+            vcpu_count=32,
+            memory_in_gb=256,
+            container_disk_in_gb=50,
+        )
+    )
+
+    assert payload["computeType"] == "CPU"
+    assert payload["cpuFlavorIds"] == ["cpu3m"]
+    assert payload["vcpuCount"] == 32
+    assert "gpuTypeIds" not in payload
+    assert "gpuCount" not in payload
+
+
 def test_resolve_network_volume_id_by_name_and_data_center():
     client = _FakeClient(
         [

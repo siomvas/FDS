@@ -33,19 +33,19 @@ DEFAULT_EXTRACTORS = [
 DEFAULT_DISCOVERY_EXTRACTORS = [
     "dinov2-base",
     "clip-base-patch16",
-    "siglip-base-patch16-224",
+    "mae-base",
 ]
 DEFAULT_FIXED_CLUSTERING = ["kmeans"]
 DEFAULT_DISCOVERY_CLUSTERING = ["hdbscan"]
 DEFAULT_TOKEN_CHOICES = ["cls", "all_last", "k_last_cls"]
 DEFAULT_DISCOVERY_TOKEN_CHOICES = ["cls", "all_last"]
 DEFAULT_POOLING_CHOICES = ["mean", "max", "gem"]
-DEFAULT_DISCOVERY_POOLING_CHOICES = ["mean", "gem"]
+DEFAULT_DISCOVERY_POOLING_CHOICES = ["mean", "max"]
 DEFAULT_LAYER_AGGREGATIONS = ["mean", "concat", "weighted"]
 DEFAULT_LASTK_CHOICES = [2, 4]
 DEFAULT_LASTK_POOLING = ["mean", "max", "gem", "cls"]
-DEFAULT_STAGE_FRACTIONS = [0.1, 0.35, 1.0]
-DEFAULT_STAGE_SUBSAMPLES = [64, 128, 0]
+DEFAULT_STAGE_FRACTIONS = [1.0]
+DEFAULT_STAGE_SUBSAMPLES = [0]
 DEFAULT_DR_DIMS = [32, 128]
 DEFAULT_UMAP_NEIGHBORS = [15]
 DEFAULT_UMAP_MIN_DISTS = [0.1]
@@ -217,6 +217,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--study_name", default=None, type=str, help="Study name override.")
     parser.add_argument("--n_trials", default=100, type=int, help="Optuna trial budget.")
     parser.add_argument("--timeout", default=None, type=int, help="Optional walltime limit in seconds.")
+    parser.add_argument(
+        "--sampler",
+        choices=["tpe", "brute_force"],
+        default="tpe",
+        help="Optuna sampler to use.",
+    )
+    parser.add_argument(
+        "--bruteforce_avoid_premature_stop",
+        action="store_true",
+        help="Use BruteForceSampler's strict exhaustive-search stopping rule.",
+    )
     parser.add_argument("--study_mode", choices=["fixed", "discovery"], default="fixed", help="Fixed client-count search or HDBSCAN-style discovery search.")
     parser.add_argument("--objective_metric", choices=["mmd"], default="mmd", help="Optimization objective. Only MMD is supported in the first pass.")
     parser.add_argument("--scorer_model", default="inception_v3", type=str, help="Fixed feature extractor used for evaluation metrics.")
@@ -854,14 +865,23 @@ def run_cli(argv: Iterable[str] | None = None) -> int:
         return 0
 
     optuna = _require_optuna()
+    if args.sampler == "brute_force":
+        sampler = optuna.samplers.BruteForceSampler(
+            seed=int(args.seed),
+            avoid_premature_stop=bool(args.bruteforce_avoid_premature_stop),
+        )
+        pruner = optuna.pruners.NopPruner()
+    else:
+        sampler = optuna.samplers.TPESampler(seed=int(args.seed))
+        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1)
     storage_path = study_root / "study.sqlite3"
     study = optuna.create_study(
         study_name=study_name,
         direction="maximize",
         storage=f"sqlite:///{storage_path}",
         load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(seed=int(args.seed)),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1),
+        sampler=sampler,
+        pruner=pruner,
     )
 
     log.info(

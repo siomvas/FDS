@@ -138,6 +138,10 @@ _EXPORTS = {
         "partitioning.multivariate_dirichlet_splitter",
         "MultivariateDirichletSplitter",
     ),
+    "CorrelatedMultivariateDirichletSplitter": (
+        "partitioning.correlated_multivariate_dirichlet_splitter",
+        "CorrelatedMultivariateDirichletSplitter",
+    ),
 }
 
 
@@ -163,4 +167,5 @@ __all__ = [
     'DirichletSplitter',
     'EmbeddingSplitter',
     'MultivariateDirichletSplitter',
+    'CorrelatedMultivariateDirichletSplitter',
 ]

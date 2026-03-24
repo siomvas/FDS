@@ -14,7 +14,8 @@ Components
     - **ClassificationDataset**: Image classification with labels
     - **SegmentationDataset**: Semantic segmentation with image-mask pairs
     - **BaseDataset**: Registry-based loader for standard benchmarks
-      (Tiny ImageNet, Food-101, ADE20K)
+      (Tiny ImageNet, Food-101, ADE20K, Pascal VOC, BDD100K) and
+      natural-federated evaluation datasets (Fed-ISIC2019, FEMNIST)
 
 **Data Modules** (`data_modules.py`)
     PyTorch Lightning-inspired data modules for FL training:
@@ -132,7 +133,10 @@ The `BaseDataset` class uses a registry pattern to discover and load datasets:
 
     >>> # List available datasets
     >>> BaseDataset._loaders.keys()
-    dict_keys(['tiny_imagenet', 'food101', 'ade20k', 'PascalVOC', 'BDD100K'])
+    dict_keys([
+    ...     'tiny_imagenet', 'food101', 'ade20k', 'PascalVOC', 'BDD100K',
+    ...     'fed_isic2019', 'femnist'
+    ... ])
     >>>
     >>> # Register new dataset
     >>> @BaseDataset.register_dataset("cifar10")

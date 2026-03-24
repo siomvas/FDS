@@ -389,7 +389,7 @@ def test_fl_job_run_smoke_with_stubbed_nvflare(tmp_path, monkeypatch):
     def fake_add_tracking(recipe, tracking_type="tensorboard"):
         captured["tracking_type"] = tracking_type
 
-    monkeypatch.setattr(fl_job, "FedAvgRecipe", DummyRecipe)
+    monkeypatch.setattr(fl_job, "build_recipe", lambda *args, **kwargs: DummyRecipe(**kwargs))
     monkeypatch.setattr(fl_job, "SimEnv", DummyEnv)
     monkeypatch.setattr(fl_job, "add_experiment_tracking", fake_add_tracking)
     monkeypatch.setattr(fl_job, "create_model", lambda *args, **kwargs: nn.Linear(4, 2))
@@ -403,7 +403,7 @@ def test_fl_job_run_smoke_with_stubbed_nvflare(tmp_path, monkeypatch):
                 "dataset_splits": str(tmp_path / "dummy_splits.json"),
                 "args": {"root": str(tmp_path / "tiny_data")},
             },
-            "fed": {"n_clients": 2, "rounds": 1},
+            "fed": {"method": "fedavg", "args": {}, "n_clients": 2, "rounds": 1},
             "training": {
                 "task_type": "classification",
                 "num_classes": 3,
@@ -476,7 +476,7 @@ def test_fl_job_writes_failure_artifact_when_execute_raises(tmp_path, monkeypatc
             self.gpu_config = gpu_config
             self.workspace_root = workspace_root
 
-    monkeypatch.setattr(fl_job, "FedAvgRecipe", DummyRecipe)
+    monkeypatch.setattr(fl_job, "build_recipe", lambda *args, **kwargs: DummyRecipe(**kwargs))
     monkeypatch.setattr(fl_job, "SimEnv", DummyEnv)
     monkeypatch.setattr(fl_job, "add_experiment_tracking", lambda recipe, tracking_type="tensorboard": None)
     monkeypatch.setattr(fl_job, "create_model", lambda *args, **kwargs: nn.Linear(4, 2))
@@ -491,7 +491,7 @@ def test_fl_job_writes_failure_artifact_when_execute_raises(tmp_path, monkeypatc
                 "dataset_splits": str(tmp_path / "dummy_splits.json"),
                 "args": {"root": str(tmp_path / "tiny_data")},
             },
-            "fed": {"n_clients": 2, "rounds": 1},
+            "fed": {"method": "fedavg", "args": {}, "n_clients": 2, "rounds": 1},
             "training": {
                 "task_type": "classification",
                 "num_classes": 3,

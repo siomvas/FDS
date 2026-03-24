@@ -1,4 +1,4 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 
 def _dedupe(values):
@@ -32,6 +32,7 @@ PARTITIONING_REQUIRES = [
     "scikit-learn>=1.3.0",
     "umap-learn>=0.5.5",
     "tqdm>=4.66.0",
+    "optuna>=3.6.0",
 ]
 
 EMBEDDING_REQUIRES = [
@@ -84,12 +85,26 @@ EXTRAS["all"] = _dedupe(
     + DEV_REQUIRES
 )
 
+PACKAGE_INCLUDE_PATTERNS = [
+    "data_loading",
+    "data_loading.*",
+    "embedding",
+    "embedding.*",
+    "evaluation",
+    "evaluation.*",
+    "fl_training",
+    "fl_training.*",
+    "partitioning",
+    "partitioning.*",
+]
+
 
 setup(
     name="fds",
     version="0.1.0",
-    packages=find_packages(),
+    packages=find_packages(include=PACKAGE_INCLUDE_PATTERNS),
     package_dir={"": "."},
+    py_modules=[],
     install_requires=CORE_REQUIRES,
     extras_require=EXTRAS,
     python_requires=">=3.10",
