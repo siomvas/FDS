@@ -3,7 +3,7 @@ model:
   name: deeplabv3_resnet50
   provider: torchvision
   args:
-    weights: null
+    weights: DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1
     weights_backbone: null
 
 training:

@@ -24,8 +24,3 @@ training:
   steps_or_epochs: epochs
   scheduler: cosine
   lr_min: 1e-6
-  optimizer:
-    class_name: SGD
-    args:
-      momentum: 0.9
-      weight_decay: 1e-4

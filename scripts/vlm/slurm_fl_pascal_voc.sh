@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=fds_fl_voc
-#SBATCH --partition=gpu-a100
-#SBATCH --gres=gpu:1
+#SBATCH --partition=preemptgpu
+#SBATCH --gres=gpu:a100_80g:1
 #SBATCH --cpus-per-task=6
-#SBATCH --mem=47G
+#SBATCH --mem=80G
 #SBATCH --time=3-00:00:00
 #SBATCH --output=/path/to/FDS/logs/fl_%A_%a.out
 #SBATCH --error=/path/to/FDS/logs/fl_%A_%a.err
