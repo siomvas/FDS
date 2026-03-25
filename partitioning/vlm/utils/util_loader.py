@@ -119,7 +119,7 @@ def analyze_dataset_images(data, sample_size=100):
 #----- Load model ----
 # note: change to custom path when run
 # Model paths
-model_path = "/path/to/archive/vision-saved"
+model_path = "/path/to/data/vision-saved"
 MODEL_PATHS = {
     # vlm
     # minicpm & internVL
