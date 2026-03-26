@@ -299,6 +299,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stage_train_fractions", nargs="+", type=float, default=DEFAULT_STAGE_FRACTIONS, help="Progressive train fractions for pruning stages.")
     parser.add_argument("--stage_metric_subsamples", nargs="+", type=int, default=DEFAULT_STAGE_SUBSAMPLES, help="Per-stage max samples per client for metric evaluation; 0 means all.")
     parser.add_argument("--artifact_top_k", default=10, type=int, help="How many top completed trials to keep as explicit artifact directories.")
+    parser.add_argument(
+        "--valset_type",
+        choices=["global", "local", "none"],
+        default="none",
+        help="Validation split mode to embed in generated partitions.",
+    )
     return parser
 
 
@@ -528,7 +534,7 @@ def _build_clustering_config(
     return clustering_method, params
 
 
-def _build_splitter(trial, args, train_dataset):
+def _build_splitter(trial, args, train_dataset, *, val_dataset=None):
     extractor_name = trial.suggest_categorical("extractor", _study_extractor_choices(args))
     token_choice, token_params, pooling_strategy, pooling_params = _build_token_and_pooling_params(
         trial,
@@ -545,7 +551,7 @@ def _build_splitter(trial, args, train_dataset):
 
     return EmbeddingSplitter(
         train_dataset=train_dataset,
-        val_dataset=None,
+        val_dataset=val_dataset,
         extractor_name=extractor_name,
         clustering_method=clustering_method,
         clustering_params=clustering_params,
@@ -554,7 +560,7 @@ def _build_splitter(trial, args, train_dataset):
         pooling_strategy=pooling_strategy,
         pooling_params=pooling_params,
         preprocessing_params=preprocessing_params,
-        valset_type="none",
+        valset_type=str(args.valset_type),
         seed=int(args.seed),
         cache_dir=str(Path(args.cache_dir).expanduser().resolve()),
         dataset_name=str(args.dataset),
@@ -630,14 +636,22 @@ def _write_json(path: Path, payload: Any) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
-def _run_trial(trial, *, args, study_root: Path, stage_datasets: list[Any], stages: list[StageConfig]) -> float:
+def _run_trial(
+    trial,
+    *,
+    args,
+    study_root: Path,
+    stage_datasets: list[Any],
+    stages: list[StageConfig],
+    val_dataset: Any | None = None,
+) -> float:
     splitter = None
     client_datasets: list[list[dict[str, Any]]] | None = None
     final_metrics: dict[str, Any] = {}
     artifact_paths = _trial_artifact_paths(study_root, trial.number)
 
     for stage_index, (stage_cfg, stage_dataset) in enumerate(zip(stages, stage_datasets), start=1):
-        splitter = _build_splitter(trial, args, stage_dataset)
+        splitter = _build_splitter(trial, args, stage_dataset, val_dataset=val_dataset)
         splits = splitter.get_client_splits()
         client_datasets = _client_datasets_from_splits(splits)
         client_sizes = [len(dataset) for dataset in client_datasets]
@@ -847,6 +861,9 @@ def run_cli(argv: Iterable[str] | None = None) -> int:
     study_root.mkdir(parents=True, exist_ok=True)
 
     train_dataset = BaseDataset(args.dataset, str(base_path), "train")
+    val_dataset = None
+    if str(args.valset_type) in {"global", "local"}:
+        val_dataset = BaseDataset(args.dataset, str(base_path), "val")
     stage_datasets, stage_indices = _prepare_stage_datasets(train_dataset, stages, seed=int(args.seed))
     _write_stage_manifest(
         output_path=study_root / "stage_manifest.json",
@@ -861,6 +878,7 @@ def run_cli(argv: Iterable[str] | None = None) -> int:
         log.info("Study root: %s", study_root)
         log.info("Objective: %s", args.objective_metric)
         log.info("Scorer model: %s", args.scorer_model)
+        log.info("Validation split mode: %s", args.valset_type)
         log.info("Stage sizes: %s", [len(dataset) for dataset in stage_datasets])
         return 0
 
@@ -902,6 +920,7 @@ def run_cli(argv: Iterable[str] | None = None) -> int:
                 study_root=study_root,
                 stage_datasets=stage_datasets,
                 stages=stages,
+                val_dataset=val_dataset,
             )
         except TrialPruneSignal as exc:
             trial.set_user_attr("pruned_reason", str(exc))

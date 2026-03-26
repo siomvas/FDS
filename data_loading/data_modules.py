@@ -341,8 +341,8 @@ class TinyImageNetDataModule(BaseDataModule):
 
     def get_train_transform(self) -> T.Compose:
         """Training transforms with augmentation."""
-        resize_size = 256
-        image_size = 224
+        image_size = int(self.image_size) if self.image_size is not None else 224
+        resize_size = max(image_size, int(round(image_size * (256.0 / 224.0))))
         return T.Compose([
             T.Resize(resize_size),
             T.RandomCrop(image_size),
@@ -357,8 +357,8 @@ class TinyImageNetDataModule(BaseDataModule):
 
     def get_val_transform(self) -> T.Compose:
         """Validation transforms without augmentation."""
-        resize_size = 256
-        image_size = 224
+        image_size = int(self.image_size) if self.image_size is not None else 224
+        resize_size = max(image_size, int(round(image_size * (256.0 / 224.0))))
         return T.Compose([
             T.Resize(resize_size),
             T.CenterCrop(image_size),
@@ -384,9 +384,11 @@ class Food101DataModule(BaseDataModule):
 
     def get_train_transform(self) -> T.Compose:
         """Training transforms with augmentation."""
+        image_size = int(self.image_size) if self.image_size is not None else 224
+        resize_size = max(image_size, int(round(image_size * (256.0 / 224.0))))
         return T.Compose([
-            T.Resize(256),
-            T.RandomCrop(224),
+            T.Resize(resize_size),
+            T.RandomCrop(image_size),
             T.RandomHorizontalFlip(),
             T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
             T.RandomRotation(15),
@@ -399,9 +401,11 @@ class Food101DataModule(BaseDataModule):
 
     def get_val_transform(self) -> T.Compose:
         """Validation transforms without augmentation."""
+        image_size = int(self.image_size) if self.image_size is not None else 224
+        resize_size = max(image_size, int(round(image_size * (256.0 / 224.0))))
         return T.Compose([
-            T.Resize(256),
-            T.CenterCrop(224),
+            T.Resize(resize_size),
+            T.CenterCrop(image_size),
             T.ToTensor(),
             T.Normalize(
                 mean=[0.485, 0.456, 0.406],

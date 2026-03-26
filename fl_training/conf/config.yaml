@@ -25,6 +25,10 @@ fed:
   n_clients: 10
 
   args: {} # Additional arguments for the FL method can be added here
+  nvflare:
+    client:
+      # Mitigates intermittent "received TIMEOUT from server" during task-check.
+      task_check_timeout: 120.0
 
 # -----------------------------------------------------------------------------
 # 4. Training Hyperparameters (overriden by dataset and model configs)

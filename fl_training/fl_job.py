@@ -1,8 +1,10 @@
 import json
 import base64
+import inspect
 import logging
 from pathlib import Path
 import sys
+from typing import Any
 
 import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
@@ -15,6 +17,9 @@ from fl_training.models.factory import create_model, validate_model_contract
 from research import create_manifest, create_result, file_sha256, write_manifest, write_result
 
 log = logging.getLogger(__name__)
+
+# Optional compatibility hook for tests that monkeypatch a recipe class directly.
+FedAvgRecipe = None
 
 
 def _is_success_status(raw_status: object) -> bool:
@@ -160,6 +165,80 @@ def _dataset_metadata(cfg: DictConfig) -> dict:
     return {"dataset": dataset, "partition": partition}
 
 
+def _nvflare_runtime_overrides(cfg: DictConfig) -> tuple[dict, dict]:
+    """Return client/server runtime overrides for generated NVFlare app configs."""
+    fed_cfg = cfg.get("fed")
+    if fed_cfg is None:
+        return {}, {}
+
+    nvflare_cfg = fed_cfg.get("nvflare")
+    if nvflare_cfg is None:
+        return {}, {}
+
+    if OmegaConf.is_config(nvflare_cfg):
+        nvflare_cfg = OmegaConf.to_container(nvflare_cfg, resolve=True)
+    if not isinstance(nvflare_cfg, dict):
+        raise TypeError(f"fed.nvflare must be a mapping, got {type(nvflare_cfg).__name__}")
+
+    client_cfg = nvflare_cfg.get("client") or {}
+    server_cfg = nvflare_cfg.get("server") or {}
+    if not isinstance(client_cfg, dict):
+        raise TypeError(f"fed.nvflare.client must be a mapping, got {type(client_cfg).__name__}")
+    if not isinstance(server_cfg, dict):
+        raise TypeError(f"fed.nvflare.server must be a mapping, got {type(server_cfg).__name__}")
+    return dict(client_cfg), dict(server_cfg)
+
+
+def _fed_settings(cfg: DictConfig) -> tuple[str, dict[str, Any]]:
+    fed_cfg = cfg.get("fed")
+    if fed_cfg is None:
+        raise KeyError("Missing required 'fed' config section.")
+
+    method = str(fed_cfg.get("method", "fedavg"))
+    fed_args_cfg = fed_cfg.get("args", {})
+    if OmegaConf.is_config(fed_args_cfg):
+        fed_args = OmegaConf.to_container(fed_args_cfg, resolve=True)
+    else:
+        fed_args = fed_args_cfg
+    if not isinstance(fed_args, dict):
+        raise TypeError(f"fed.args must be a mapping, got {type(fed_args).__name__}")
+    return method, dict(fed_args)
+
+
+def _build_fedavg_recipe_override(
+    *,
+    name: str,
+    initial_model: nn.Module,
+    min_clients: int,
+    num_rounds: int,
+    train_script: str,
+    train_args: str,
+):
+    if FedAvgRecipe is None:
+        return None
+
+    recipe_kwargs = {
+        "name": name,
+        "min_clients": min_clients,
+        "num_rounds": num_rounds,
+        "train_script": train_script,
+        "train_args": train_args,
+    }
+    signature = inspect.signature(FedAvgRecipe.__init__)
+    has_model_kw = "model" in signature.parameters
+    has_initial_model_kw = "initial_model" in signature.parameters
+    accepts_var_kwargs = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()
+    )
+    if has_model_kw:
+        recipe_kwargs["model"] = initial_model
+    elif has_initial_model_kw or accepts_var_kwargs:
+        recipe_kwargs["initial_model"] = initial_model
+    else:
+        recipe_kwargs["model"] = initial_model
+    return FedAvgRecipe(**recipe_kwargs)
+
+
 def run_job(cfg: DictConfig):
     """
     Builds and executes the configured FL recipe using the Config Payload pattern.
@@ -173,9 +252,10 @@ def run_job(cfg: DictConfig):
         task_type=str(cfg.training.task_type),
         num_classes=int(cfg.training.num_classes),
     )
+    fed_method, fed_args = _fed_settings(cfg)
     validate_method_task_compatibility(
         {
-            "fed": OmegaConf.to_container(cfg.fed, resolve=True),
+            "fed": {"method": fed_method, "args": fed_args},
             "training": {"task_type": str(cfg.training.task_type)},
         },
         str(cfg.training.task_type),
@@ -223,17 +303,36 @@ def run_job(cfg: DictConfig):
         # ---------------------------------------------------------------------
         stage = "initial_model"
         initial_model = get_initial_model(cfg)
+        train_script = str(Path(__file__).parent / "client_entry.py")
 
-        recipe = build_recipe(
-            str(cfg.fed.method),
-            name=str(cfg.name),
-            initial_model=initial_model,
-            min_clients=int(cfg.fed.n_clients),
-            num_rounds=int(cfg.fed.rounds),
-            train_script=str(Path(__file__).parent / "client_entry.py"),
-            train_args=train_args,
-            method_args=OmegaConf.to_container(cfg.fed.args, resolve=True) if OmegaConf.is_config(cfg.fed.args) else dict(cfg.fed.args or {}),
-        )
+        recipe = None
+        if fed_method.lower() == "fedavg":
+            recipe = _build_fedavg_recipe_override(
+                name=str(cfg.name),
+                initial_model=initial_model,
+                min_clients=int(cfg.fed.n_clients),
+                num_rounds=int(cfg.fed.rounds),
+                train_script=train_script,
+                train_args=train_args,
+            )
+        if recipe is None:
+            recipe = build_recipe(
+                fed_method,
+                name=str(cfg.name),
+                initial_model=initial_model,
+                min_clients=int(cfg.fed.n_clients),
+                num_rounds=int(cfg.fed.rounds),
+                train_script=train_script,
+                train_args=train_args,
+                method_args=fed_args,
+            )
+        client_runtime_cfg, server_runtime_cfg = _nvflare_runtime_overrides(cfg)
+        if client_runtime_cfg:
+            recipe.add_client_config(client_runtime_cfg)
+            log.info("Applied NVFlare client runtime config overrides: %s", client_runtime_cfg)
+        if server_runtime_cfg:
+            recipe.add_server_config(server_runtime_cfg)
+            log.info("Applied NVFlare server runtime config overrides: %s", server_runtime_cfg)
 
         add_experiment_tracking(recipe, tracking_type="tensorboard")
 
@@ -263,12 +362,12 @@ def run_job(cfg: DictConfig):
                 "task_type": str(cfg.training.task_type),
                 "n_clients": int(cfg.fed.n_clients),
                 "rounds": int(cfg.fed.rounds),
-                "method": str(cfg.fed.method),
+                "method": fed_method,
                 "workspace_root": str(workspace_path),
             },
             artifacts={
                 "workspace_root": str(workspace_path),
-                "train_script": str(Path(__file__).parent / "client_entry.py"),
+                "train_script": train_script,
                 "nvflare_result": str(run_status.get_result()),
             },
             metrics={

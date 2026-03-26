@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import inspect
 import logging
 from typing import Any, Dict, Iterable, Optional, Sequence
 
@@ -479,14 +480,21 @@ def build_recipe(method_name: str, *, name: str, initial_model: Any, min_clients
     if normalized == "fedavg":
         from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe
 
-        return FedAvgRecipe(
-            name=name,
-            initial_model=initial_model,
-            min_clients=min_clients,
-            num_rounds=num_rounds,
-            train_script=train_script,
-            train_args=train_args,
-        )
+        # NVFlare changed this kwarg from `initial_model` to `model` in newer releases.
+        # Keep runtime compatibility with both signatures.
+        fedavg_kwargs = {
+            "name": name,
+            "min_clients": min_clients,
+            "num_rounds": num_rounds,
+            "train_script": train_script,
+            "train_args": train_args,
+        }
+        signature = inspect.signature(FedAvgRecipe.__init__)
+        if "model" in signature.parameters:
+            fedavg_kwargs["model"] = initial_model
+        else:
+            fedavg_kwargs["initial_model"] = initial_model
+        return FedAvgRecipe(**fedavg_kwargs)
     if normalized == "fedadam":
         shareable_generator = PTFedOptModelShareableGenerator(
             optimizer_args={
