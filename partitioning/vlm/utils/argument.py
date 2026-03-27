@@ -54,7 +54,7 @@ elif args.dataset == FOOD101:
         # 4: {"prompt": "Lighting Intensity", "exemplar": "Bright", "num_classes": 5},
         0: {"prompt": "cuisine or culinary origin", "exemplar": "Italian", "num_classes": 5},
         1: {"prompt": "cooking or preparation method", "exemplar": "fried", "num_classes": 5},
-        2: {"prompt": "dish composition and structure", "exemplar": "bowl", "num_classes": 4},
+        2: {"prompt": "arrangement and structure of food components, not the serving vessel", "exemplar": "mixed", "num_classes": 4},
         3: {"prompt": "dominant surface texture", "exemplar": "crispy", "num_classes": 4},
         4: {"prompt": "plating style and presentation formality", "exemplar": "formal", "num_classes": 3},
     }

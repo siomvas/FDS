@@ -23,6 +23,7 @@ fed:
   method: fedavg
   rounds: 100
   n_clients: 10
+  n_threads: null  # Number of parallel simulation threads (null = n_clients)
 
   args: {} # Additional arguments for the FL method can be added here
 

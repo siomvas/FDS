@@ -227,6 +227,7 @@ def run_job(cfg: DictConfig):
 
         env = SimEnv(
             num_clients=cfg.fed.n_clients,
+            num_threads=cfg.fed.n_threads or None,
             gpu_config=gpu_config,
             workspace_root=str(workspace_path)
         )
