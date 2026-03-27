@@ -54,11 +54,15 @@ class RunpodPodConnection:
 class RunpodPodConfig:
     name: str
     image_name: str
-    gpu_type_ids: tuple[str, ...]
     network_volume_id: str
+    gpu_type_ids: tuple[str, ...] = ()
     gpu_count: int = 1
     cloud_type: str = "SECURE"
     compute_type: str = "GPU"
+    cpu_flavor_ids: tuple[str, ...] = ()
+    cpu_flavor_priority: str = "availability"
+    vcpu_count: int | None = None
+    memory_in_gb: int | None = None
     ports: tuple[str, ...] = ("22/tcp", "8888/http")
     container_disk_in_gb: int = 100
     support_public_ip: bool = True
@@ -78,8 +82,6 @@ def build_pod_create_payload(config: RunpodPodConfig) -> dict[str, Any]:
         "name": config.name,
         "cloudType": config.cloud_type,
         "computeType": config.compute_type,
-        "gpuCount": int(config.gpu_count),
-        "gpuTypeIds": list(config.gpu_type_ids),
         "imageName": config.image_name,
         "networkVolumeId": config.network_volume_id,
         "containerDiskInGb": int(config.container_disk_in_gb),
@@ -91,14 +93,26 @@ def build_pod_create_payload(config: RunpodPodConfig) -> dict[str, Any]:
         "interruptible": bool(config.interruptible),
         "locked": bool(config.locked),
     }
+    if config.compute_type.upper() == "CPU":
+        if not config.cpu_flavor_ids:
+            raise ValueError("CPU Pod creation requires at least one cpu_flavor_id.")
+        payload["cpuFlavorIds"] = list(config.cpu_flavor_ids)
+        payload["cpuFlavorPriority"] = str(config.cpu_flavor_priority)
+        if config.vcpu_count is not None:
+            payload["vcpuCount"] = int(config.vcpu_count)
+    else:
+        if not config.gpu_type_ids:
+            raise ValueError("GPU Pod creation requires at least one gpu_type_id.")
+        payload["gpuCount"] = int(config.gpu_count)
+        payload["gpuTypeIds"] = list(config.gpu_type_ids)
     if config.data_center_ids:
         payload["dataCenterIds"] = list(config.data_center_ids)
         payload["dataCenterPriority"] = "availability"
     if config.env:
         payload["env"] = dict(config.env)
-    if config.min_vcpu_per_gpu is not None:
+    if config.compute_type.upper() != "CPU" and config.min_vcpu_per_gpu is not None:
         payload["minVCPUPerGPU"] = int(config.min_vcpu_per_gpu)
-    if config.min_ram_per_gpu is not None:
+    if config.compute_type.upper() != "CPU" and config.min_ram_per_gpu is not None:
         payload["minRAMPerGPU"] = int(config.min_ram_per_gpu)
     return payload
 

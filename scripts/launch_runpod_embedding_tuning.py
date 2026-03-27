@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shlex
 import subprocess
 import tempfile
@@ -36,6 +37,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_IMAGE_NAME = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
 DEFAULT_GPU_TYPE_ID = "NVIDIA L40S"
+DEFAULT_CPU_FLAVOR_ID = "cpu3m"
 
 
 @dataclass
@@ -64,9 +66,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--network-volume-id", default=None, type=str, help="Existing RunPod network volume id.")
     parser.add_argument("--network-volume-name", default=None, type=str, help="Existing RunPod network volume name.")
     parser.add_argument("--data-center-id", default=None, type=str, help="Optional RunPod data center constraint.")
+    parser.add_argument("--compute-type", choices=["GPU", "CPU"], default="GPU", type=str, help="RunPod compute type.")
     parser.add_argument("--gpu-type-id", default=DEFAULT_GPU_TYPE_ID, type=str, help="RunPod GPU type id/display name.")
+    parser.add_argument("--cpu-flavor-id", default=DEFAULT_CPU_FLAVOR_ID, type=str, help="RunPod CPU flavor id.")
     parser.add_argument("--image-name", default=DEFAULT_IMAGE_NAME, type=str, help="Pod image to deploy.")
     parser.add_argument("--gpu-count", default=1, type=int, help="GPUs per pod.")
+    parser.add_argument("--vcpu-count", default=None, type=int, help="vCPU count for CPU pods.")
+    parser.add_argument("--memory-in-gb", default=None, type=int, help="RAM allocation for CPU pods.")
     parser.add_argument("--container-disk-gb", default=100, type=int, help="Ephemeral container disk size.")
     parser.add_argument("--ssh-key-path", default="~/.ssh/id_ed25519", type=str, help="Private SSH key for Pod access.")
     parser.add_argument(
@@ -107,6 +113,18 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--n_trials", default=100, type=int, help="Trials per preset.")
     parser.add_argument("--timeout", default=None, type=int, help="Optional timeout passed to Optuna.")
+    parser.add_argument(
+        "--sampler",
+        choices=["auto", "tpe", "brute_force"],
+        default="auto",
+        type=str,
+        help="Optuna sampler override. 'auto' uses brute_force for discovery presets and tpe for fixed presets.",
+    )
+    parser.add_argument(
+        "--bruteforce-avoid-premature-stop",
+        action="store_true",
+        help="Enable BruteForceSampler strict exhaustive stopping behavior.",
+    )
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--num_workers", default=4, type=int, help="Worker count for embeddings/metrics.")
     parser.add_argument("--device", default=None, type=str, help="Optional device override inside the Pod.")
@@ -114,6 +132,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--embed_batch_size", default=100, type=int, help="Embedding extraction batch size.")
     parser.add_argument("--metric_batch_size", default=128, type=int, help="Metric feature batch size.")
     parser.add_argument("--artifact_top_k", default=10, type=int, help="Best-trial artifacts retained per study.")
+    parser.add_argument("--target-n-clients", default=None, type=int, help="Override preset target_n_clients.")
     parser.add_argument("--min_client_size", default=20, type=int, help="Minimum acceptable client size.")
     parser.add_argument("--keep-pods", action="store_true", help="Do not delete Pods after completion.")
     parser.add_argument("--no-cache", action="store_true", help="Disable embedding/metric caching in the study.")
@@ -147,6 +166,10 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _study_command(args: argparse.Namespace, *, preset_key: str, remote_study_dir: str) -> list[str]:
+    resolved_sampler = str(args.sampler)
+    if resolved_sampler == "auto":
+        preset = PRESETS.get(preset_key)
+        resolved_sampler = "brute_force" if preset and preset.study_mode == "discovery" else "tpe"
     command = [
         "python",
         "scripts/tune_embedding_preset.py",
@@ -157,6 +180,8 @@ def _study_command(args: argparse.Namespace, *, preset_key: str, remote_study_di
         remote_study_dir,
         "--n_trials",
         str(int(args.n_trials)),
+        "--sampler",
+        resolved_sampler,
         "--seed",
         str(int(args.seed)),
         "--num_workers",
@@ -174,12 +199,16 @@ def _study_command(args: argparse.Namespace, *, preset_key: str, remote_study_di
     ]
     if args.timeout is not None:
         command.extend(["--timeout", str(int(args.timeout))])
+    if args.bruteforce_avoid_premature_stop:
+        command.append("--bruteforce_avoid_premature_stop")
     if args.device:
         command.extend(["--device", args.device])
     if args.proxy is not None:
         command.extend(["--proxy", args.proxy])
     if args.no_cache:
         command.append("--no_cache")
+    if args.target_n_clients is not None:
+        command.extend(["--target_n_clients", str(int(args.target_n_clients))])
     return command
 
 
@@ -200,7 +229,7 @@ def build_remote_study_script(
     torch_home: str,
     study_command: list[str],
 ) -> str:
-    install_target = f"{remote_worktree}[partitioning,embedding,evaluation,fl,dev]"
+    install_target = f"{remote_worktree}[partitioning,embedding,evaluation]"
     data_sync_block = ""
     if data_archive_remote_path:
         ready_marker = f"{study_base_path.rstrip('/')}/.fds_runpod_sync_ready"
@@ -235,11 +264,23 @@ STUDY_DIR={_q(remote_study_dir)}
 mkdir -p "$RUN_DIR" "$(dirname "$LOG_PATH")" "$(dirname "$STATUS_PATH")" "$STUDY_DIR"
 exec > >(tee -a "$LOG_PATH") 2>&1
 echo "[START] $(date -Is) preset={preset_key}"
+rm -f "$STATUS_PATH"
 rm -rf "$WORKTREE"
 mkdir -p "$WORKTREE"
 tar -xzf {_q(repo_archive_remote_path)} -C "$WORKTREE" --strip-components=1
-{data_sync_block}if [[ ! -x "$VENV_PATH/bin/python" ]]; then
-  python3 -m venv "$VENV_PATH"
+{data_sync_block}mkdir -p "$(dirname "$VENV_PATH")"
+if [[ ! -x "$VENV_PATH/bin/python" ]]; then
+  if ! python3 -m venv "$VENV_PATH"; then
+    rm -rf "$VENV_PATH"
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip python3-venv
+    fi
+    if ! python3 -m venv "$VENV_PATH"; then
+      python3 -m pip install --user virtualenv
+      python3 -m virtualenv "$VENV_PATH"
+    fi
+  fi
 fi
 source "$VENV_PATH/bin/activate"
 python -m pip install --upgrade pip
@@ -247,13 +288,46 @@ python -m pip install -e {_q(install_target)}
 export FDS_CACHE_DIR={_q(cache_dir)}
 export HF_HOME={_q(hf_home)}
 export TORCH_HOME={_q(torch_home)}
+export PIP_CACHE_DIR="$(dirname "$HF_HOME")/pip"
+export TMPDIR="$(dirname "$HF_HOME")/tmp"
 export PYTHONUNBUFFERED=1
 export OPENBLAS_NUM_THREADS=8
 export OMP_NUM_THREADS=8
 export MKL_NUM_THREADS=8
 export NUMEXPR_NUM_THREADS=8
 unset FDS_HPC_PROXY || true
-mkdir -p "$FDS_CACHE_DIR" "$HF_HOME" "$TORCH_HOME"
+mkdir -p "$FDS_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$PIP_CACHE_DIR" "$TMPDIR"
+python - <<'PY'
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+study_db = Path({remote_study_dir!r}) / "study.sqlite3"
+if study_db.exists():
+    con = sqlite3.connect(study_db)
+    try:
+        cur = con.cursor()
+        tables = {{row[0] for row in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")}}
+        running_ids = [row[0] for row in cur.execute("SELECT trial_id FROM trials WHERE state = 'RUNNING'")]
+        if running_ids:
+            placeholders = ",".join("?" for _ in running_ids)
+            for table in (
+                "trial_values",
+                "trial_params",
+                "trial_user_attributes",
+                "trial_system_attributes",
+                "trial_intermediate_values",
+                "trial_heartbeats",
+            ):
+                if table in tables:
+                    cur.execute(f"DELETE FROM {{table}} WHERE trial_id IN ({{placeholders}})", running_ids)
+            cur.execute(f"DELETE FROM trials WHERE trial_id IN ({{placeholders}})", running_ids)
+            con.commit()
+            print(f"[RESUME] removed stale RUNNING trials from {{study_db}}: {{running_ids}}")
+    finally:
+        con.close()
+PY
 cd "$WORKTREE"
 set +e
 {_shell_join(study_command)}
@@ -346,13 +420,19 @@ def _prepare_job(
         raise ValueError(f"Unknown embedding preset '{preset_key}'. Valid presets: {valid}")
 
     try:
+        compute_type = str(args.compute_type).upper()
         pod_config = RunpodPodConfig(
             name=_pod_name(preset_key, local_run_root.name),
             image_name=args.image_name,
-            gpu_type_ids=(args.gpu_type_id,),
             network_volume_id=network_volume_id,
+            gpu_type_ids=(args.gpu_type_id,) if compute_type == "GPU" else (),
             gpu_count=int(args.gpu_count),
+            compute_type=compute_type,
+            cpu_flavor_ids=(args.cpu_flavor_id,) if compute_type == "CPU" else (),
+            vcpu_count=int(args.vcpu_count) if args.vcpu_count is not None else None,
+            memory_in_gb=int(args.memory_in_gb) if args.memory_in_gb is not None else None,
             container_disk_in_gb=int(args.container_disk_gb),
+            global_networking=(compute_type == "GPU"),
             data_center_ids=(args.data_center_id,) if args.data_center_id else (),
             env={},
         )
@@ -470,6 +550,8 @@ def main() -> int:
         if args.local_run_root
         else (REPO_ROOT / "local_artifacts" / "runpod" / "embedding_tuning" / stamp).resolve()
     )
+    if not args.local_run_root and local_run_root.exists():
+        local_run_root = local_run_root.with_name(f"{local_run_root.name}_{os.getpid()}")
     local_run_root.mkdir(parents=True, exist_ok=True)
     args.remote_run_root = remote_run_root
 

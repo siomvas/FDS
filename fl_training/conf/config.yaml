@@ -26,6 +26,10 @@ fed:
   n_threads: null  # Number of parallel simulation threads (null = n_clients)
 
   args: {} # Additional arguments for the FL method can be added here
+  nvflare:
+    client:
+      # Mitigates intermittent "received TIMEOUT from server" during task-check.
+      task_check_timeout: 120.0
 
 # -----------------------------------------------------------------------------
 # 4. Training Hyperparameters (overriden by dataset and model configs)
@@ -44,6 +48,7 @@ training:
   grad_clipping_type: none
   grad_clipping_value: 0.0
   amp_enabled: true
+  pre_round_eval: false
   grad_tracking: false # needs grad_tracking controller, to be implemented
   # Detection evaluation threshold defaults
   detection_score_threshold: 0.5

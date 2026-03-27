@@ -389,7 +389,7 @@ def test_fl_job_run_smoke_with_stubbed_nvflare(tmp_path, monkeypatch):
     def fake_add_tracking(recipe, tracking_type="tensorboard"):
         captured["tracking_type"] = tracking_type
 
-    monkeypatch.setattr(fl_job, "FedAvgRecipe", DummyRecipe)
+    monkeypatch.setattr(fl_job, "build_recipe", lambda *args, **kwargs: DummyRecipe(**kwargs))
     monkeypatch.setattr(fl_job, "SimEnv", DummyEnv)
     monkeypatch.setattr(fl_job, "add_experiment_tracking", fake_add_tracking)
     monkeypatch.setattr(fl_job, "create_model", lambda *args, **kwargs: nn.Linear(4, 2))
@@ -403,7 +403,7 @@ def test_fl_job_run_smoke_with_stubbed_nvflare(tmp_path, monkeypatch):
                 "dataset_splits": str(tmp_path / "dummy_splits.json"),
                 "args": {"root": str(tmp_path / "tiny_data")},
             },
-            "fed": {"n_clients": 2, "rounds": 1},
+            "fed": {"method": "fedavg", "args": {}, "n_clients": 2, "rounds": 1},
             "training": {
                 "task_type": "classification",
                 "num_classes": 3,
@@ -459,6 +459,79 @@ def test_fl_job_run_smoke_with_stubbed_nvflare(tmp_path, monkeypatch):
     assert result_payload["status"] == "success"
 
 
+def test_fl_job_marks_failed_when_nvflare_status_not_success(tmp_path, monkeypatch):
+    import fl_training.fl_job as fl_job
+    from omegaconf import OmegaConf
+
+    class DummyStatus:
+        def get_status(self):
+            return "ABORTED"
+
+        def get_result(self):
+            return "aborted_result"
+
+    class DummyRecipe:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def execute(self, env):
+            return DummyStatus()
+
+    class DummyEnv:
+        def __init__(self, num_clients, gpu_config, workspace_root):
+            self.num_clients = num_clients
+            self.gpu_config = gpu_config
+            self.workspace_root = workspace_root
+
+    monkeypatch.setattr(fl_job, "FedAvgRecipe", DummyRecipe)
+    monkeypatch.setattr(fl_job, "SimEnv", DummyEnv)
+    monkeypatch.setattr(fl_job, "add_experiment_tracking", lambda recipe, tracking_type="tensorboard": None)
+    monkeypatch.setattr(fl_job, "create_model", lambda *args, **kwargs: nn.Linear(4, 2))
+
+    cfg = OmegaConf.create(
+        {
+            "name": "aborted_job",
+            "seed": 123,
+            "dataset": {
+                "name": "tiny_imagenet",
+                "class_path": "data_loading.data_modules.TinyImageNetDataModule",
+                "dataset_splits": str(tmp_path / "dummy_splits.json"),
+                "args": {"root": str(tmp_path / "tiny_data")},
+            },
+            "fed": {"n_clients": 2, "rounds": 1},
+            "training": {
+                "task_type": "classification",
+                "num_classes": 3,
+                "batch_size": 2,
+                "local_steps": 1,
+                "steps_or_epochs": "steps",
+                "lr": 1e-3,
+                "scheduler": "none",
+                "optim_resume": "resume",
+                "amp_enabled": False,
+                "grad_clipping_type": "none",
+                "grad_clipping_value": 0.0,
+                "loss": "cross_entropy",
+                "optimizer": {"class_name": "Adam", "args": {}},
+            },
+            "model": {
+                "name": "resnet18",
+                "provider": "torchvision",
+                "args": {"weights": None},
+            },
+            "paths": {"output_dir": str(tmp_path / "out")},
+            "system": {"gpu_ids": [0]},
+        }
+    )
+
+    fl_job.run_job(cfg)
+
+    result_payload = json.loads((tmp_path / "out" / "aborted_job" / "result.json").read_text(encoding="utf-8"))
+    assert result_payload["status"] == "failed"
+    assert result_payload["metrics"]["status_text"] == "ABORTED"
+    assert result_payload["failure"]["error_type"] == "NVFlareRunFailed"
+
+
 def test_fl_job_writes_failure_artifact_when_execute_raises(tmp_path, monkeypatch):
     import fl_training.fl_job as fl_job
     from omegaconf import OmegaConf
@@ -476,7 +549,7 @@ def test_fl_job_writes_failure_artifact_when_execute_raises(tmp_path, monkeypatc
             self.gpu_config = gpu_config
             self.workspace_root = workspace_root
 
-    monkeypatch.setattr(fl_job, "FedAvgRecipe", DummyRecipe)
+    monkeypatch.setattr(fl_job, "build_recipe", lambda *args, **kwargs: DummyRecipe(**kwargs))
     monkeypatch.setattr(fl_job, "SimEnv", DummyEnv)
     monkeypatch.setattr(fl_job, "add_experiment_tracking", lambda recipe, tracking_type="tensorboard": None)
     monkeypatch.setattr(fl_job, "create_model", lambda *args, **kwargs: nn.Linear(4, 2))
@@ -491,7 +564,7 @@ def test_fl_job_writes_failure_artifact_when_execute_raises(tmp_path, monkeypatc
                 "dataset_splits": str(tmp_path / "dummy_splits.json"),
                 "args": {"root": str(tmp_path / "tiny_data")},
             },
-            "fed": {"n_clients": 2, "rounds": 1},
+            "fed": {"method": "fedavg", "args": {}, "n_clients": 2, "rounds": 1},
             "training": {
                 "task_type": "classification",
                 "num_classes": 3,

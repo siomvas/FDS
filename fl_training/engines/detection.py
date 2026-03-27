@@ -749,7 +749,9 @@ class DetectionEngine:
     def train_one_round(
         self,
         train_loader: DataLoader,
-        metric_callback: Optional[Callable[[Dict[str, float]], None]] = None
+        metric_callback: Optional[Callable[[Dict[str, float]], None]] = None,
+        method_hook: Any = None,
+        method_ctx: Any = None,
     ) -> Dict[str, float]:
         self.model.to(self.compute_device)
         self.model.train()
@@ -787,7 +789,18 @@ class DetectionEngine:
             self.optimizer.zero_grad(set_to_none=True)
 
             with autocast(enabled=self.amp_enabled, device_type=self.compute_device.type):
-                loss, predictions = self._forward_with_loss(images_tensor, images_list, targets)
+                base_loss, predictions = self._forward_with_loss(images_tensor, images_list, targets)
+                loss = (
+                    method_hook.augment_loss(
+                        base_loss=base_loss,
+                        model=self.model,
+                        outputs=predictions,
+                        batch=(images_list, targets),
+                        ctx=method_ctx,
+                    )
+                    if method_hook is not None
+                    else base_loss
+                )
 
             self.scaler.scale(loss).backward()
 
@@ -800,6 +813,8 @@ class DetectionEngine:
 
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            if method_hook is not None:
+                method_hook.on_step_end(model=self.model, optimizer=self.optimizer, ctx=method_ctx)
             self.scheduler.step()
 
             round_loss += float(loss.item())

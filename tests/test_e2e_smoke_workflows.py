@@ -240,6 +240,7 @@ def test_fl_classification_one_round_smoke(tmp_path):
         data_dir=str(tmp_path),
         split_file=split_file,
         client_idx=0,
+        image_size=64,
         batch_size=2,
         num_workers=0,
         seed=42,

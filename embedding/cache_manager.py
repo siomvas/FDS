@@ -162,6 +162,9 @@ class CacheManager:
         
         rel_paths = []
         for p in paths:
+            if isinstance(p, str) and "://" in p:
+                rel_paths.append(str(p))
+                continue
             try:
                 # Resolve paths to handle ../ etc, though usually inputs are clean
                 rel = os.path.relpath(str(p), start=str(base_path))
@@ -265,34 +268,58 @@ class CacheManager:
         if not self.enabled:
             return None
 
+        allow_legacy_k_last_lookup = bool(kwargs.pop("_allow_legacy_k_last_lookup", False))
+        legacy_k_last = kwargs.pop("_legacy_k_last", None)
+
         # Normalize paths
         query_paths = self._to_relative(image_paths, base_path)
-        
-        cache_key = self._compute_cache_key(
-            model_name, query_paths if not dataset_name else [], 
-            dataset_name, pooling_strategy, layers, **kwargs
-        )
-        
-        # Check memory cache first
-        if cache_key in self._memory_cache:
-            data = self._memory_cache[cache_key]
-        else:
-            cache_file = self.cache_dir / f"{cache_key}.npz"
+
+        def _load_data(target_key: str) -> Optional[Dict[str, Any]]:
+            if target_key in self._memory_cache:
+                return self._memory_cache[target_key]
+
+            cache_file = self.cache_dir / f"{target_key}.npz"
             if not cache_file.exists():
                 return None
+
             try:
-                data = np.load(cache_file, allow_pickle=True)
-                # Store in memory for future lookups (optional: implement LRU here if memory is tight)
-                # We store the loaded dict-like object.
-                # Note: np.load with mmap_mode=None loads into memory.
-                self._memory_cache[cache_key] = dict(data)
-                data = self._memory_cache[cache_key]
+                loaded = np.load(cache_file, allow_pickle=True)
+                self._memory_cache[target_key] = dict(loaded)
+                return self._memory_cache[target_key]
             except (OSError, ValueError, EOFError, pickle.UnpicklingError, zipfile.BadZipFile) as e:
-                logger.warning("Failed to load cache entry %s: %s", cache_key, e)
-                self._evict_cache_entry(cache_key)
+                logger.warning("Failed to load cache entry %s: %s", target_key, e)
+                self._evict_cache_entry(target_key)
                 return None
 
+        cache_key = self._compute_cache_key(
+            model_name, query_paths if not dataset_name else [],
+            dataset_name, pooling_strategy, layers, **kwargs
+        )
+        resolved_key = cache_key
+        data = _load_data(cache_key)
+        if (
+            data is None
+            and allow_legacy_k_last_lookup
+            and legacy_k_last is not None
+            and "k_last" not in kwargs
+        ):
+            legacy_kwargs = dict(kwargs)
+            legacy_kwargs["k_last"] = legacy_k_last
+            legacy_key = self._compute_cache_key(
+                model_name, query_paths if not dataset_name else [],
+                dataset_name, pooling_strategy, layers, **legacy_kwargs
+            )
+            if legacy_key != cache_key:
+                legacy_data = _load_data(legacy_key)
+                if legacy_data is not None:
+                    data = legacy_data
+                    resolved_key = legacy_key
+
+        if data is None:
+            return None
+
         # Retrieve specific data
+        result: Optional[Union[np.ndarray, Dict[int, np.ndarray]]]
         try:
             if dataset_name:
                 # Dataset Mode: Load specific subset
@@ -317,8 +344,8 @@ class CacheManager:
                         # If a subset is missing, we must recompute (or implement partial return logic)
                         # Returning None forces recomputation of the requested batch.
                         return None
-                        
-                    return stored_embeddings[indices]
+
+                    result = stored_embeddings[indices]
                 else:
                     return None
 
@@ -332,15 +359,30 @@ class CacheManager:
                         # Handle potential numpy types in keys
                         key_val = int(k) if isinstance(k, (int, np.integer, float, np.floating)) else str(k)
                         result[key_val] = data[f"layer_{k}"]
-                    return result
+                    # keep result for optional promotion
                 elif "embeddings" in data:
-                    return data["embeddings"]
+                    result = data["embeddings"]
                 else:
                     return None
 
         except (KeyError, IndexError, TypeError, ValueError) as e:
             logger.warning("Error processing cached data for %s: %s", cache_key, e)
             return None
+
+        if resolved_key != cache_key and dataset_name is None and result is not None:
+            # Promote legacy keys to normalized keys without requiring extractor-level dual lookups.
+            self.put(
+                embeddings=result,
+                model_name=model_name,
+                image_paths=image_paths,
+                dataset_name=dataset_name,
+                base_path=base_path,
+                pooling_strategy=pooling_strategy,
+                layers=layers,
+                **kwargs,
+            )
+
+        return result
 
     def put(
         self,

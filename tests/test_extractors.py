@@ -572,6 +572,83 @@ class TestEmbeddingExtractorBase:
 
         assert raw.shape == (2, 3, 2)
 
+    def test_non_lastk_cache_key_omits_k_last_parameter(self, mock_cache_manager):
+        """Cache keys for cls/all_last modes should not depend on the default k_last value."""
+        from embedding.embedding_extractors import EmbeddingExtractor
+
+        class DummyExtractor(EmbeddingExtractor):
+            def load_model(self):
+                self.model = _DummyVisionModel()
+                self.processor = object()
+
+            def get_embedding_dim(self):
+                return 2
+
+            def _get_dataloader(self, images):
+                return [torch.zeros((1, 3, 4, 4), dtype=torch.float32)]
+
+        extractor = DummyExtractor(model_name="dummy", device="cpu", cache_manager=mock_cache_manager)
+
+        extractor.extract_embeddings(
+            images=["a.jpg"],
+            return_which_tokens="all_last",
+            use_cache=True,
+            dataset_name="food101",
+            base_path="/workspace/datasets/raw",
+            pooling_strategy="mean",
+        )
+
+        get_kwargs = mock_cache_manager.get.call_args_list[0].kwargs
+        put_kwargs = mock_cache_manager.put.call_args.kwargs
+
+        assert get_kwargs["return_which_tokens"] == "all_last"
+        assert put_kwargs["return_which_tokens"] == "all_last"
+        assert get_kwargs["pooling_strategy"] == "mean"
+        assert put_kwargs["pooling_strategy"] == "mean"
+        assert "k_last" not in get_kwargs
+        assert "k_last" not in put_kwargs
+
+    def test_non_lastk_cache_falls_back_to_legacy_k_last_key(self, mock_cache_manager):
+        """Non-k-last modes should recover warmed caches written with the old k_last=4 key."""
+        from embedding.embedding_extractors import EmbeddingExtractor
+
+        class DummyExtractor(EmbeddingExtractor):
+            def load_model(self):
+                raise AssertionError("Legacy cache fallback should avoid recomputation.")
+
+            def get_embedding_dim(self):
+                return 2
+
+        expected = np.array([[1.0, 2.0]], dtype=np.float32)
+
+        def _cache_get(**kwargs):
+            if kwargs.get("return_which_tokens") == "all_last" and kwargs.get("pooling_strategy") == "mean":
+                if "k_last" not in kwargs:
+                    return None
+                if kwargs.get("k_last") == 4:
+                    return expected
+            return None
+
+        mock_cache_manager.get.side_effect = _cache_get
+        extractor = DummyExtractor(model_name="dummy", device="cpu", cache_manager=mock_cache_manager)
+
+        result = extractor.extract_embeddings(
+            images=["a.jpg"],
+            return_which_tokens="all_last",
+            k_last=4,
+            use_cache=True,
+            dataset_name="food101",
+            base_path="/workspace/datasets/raw",
+            pooling_strategy="mean",
+        )
+
+        np.testing.assert_allclose(result, expected)
+        assert mock_cache_manager.get.call_count == 2
+        assert "k_last" not in mock_cache_manager.get.call_args_list[0].kwargs
+        assert mock_cache_manager.get.call_args_list[1].kwargs["k_last"] == 4
+        promoted_kwargs = mock_cache_manager.put.call_args.kwargs
+        assert "k_last" not in promoted_kwargs
+
 
 # ============================================================================
 # Test InceptionExtractor

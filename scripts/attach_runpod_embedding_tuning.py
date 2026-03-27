@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -101,6 +102,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pod-id", default=None, type=str, help="Optional Pod id for manifest purposes.")
     parser.add_argument("--n_trials", default=100, type=int, help="Trials per preset.")
     parser.add_argument("--timeout", default=None, type=int, help="Optional timeout passed to Optuna.")
+    parser.add_argument(
+        "--sampler",
+        choices=["auto", "tpe", "brute_force"],
+        default="auto",
+        type=str,
+        help="Optuna sampler override. 'auto' uses brute_force for discovery presets and tpe for fixed presets.",
+    )
+    parser.add_argument(
+        "--bruteforce-avoid-premature-stop",
+        action="store_true",
+        help="Enable BruteForceSampler strict exhaustive stopping behavior.",
+    )
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
     parser.add_argument("--num_workers", default=4, type=int, help="Worker count for embeddings/metrics.")
     parser.add_argument("--device", default=None, type=str, help="Optional device override inside the Pod.")
@@ -108,6 +121,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--embed_batch_size", default=100, type=int, help="Embedding extraction batch size.")
     parser.add_argument("--metric_batch_size", default=128, type=int, help="Metric feature batch size.")
     parser.add_argument("--artifact_top_k", default=10, type=int, help="Best-trial artifacts retained per study.")
+    parser.add_argument("--target-n-clients", default=None, type=int, help="Override preset target_n_clients.")
     parser.add_argument("--min_client_size", default=20, type=int, help="Minimum acceptable client size.")
     parser.add_argument("--no-cache", action="store_true", help="Disable embedding/metric caching in the study.")
     parser.add_argument("--poll-interval-seconds", default=30, type=int, help="Status polling interval.")
@@ -238,6 +252,8 @@ def main() -> int:
         if args.local_run_root
         else (REPO_ROOT / "local_artifacts" / "runpod" / "manual_embedding_tuning" / stamp).resolve()
     )
+    if not args.local_run_root and local_run_root.exists():
+        local_run_root = local_run_root.with_name(f"{local_run_root.name}_{os.getpid()}")
     local_run_root.mkdir(parents=True, exist_ok=True)
     args.remote_run_root = remote_run_root
 

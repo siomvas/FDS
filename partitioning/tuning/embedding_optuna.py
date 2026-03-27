@@ -33,19 +33,19 @@ DEFAULT_EXTRACTORS = [
 DEFAULT_DISCOVERY_EXTRACTORS = [
     "dinov2-base",
     "clip-base-patch16",
-    "siglip-base-patch16-224",
+    "mae-base",
 ]
 DEFAULT_FIXED_CLUSTERING = ["kmeans"]
 DEFAULT_DISCOVERY_CLUSTERING = ["hdbscan"]
 DEFAULT_TOKEN_CHOICES = ["cls", "all_last", "k_last_cls"]
 DEFAULT_DISCOVERY_TOKEN_CHOICES = ["cls", "all_last"]
 DEFAULT_POOLING_CHOICES = ["mean", "max", "gem"]
-DEFAULT_DISCOVERY_POOLING_CHOICES = ["mean", "gem"]
+DEFAULT_DISCOVERY_POOLING_CHOICES = ["mean", "max"]
 DEFAULT_LAYER_AGGREGATIONS = ["mean", "concat", "weighted"]
 DEFAULT_LASTK_CHOICES = [2, 4]
 DEFAULT_LASTK_POOLING = ["mean", "max", "gem", "cls"]
-DEFAULT_STAGE_FRACTIONS = [0.1, 0.35, 1.0]
-DEFAULT_STAGE_SUBSAMPLES = [64, 128, 0]
+DEFAULT_STAGE_FRACTIONS = [1.0]
+DEFAULT_STAGE_SUBSAMPLES = [0]
 DEFAULT_DR_DIMS = [32, 128]
 DEFAULT_UMAP_NEIGHBORS = [15]
 DEFAULT_UMAP_MIN_DISTS = [0.1]
@@ -217,6 +217,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--study_name", default=None, type=str, help="Study name override.")
     parser.add_argument("--n_trials", default=100, type=int, help="Optuna trial budget.")
     parser.add_argument("--timeout", default=None, type=int, help="Optional walltime limit in seconds.")
+    parser.add_argument(
+        "--sampler",
+        choices=["tpe", "brute_force"],
+        default="tpe",
+        help="Optuna sampler to use.",
+    )
+    parser.add_argument(
+        "--bruteforce_avoid_premature_stop",
+        action="store_true",
+        help="Use BruteForceSampler's strict exhaustive-search stopping rule.",
+    )
     parser.add_argument("--study_mode", choices=["fixed", "discovery"], default="fixed", help="Fixed client-count search or HDBSCAN-style discovery search.")
     parser.add_argument("--objective_metric", choices=["mmd"], default="mmd", help="Optimization objective. Only MMD is supported in the first pass.")
     parser.add_argument("--scorer_model", default="inception_v3", type=str, help="Fixed feature extractor used for evaluation metrics.")
@@ -288,6 +299,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stage_train_fractions", nargs="+", type=float, default=DEFAULT_STAGE_FRACTIONS, help="Progressive train fractions for pruning stages.")
     parser.add_argument("--stage_metric_subsamples", nargs="+", type=int, default=DEFAULT_STAGE_SUBSAMPLES, help="Per-stage max samples per client for metric evaluation; 0 means all.")
     parser.add_argument("--artifact_top_k", default=10, type=int, help="How many top completed trials to keep as explicit artifact directories.")
+    parser.add_argument(
+        "--valset_type",
+        choices=["global", "local", "none"],
+        default="none",
+        help="Validation split mode to embed in generated partitions.",
+    )
     return parser
 
 
@@ -517,7 +534,7 @@ def _build_clustering_config(
     return clustering_method, params
 
 
-def _build_splitter(trial, args, train_dataset):
+def _build_splitter(trial, args, train_dataset, *, val_dataset=None):
     extractor_name = trial.suggest_categorical("extractor", _study_extractor_choices(args))
     token_choice, token_params, pooling_strategy, pooling_params = _build_token_and_pooling_params(
         trial,
@@ -534,7 +551,7 @@ def _build_splitter(trial, args, train_dataset):
 
     return EmbeddingSplitter(
         train_dataset=train_dataset,
-        val_dataset=None,
+        val_dataset=val_dataset,
         extractor_name=extractor_name,
         clustering_method=clustering_method,
         clustering_params=clustering_params,
@@ -543,7 +560,7 @@ def _build_splitter(trial, args, train_dataset):
         pooling_strategy=pooling_strategy,
         pooling_params=pooling_params,
         preprocessing_params=preprocessing_params,
-        valset_type="none",
+        valset_type=str(args.valset_type),
         seed=int(args.seed),
         cache_dir=str(Path(args.cache_dir).expanduser().resolve()),
         dataset_name=str(args.dataset),
@@ -619,14 +636,22 @@ def _write_json(path: Path, payload: Any) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
-def _run_trial(trial, *, args, study_root: Path, stage_datasets: list[Any], stages: list[StageConfig]) -> float:
+def _run_trial(
+    trial,
+    *,
+    args,
+    study_root: Path,
+    stage_datasets: list[Any],
+    stages: list[StageConfig],
+    val_dataset: Any | None = None,
+) -> float:
     splitter = None
     client_datasets: list[list[dict[str, Any]]] | None = None
     final_metrics: dict[str, Any] = {}
     artifact_paths = _trial_artifact_paths(study_root, trial.number)
 
     for stage_index, (stage_cfg, stage_dataset) in enumerate(zip(stages, stage_datasets), start=1):
-        splitter = _build_splitter(trial, args, stage_dataset)
+        splitter = _build_splitter(trial, args, stage_dataset, val_dataset=val_dataset)
         splits = splitter.get_client_splits()
         client_datasets = _client_datasets_from_splits(splits)
         client_sizes = [len(dataset) for dataset in client_datasets]
@@ -836,6 +861,9 @@ def run_cli(argv: Iterable[str] | None = None) -> int:
     study_root.mkdir(parents=True, exist_ok=True)
 
     train_dataset = BaseDataset(args.dataset, str(base_path), "train")
+    val_dataset = None
+    if str(args.valset_type) in {"global", "local"}:
+        val_dataset = BaseDataset(args.dataset, str(base_path), "val")
     stage_datasets, stage_indices = _prepare_stage_datasets(train_dataset, stages, seed=int(args.seed))
     _write_stage_manifest(
         output_path=study_root / "stage_manifest.json",
@@ -850,18 +878,28 @@ def run_cli(argv: Iterable[str] | None = None) -> int:
         log.info("Study root: %s", study_root)
         log.info("Objective: %s", args.objective_metric)
         log.info("Scorer model: %s", args.scorer_model)
+        log.info("Validation split mode: %s", args.valset_type)
         log.info("Stage sizes: %s", [len(dataset) for dataset in stage_datasets])
         return 0
 
     optuna = _require_optuna()
+    if args.sampler == "brute_force":
+        sampler = optuna.samplers.BruteForceSampler(
+            seed=int(args.seed),
+            avoid_premature_stop=bool(args.bruteforce_avoid_premature_stop),
+        )
+        pruner = optuna.pruners.NopPruner()
+    else:
+        sampler = optuna.samplers.TPESampler(seed=int(args.seed))
+        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1)
     storage_path = study_root / "study.sqlite3"
     study = optuna.create_study(
         study_name=study_name,
         direction="maximize",
         storage=f"sqlite:///{storage_path}",
         load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(seed=int(args.seed)),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1),
+        sampler=sampler,
+        pruner=pruner,
     )
 
     log.info(
@@ -882,6 +920,7 @@ def run_cli(argv: Iterable[str] | None = None) -> int:
                 study_root=study_root,
                 stage_datasets=stage_datasets,
                 stages=stages,
+                val_dataset=val_dataset,
             )
         except TrialPruneSignal as exc:
             trial.set_user_attr("pruned_reason", str(exc))

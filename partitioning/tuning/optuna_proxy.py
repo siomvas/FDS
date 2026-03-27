@@ -21,6 +21,7 @@ class EmbeddingStudyPreset:
 
 
 def build_arg_parser(preset: EmbeddingStudyPreset) -> argparse.ArgumentParser:
+    default_sampler = "brute_force" if preset.study_mode == "discovery" else "tpe"
     parser = argparse.ArgumentParser(
         description=f"Preset launcher for embedding partition Optuna: {preset.key}"
     )
@@ -29,6 +30,18 @@ def build_arg_parser(preset: EmbeddingStudyPreset) -> argparse.ArgumentParser:
     parser.add_argument("--study_name", default=None, type=str, help="Optuna study name override.")
     parser.add_argument("--n_trials", default=100, type=int, help="Number of Optuna trials to run.")
     parser.add_argument("--timeout", default=None, type=int, help="Optional walltime limit in seconds.")
+    parser.add_argument(
+        "--sampler",
+        choices=["tpe", "brute_force"],
+        default=default_sampler,
+        type=str,
+        help="Optuna sampler override.",
+    )
+    parser.add_argument(
+        "--bruteforce_avoid_premature_stop",
+        action="store_true",
+        help="Enable BruteForceSampler's strict exhaustive-search stopping rule.",
+    )
     parser.add_argument("--seed", default=42, type=int, help="Base random seed.")
     parser.add_argument("--num_workers", default=0, type=int, help="Worker count for embedding and metrics.")
     parser.add_argument("--device", default=None, type=str, help="Optional device override.")
@@ -69,6 +82,8 @@ def build_embedding_optuna_argv(
     study_name: str | None,
     n_trials: int,
     timeout: int | None,
+    sampler: str,
+    bruteforce_avoid_premature_stop: bool,
     seed: int,
     num_workers: int,
     device: str | None,
@@ -95,6 +110,8 @@ def build_embedding_optuna_argv(
         preset.study_mode,
         "--n_trials",
         str(int(n_trials)),
+        "--sampler",
+        str(sampler),
         "--seed",
         str(int(seed)),
         "--num_workers",
@@ -116,6 +133,8 @@ def build_embedding_optuna_argv(
         argv.extend(["--study_name", study_name])
     if timeout is not None:
         argv.extend(["--timeout", str(int(timeout))])
+    if bruteforce_avoid_premature_stop:
+        argv.append("--bruteforce_avoid_premature_stop")
     if device:
         argv.extend(["--device", device])
     if cache_dir is not None:
@@ -155,6 +174,8 @@ def run_preset_cli(preset: EmbeddingStudyPreset, argv: Iterable[str] | None = No
             study_name=args.study_name,
             n_trials=int(args.n_trials),
             timeout=args.timeout,
+            sampler=args.sampler,
+            bruteforce_avoid_premature_stop=bool(args.bruteforce_avoid_premature_stop),
             seed=int(args.seed),
             num_workers=int(args.num_workers),
             device=args.device,

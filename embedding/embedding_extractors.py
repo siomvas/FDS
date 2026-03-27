@@ -593,8 +593,9 @@ class EmbeddingExtractor(ABC):
         # Define cache parameters
         cache_params = {
             "return_which_tokens": return_which_tokens,
-            "k_last": k_last,
         }
+        if return_which_tokens in {"k_last_cls", "k_last_all"}:
+            cache_params["k_last"] = k_last
         if stream_pool:
             cache_params["pooling_strategy"] = pooling_strategy
             cache_params["pooling_params"] = pooling_params or {}
@@ -606,13 +607,36 @@ class EmbeddingExtractor(ABC):
                 image_paths=images,
                 dataset_name=dataset_name,
                 base_path=base_path,
+                _allow_legacy_k_last_lookup=return_which_tokens not in {"k_last_cls", "k_last_all"},
+                _legacy_k_last=k_last,
                 **cache_params
             )
             if cached_data is not None:
                 # logger.debug(f"  ✓ Cache HIT: {self.model_name} ({len(cached_data)} samples)")
                 return cached_data
-            else:
-                logger.info("Cache miss for %s; computing embeddings.", self.model_name)
+            # Compatibility shim for legacy cache entries where "all_last" keys
+            # were accidentally written with an explicit k_last field.
+            if return_which_tokens == "all_last":
+                legacy_cache_params = dict(cache_params)
+                legacy_cache_params["k_last"] = k_last
+                cached_data = self.cache_manager.get(
+                    model_name=self.model_name,
+                    image_paths=images,
+                    dataset_name=dataset_name,
+                    base_path=base_path,
+                    **legacy_cache_params
+                )
+                if cached_data is not None:
+                    self.cache_manager.put(
+                        embeddings=cached_data,
+                        model_name=self.model_name,
+                        image_paths=images,
+                        dataset_name=dataset_name,
+                        base_path=base_path,
+                        **cache_params
+                    )
+                    return cached_data
+            logger.info("Cache miss for %s; computing embeddings.", self.model_name)
 
         # 2. Compute if not cached
         if self.model is None:

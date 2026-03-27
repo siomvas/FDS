@@ -86,7 +86,9 @@ class ClassificationEngine:
     def train_one_round(
         self,
         train_loader: DataLoader,
-        metric_callback: Optional[Callable[[Dict[str, float]], None]] = None
+        metric_callback: Optional[Callable[[Dict[str, float]], None]] = None,
+        method_hook: Any = None,
+        method_ctx: Any = None,
     ) -> Dict[str, float]:
         self.model.to(self.compute_device)
         self.model.train()
@@ -124,7 +126,18 @@ class ClassificationEngine:
 
             with autocast(enabled=self.amp_enabled, device_type=self.compute_device.type):
                 outputs = self.model(images)
-                loss = self.criterion(outputs, labels)
+                base_loss = self.criterion(outputs, labels)
+                loss = (
+                    method_hook.augment_loss(
+                        base_loss=base_loss,
+                        model=self.model,
+                        outputs=outputs,
+                        batch=(images, labels),
+                        ctx=method_ctx,
+                    )
+                    if method_hook is not None
+                    else base_loss
+                )
             self.scaler.scale(loss).backward()
 
             # Gradient Clipping
@@ -136,6 +149,8 @@ class ClassificationEngine:
                 torch.nn.utils.clip_grad_value_(self.model.parameters(), self.grad_clipping_value)
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            if method_hook is not None:
+                method_hook.on_step_end(model=self.model, optimizer=self.optimizer, ctx=method_ctx)
             self.scheduler.step()
 
             round_loss += loss.item()
