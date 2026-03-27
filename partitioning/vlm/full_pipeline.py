@@ -11,24 +11,24 @@ import logging
 logger = logging.getLogger(__name__)
 
 def main():
-    # # Load model 
-    # logger.debug("=============== Starting full ICTC pipeline... ========================")
-    # logger.debug("--- Loading VLM ...")
-    # vlm_model, vlm_tokenizer = util_loader.load_vlm(args.vlm_model)
+    # Load model 
+    logger.debug("=============== Starting full ICTC pipeline... ========================")
+    logger.debug("--- Loading VLM ...")
+    vlm_model, vlm_tokenizer = util_loader.load_vlm(args.vlm_model)
 
-    # logger.debug("----Loading dataset...")
-    # # Load data: get dataset_name from argument when run `python script.py --dataset <name>`, default is: imagenet
-    # data = util_loader.load_data(args.dataset, "train")
+    logger.debug("----Loading dataset...")
+    # Load data: get dataset_name from argument when run `python script.py --dataset <name>`, default is: imagenet
+    data = util_loader.load_data(args.dataset, "train")
 
-    # # Run pipeline
-    # logger.debug("1) === Step 1...")
-    # step1.main(vlm_model, vlm_tokenizer, data=data, max_samples=None, batch_size=96)
+    # Run pipeline
+    logger.debug("1) === Step 1...")
+    step1.main(vlm_model, vlm_tokenizer, data=data, max_samples=None, batch_size=96)
 
-    # # Unload vlm here:
-    # del vlm_model
-    # del vlm_tokenizer
-    # gc.collect()
-    # torch.cuda.empty_cache()
+    # Unload vlm here:
+    del vlm_model
+    del vlm_tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
 
     logger.info("--- VLM unloaded, loading LLM...")
     llm_model, llm_tokenizer = util_loader.load_llm(args.llama_ver)
