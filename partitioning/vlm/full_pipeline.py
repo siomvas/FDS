@@ -18,7 +18,7 @@ def main():
 
     logger.debug("----Loading dataset...")
     # Load data: get dataset_name from argument when run `python script.py --dataset <name>`, default is: imagenet
-    data = util_loader.load_data(args.dataset, "train")
+    data = util_loader.load_data(args.dataset, "val")
 
     # Run pipeline
     logger.debug("1) === Step 1...")
@@ -30,19 +30,19 @@ def main():
     gc.collect()
     torch.cuda.empty_cache()
 
-    logger.info("--- VLM unloaded, loading LLM...")
+    # logger.info("--- VLM unloaded, loading LLM...")
     llm_model, llm_tokenizer = util_loader.load_llm(args.llama_ver)
 
     # logger.debug("2a) === Step 2a...")
-    step2a.main(llm_model, llm_tokenizer, inference_batch_size=118)
+    # step2a.main(llm_model, llm_tokenizer, inference_batch_size=118)
 
     # logger.debug("2b) === Step 2b...")
-    step2b.main(llm_model, llm_tokenizer)
+    # step2b.main(llm_model, llm_tokenizer)
 
-    # logger.info("3) === Step 3...")
-    # step3.main(llm_model, llm_tokenizer, inference_batch_size=118)
+    logger.info("3) === Step 3...")
+    step3.main(llm_model, llm_tokenizer, inference_batch_size=96)
     
-    # logger.info("Full pipeline finished successfully!")
+    logger.info("Full pipeline finished successfully!")
 
 if __name__ == "__main__":
     if not logging.getLogger().handlers:

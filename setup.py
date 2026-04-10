@@ -14,7 +14,7 @@ CORE_REQUIRES = [
 ]
 
 FL_REQUIRES = [
-    "nvflare>=2.7.0,<3.0.0",
+    "nvflare>=2.7.2,<3.0.0",
     "torch>=2.1.0",
     "torchvision>=0.16.0",
     "tensorboard>=2.14.0",

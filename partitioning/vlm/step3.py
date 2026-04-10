@@ -149,4 +149,4 @@ if __name__ == "__main__":
     # ----- Run flow -----
 
     model, tokenizer = util_loader.load_llm(args.llama_ver)
-    main(model=model, tokenizer=tokenizer, inference_batch_size=88)
+    main(model=model, tokenizer=tokenizer, inference_batch_size=96)

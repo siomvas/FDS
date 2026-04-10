@@ -56,6 +56,12 @@ DATASET_CONFIGS = {
         "criteria": ["main_object", "location", "light", "color", "size"],
         "anchor": "VOC2012",
     },
+    "food101": {
+        "vlm_data_dir": "partitioning/vlm/data/food101",
+        "random_partition": "/path/to/gtai/FDS/vlm_partitions/food101/random_n10_seed42.json",
+        "criteria": ["cuisine", "formality", "preparation", "texture", "composition"],
+        "anchor": "food101",
+    },
 }
 
 # ── Path normalisation ───────────────────────────────────────────────────────
@@ -77,13 +83,79 @@ def normalize_path(path: str, anchor: str | None = None) -> str:
 
 # ── Core logic ───────────────────────────────────────────────────────────────
 
+def load_valid_labels(criterion_dir: Path) -> set[str] | None:
+    """Parse valid label names from step2b_result.txt ('Answer N: <label>' lines).
+
+    Returns None if the file is absent (no filtering applied).
+    """
+    step2b = criterion_dir / "step2b_result.txt"
+    if not step2b.exists():
+        return None
+    import re
+    labels: set[str] = set()
+    for line in step2b.read_text().splitlines():
+        m = re.match(r"Answer\s+\d+:\s*(.+)", line.strip())
+        if m:
+            labels.add(m.group(1).strip())
+    return labels if labels else None
+
+
+def clean_label(raw: str, valid_labels: set[str] | None = None) -> str | None:
+    """Return a clean label or None if the value cannot be mapped to a valid label.
+
+    Strategy:
+    1. If raw exactly matches a valid label → return it.
+    2. Take the last non-empty line; if it matches → return it.
+    3. Search the full string for any valid label (last occurrence wins).
+    4. Otherwise return None (will be skipped).
+
+    When valid_labels is None all non-empty strings are accepted as-is.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    if valid_labels is None:
+        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+        return lines[-1] if lines else raw
+
+    # Exact match
+    if raw in valid_labels:
+        return raw
+
+    # Last non-empty line
+    lines = [l.strip() for l in raw.splitlines() if l.strip()]
+    last = lines[-1] if lines else raw
+    if last in valid_labels:
+        return last
+
+    # Search full text for any valid label (prefer longest match, take last occurrence)
+    found = None
+    found_pos = -1
+    for lbl in sorted(valid_labels, key=len, reverse=True):
+        pos = raw.rfind(lbl)
+        if pos > found_pos:
+            found = lbl
+            found_pos = pos
+    return found  # None if nothing matched
+
+
 def load_criterion_labels(criterion_dir: Path) -> dict[str, str]:
-    """Load {normalized_image_path: label_value} from step3_result.jsonl."""
+    """Load {normalized_image_path: label_value} from step3_result.jsonl.
+
+    Labels are cleaned and filtered against the step2b valid-label set when
+    available; images with unresolvable labels are silently dropped.
+    """
     jsonl = criterion_dir / "step3_result.jsonl"
     if not jsonl.exists():
         raise FileNotFoundError(f"Missing: {jsonl}")
 
+    valid_labels = load_valid_labels(criterion_dir)
+    if valid_labels:
+        log.info("    Valid labels from step2b: %s", sorted(valid_labels))
+
     result: dict[str, str] = {}
+    skipped = 0
     anchor = None
     for a in ANCHORS:
         if a in str(criterion_dir):
@@ -97,7 +169,14 @@ def load_criterion_labels(criterion_dir: Path) -> dict[str, str]:
                 continue
             entry = json.loads(line)
             key = normalize_path(entry["image"], anchor)
-            result[key] = entry["class"]
+            label = clean_label(entry["class"], valid_labels)
+            if label is None:
+                skipped += 1
+                continue
+            result[key] = label
+
+    if skipped:
+        log.warning("    Skipped %d images with unresolvable labels", skipped)
     return result
 
 
@@ -136,7 +215,7 @@ def create_pure_criterion_partition(
 
     clients: dict[str, dict] = {}
     for idx, label_value in enumerate(sorted(groups)):
-        clients[str(idx)] = {"train": groups[label_value], "val": []}
+        clients[f"client_{idx}"] = {"train": groups[label_value], "val": []}
         log.info("    client_%d (%s): %d images", idx, label_value, len(groups[label_value]))
 
     result: dict = {"clients": clients}

@@ -29,7 +29,7 @@ parser.add_argument("--dataset", type=str, default=TINY_IMAGENET, choices=[TINY_
 args, _ = parser.parse_known_args()
 
 # ---output dir
-parser.add_argument("--exp_name", type=str, default="train2")
+parser.add_argument("--exp_name", type=str, default="test")
 
 # ---*** criteria choices and set up (depends on dataset) ***------------------
 if args.dataset == TINY_IMAGENET:

@@ -39,6 +39,6 @@ python fl_training/run_experiment.py \
     model=deeplabv3_resnet50 \
     fed.n_clients=${N} \
     fed.rounds=100 \
-    +dataset.args.num_workers=0 \
+    ++dataset.args.num_workers=0 \
     "name=ade20k_deeplabv3_resnet50_fedavg_pure_${CRITERION}_seed42" \
     "paths.output_dir=${SCRATCH_OUTPUT}"
