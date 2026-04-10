@@ -421,6 +421,9 @@ class ScaffoldHook(MethodHook):
         # Fetch params once per round — get_params() resets cnt so must not be
         # called again until the next round starts.
         self._c_global, self._c_local = self.helper.get_params()
+        # Zero grads before deepcopy so gradient buffers are not copied onto GPU,
+        # halving the transient GPU spike during the copy.
+        model.zero_grad()
         self.global_model_copy = deepcopy(model).cpu()
 
     def on_step_end(
@@ -450,6 +453,11 @@ class ScaffoldHook(MethodHook):
         self.helper.c_global.to(device)
         self.helper.c_local.to(device)
         self.helper.terms_update(model, lr, self._c_global, self._c_local, self.global_model_copy)
+        # Return to CPU immediately — in simulation all n clients' copies would otherwise
+        # accumulate on GPU until the next round's on_round_start replaces the reference.
+        self.global_model_copy.cpu()
+        self.helper.c_global.cpu()
+        self.helper.c_local.cpu()
 
     def export_round_meta(
         self,
@@ -461,7 +469,13 @@ class ScaffoldHook(MethodHook):
     ) -> Dict[str, Any]:
         try:
             ctrl_diff = self.helper.get_delta_controls()
-        except ValueError:
+        except ValueError as exc:
+            log.error(
+                "SCAFFOLD: get_delta_controls() failed at round %d: %s — "
+                "control diff will be empty; global control variate update skipped for this round.",
+                ctx.round_idx,
+                exc,
+            )
             ctrl_diff = {}
         # Filter to only float-typed model parameters — integer buffers like
         # num_batches_tracked produce float64 deltas that break server-side
@@ -544,14 +558,19 @@ def build_recipe(method_name: str, *, name: str, initial_model: Any, min_clients
     if normalized == "scaffold":
         from nvflare.app_opt.pt.recipes.scaffold import ScaffoldRecipe
 
-        return ScaffoldRecipe(
-            name=name,
-            model=initial_model,
-            min_clients=min_clients,
-            num_rounds=num_rounds,
-            train_script=train_script,
-            train_args=train_args,
-        )
+        scaffold_kwargs = {
+            "name": name,
+            "min_clients": min_clients,
+            "num_rounds": num_rounds,
+            "train_script": train_script,
+            "train_args": train_args,
+        }
+        signature = inspect.signature(ScaffoldRecipe.__init__)
+        if "model" in signature.parameters:
+            scaffold_kwargs["model"] = initial_model
+        else:
+            scaffold_kwargs["initial_model"] = initial_model
+        return ScaffoldRecipe(**scaffold_kwargs)
     if normalized == "fednova":
         return FlexibleRecipe(
             name=name,
