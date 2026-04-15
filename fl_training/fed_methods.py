@@ -401,6 +401,9 @@ class ScaffoldHook(MethodHook):
         self.last_lr = 1e-3
         self._c_global: Optional[dict] = None
         self._c_local: Optional[dict] = None
+        # Precomputed once per round for vectorised step correction (avoids per-step Python loop).
+        self._correction_list: list = []
+        self._params_for_correction: list = []
 
     @property
     def method_name(self) -> str:
@@ -421,6 +424,14 @@ class ScaffoldHook(MethodHook):
         # Fetch params once per round — get_params() resets cnt so must not be
         # called again until the next round starts.
         self._c_global, self._c_local = self.helper.get_params()
+        # Precompute (c_global - c_local) once per round so on_step_end can use a single
+        # fused _foreach_sub_ call instead of a per-parameter loop.
+        self._correction_list = []
+        self._params_for_correction = []
+        for name, param in model.named_parameters():
+            if name in self._c_global:
+                self._correction_list.append((self._c_global[name] - self._c_local[name]).detach())
+                self._params_for_correction.append(param)
         # Zero grads before deepcopy so gradient buffers are not copied onto GPU,
         # halving the transient GPU spike during the copy.
         model.zero_grad()
@@ -435,7 +446,14 @@ class ScaffoldHook(MethodHook):
     ) -> None:
         current_lr = float(optimizer.param_groups[0]["lr"])
         self.last_lr = current_lr
-        self.helper.model_update(model, current_lr, self._c_global, self._c_local)
+        # Vectorised SCAFFOLD correction — replaces PTScaffoldHelper.model_update's
+        # per-parameter Python loop with a single fused CUDA call.  The loop launches
+        # one kernel per parameter tensor (~200 for ConvNeXt-Small) and is the dominant
+        # cost causing the ~22× slowdown vs FedAvg on architectures with many layers.
+        if self._params_for_correction:
+            param_data = [p.data for p in self._params_for_correction]
+            torch._foreach_sub_(param_data, self._correction_list, alpha=current_lr)
+        self.helper.cnt += 1
 
     def on_round_end(self, model: torch.nn.Module, ctx: MethodContext) -> None:
         if self.global_model_copy is None:
