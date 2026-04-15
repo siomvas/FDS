@@ -95,7 +95,7 @@ def test_scaffold_hook_round_start_loads_global_controls_when_present(scaffold_h
     c_global, c_local = _param_dicts(model)
     mock_helper.get_params.return_value = (c_global, c_local)
 
-    ctrl = {name: p.numpy() for name, p in model.named_parameters()}
+    ctrl = {name: p.detach().numpy() for name, p in model.named_parameters()}
     ctx = _make_ctx(input_meta={AlgorithmConstants.SCAFFOLD_CTRL_GLOBAL: ctrl})
     scaffold_hook.on_round_start(model, ctx)
 
