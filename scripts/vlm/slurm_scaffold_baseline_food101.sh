@@ -46,7 +46,7 @@ N=${N_CLIENTS[$SLURM_ARRAY_TASK_ID]}
 
 export food101_chosen_split_path=$SPLITS_ROOT/${PARTITION}.json
 
-EXTRA_ARGS="+dataset.args.num_workers=0"
+EXTRA_ARGS="+dataset.args.num_workers=4"
 [[ "${N}" == "20" ]] && EXTRA_ARGS="${EXTRA_ARGS} training.batch_size=32"
 
 echo "Running SCAFFOLD: food101 | ${PARTITION} | n_clients=${N}"

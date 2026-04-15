@@ -1,6 +1,5 @@
 from copy import deepcopy
 import logging
-import time
 from typing import Dict, Any, Optional, Callable, Iterator
 
 import torch
@@ -119,14 +118,10 @@ class ClassificationEngine:
         correct = 0
         total = 0
         executed_steps = 0
-        _profile_steps = 5  # log timing for first N steps then stop
         for _ in range(num_steps):
-            _t0 = time.perf_counter() if executed_steps < _profile_steps else None
-
             images, labels = next(batch_iterator)
-            images, labels = images.to(self.compute_device), labels.to(self.compute_device)
-            _t_data = time.perf_counter() if _t0 is not None else None
 
+            images, labels = images.to(self.compute_device), labels.to(self.compute_device)
             self.optimizer.zero_grad(set_to_none=True)
 
             with autocast(enabled=self.amp_enabled, device_type=self.compute_device.type):
@@ -144,7 +139,6 @@ class ClassificationEngine:
                     else base_loss
                 )
             self.scaler.scale(loss).backward()
-            _t_fwdbwd = time.perf_counter() if _t0 is not None else None
 
             # Gradient Clipping
             if self.grad_clipping_type == "norm":
@@ -155,23 +149,9 @@ class ClassificationEngine:
                 torch.nn.utils.clip_grad_value_(self.model.parameters(), self.grad_clipping_value)
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            _t_optim = time.perf_counter() if _t0 is not None else None
-
             if method_hook is not None:
                 method_hook.on_step_end(model=self.model, optimizer=self.optimizer, ctx=method_ctx)
             self.scheduler.step()
-            _t_hook = time.perf_counter() if _t0 is not None else None
-
-            if _t0 is not None:
-                log.info(
-                    "step %d | data=%.3fs fwd+bwd=%.3fs optim=%.3fs hook=%.3fs total=%.3fs",
-                    executed_steps,
-                    _t_data - _t0,
-                    _t_fwdbwd - _t_data,
-                    _t_optim - _t_fwdbwd,
-                    _t_hook - _t_optim,
-                    _t_hook - _t0,
-                )
 
             round_loss += loss.item()
 
