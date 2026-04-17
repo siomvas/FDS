@@ -415,22 +415,28 @@ class ScaffoldHook(MethodHook):
             self.initialized = True
         global_ctrl = ctx.input_meta.get(AlgorithmConstants.SCAFFOLD_CTRL_GLOBAL)
         if global_ctrl is not None:
-            device = next(model.parameters()).device
-            tensor_ctrl = {k: torch.as_tensor(v, dtype=model.state_dict()[k].dtype).to(device) for k, v in global_ctrl.items()}
+            # Load onto CPU — avoids c_global sitting on GPU for the entire local
+            # training phase when load_global_controls receives GPU tensors.
+            tensor_ctrl = {k: torch.as_tensor(v, dtype=model.state_dict()[k].dtype) for k, v in global_ctrl.items()}
             self.helper.load_global_controls(tensor_ctrl)
-        device = next(model.parameters()).device
-        self.helper.c_global.to(device)
-        self.helper.c_local.to(device)
+        # Keep c_global/c_local on CPU throughout local training.  They are only
+        # needed on GPU in on_round_end for terms_update (moved there at that point).
+        # Saves ~2 model-copies of GPU memory per client during all training steps.
+        self.helper.c_global.cpu()
+        self.helper.c_local.cpu()
         # Fetch params once per round — get_params() resets cnt so must not be
         # called again until the next round starts.
-        self._c_global, self._c_local = self.helper.get_params()
-        # Precompute (c_global - c_local) once per round so on_step_end can use a single
-        # fused _foreach_sub_ call instead of a per-parameter loop.
+        self._c_global, self._c_local = self.helper.get_params()  # CPU dicts
+        # Precompute (c_global - c_local) on CPU, then move to GPU once.
+        # correction_list stays on GPU for the duration of training (needed every step),
+        # but c_global/c_local modules and dicts remain on CPU.
+        device = next(model.parameters()).device
         self._correction_list = []
         self._params_for_correction = []
         for name, param in model.named_parameters():
             if name in self._c_global:
-                self._correction_list.append((self._c_global[name] - self._c_local[name]).detach())
+                diff = (self._c_global[name] - self._c_local[name]).detach().to(device)
+                self._correction_list.append(diff)
                 self._params_for_correction.append(param)
         # Zero grads before deepcopy so gradient buffers are not copied onto GPU,
         # halving the transient GPU spike during the copy.
