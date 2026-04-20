@@ -341,8 +341,10 @@ def run_job(cfg: DictConfig):
         # ---------------------------------------------------------------------
         log.info("Launching NVFlare Simulation: %s", cfg.name)
 
+        num_threads = cfg.fed.nvflare.get("num_threads", None)
         env = SimEnv(
             num_clients=cfg.fed.n_clients,
+            num_threads=int(num_threads) if num_threads is not None else None,
             gpu_config=gpu_config,
             workspace_root=str(workspace_path)
         )

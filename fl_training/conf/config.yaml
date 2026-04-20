@@ -29,6 +29,9 @@ fed:
     client:
       # Mitigates intermittent "received TIMEOUT from server" during task-check.
       task_check_timeout: 120.0
+    # Limit concurrent client threads on the GPU. Null = all clients run in parallel.
+    # Use this when n_clients × per-client GPU memory exceeds available VRAM.
+    num_threads: null
 
 # -----------------------------------------------------------------------------
 # 4. Training Hyperparameters (overriden by dataset and model configs)

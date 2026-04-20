@@ -3,7 +3,7 @@
 #SBATCH --partition=preemptgpu
 #SBATCH --gres=gpu:a100_80g:1
 #SBATCH --cpus-per-task=6
-#SBATCH --mem=80G
+#SBATCH --mem=120G
 #SBATCH --time=3-00:00:00
 #SBATCH --output=/path/to/FDS/logs/fl_%A_%a.out
 #SBATCH --error=/path/to/FDS/logs/fl_%A_%a.err
@@ -34,7 +34,7 @@ N=${N_CLIENTS[$SLURM_ARRAY_TASK_ID]}
 export pascal_voc_chosen_split_path=$SPLITS_ROOT/${PARTITION}.json
 
 EXTRA_ARGS=""
-[[ "${N}" == "20" ]] && EXTRA_ARGS="+dataset.args.num_workers=0"
+[[ "${N}" == "20" ]] && EXTRA_ARGS="${EXTRA_ARGS} training.batch_size=2 fed.nvflare.num_threads=8"
 
 echo "Running SCAFFOLD: pascal_voc | ${PARTITION} | n_clients=${N}"
 python fl_training/run_experiment.py \
