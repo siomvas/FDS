@@ -12,7 +12,7 @@ dataset:
     num_workers: 0
 
 fed:
-  rounds: 80
+  rounds: 100
 
 training:
   task_type: "segmentation"

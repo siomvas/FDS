@@ -14,7 +14,7 @@ dataset:
     detection_box_format: "auto"
 
 fed:
-  rounds: 80
+  rounds: 100
 
 training:
   task_type: "detection"

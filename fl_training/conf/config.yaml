@@ -27,8 +27,10 @@ fed:
   args: {} # Additional arguments for the FL method can be added here
   nvflare:
     client:
-      # Mitigates intermittent "received TIMEOUT from server" during task-check.
-      task_check_timeout: 120.0
+      # Safer runtime defaults for high-latency/loaded pods.
+      task_check_timeout: 600.0
+      task_check_interval: 10.0
+      submit_task_result_timeout: 300.0
 
 # -----------------------------------------------------------------------------
 # 4. Training Hyperparameters (overriden by dataset and model configs)

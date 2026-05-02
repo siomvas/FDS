@@ -106,7 +106,7 @@ See Also
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import numpy as np
 
 from .base_splitter import BaseDatasetSplitter, DatasetSplits, ClientSplit
@@ -199,6 +199,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         "main_object": "output_main_object_train",
     }
     _PATH_ANCHORS = ("VOC2012", "tiny-imagenet-200", "food101", "ADE20K", "bdd100k")
+    _WILDCARD_TOKEN = "*"
 
     def __init__(
         self,
@@ -212,6 +213,9 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         min_samples_per_client: int = 10,
         max_retries: int = 1000,
         temperature: float = 1.0,
+        joint_min_cell_count: int = 10,
+        joint_drop_order: Optional[List[str]] = None,
+        joint_overflow_bucket: str = "__RARE__",
     ):
         """Initialize the multivariate Dirichlet splitter.
 
@@ -246,6 +250,13 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                 - Low (<1.0): Sharpens probabilities (more deterministic)
                 - 1.0: Standard softmax (default)
                 - High (>1.0): Smooths probabilities (more random)
+            joint_min_cell_count: Minimum support required for a full joint
+                criterion cell before it is merged via wildcard backoff.
+                Set to 1 to disable rare-cell merging.
+            joint_drop_order: Criteria order used only for rare-cell merging.
+                If omitted, defaults to CRITERIA order for the dataset.
+            joint_overflow_bucket: Bucket name used when a rare raw cell cannot
+                reach joint_min_cell_count even after full wildcard backoff.
 
         Raises:
             ValueError: If valset_type is invalid or incompatible with val_dataset.
@@ -320,11 +331,34 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         self.min_samples_per_client = min_samples_per_client
         self.max_retries = max_retries
         self.temperature = temperature
+        self.joint_min_cell_count = int(joint_min_cell_count)
+        if self.joint_min_cell_count < 1:
+            raise ValueError("joint_min_cell_count must be >= 1.")
+
+        drop_order = list(joint_drop_order) if joint_drop_order is not None else list(self.CRITERIA)
+        invalid = [criterion for criterion in drop_order if criterion not in self.CRITERIA]
+        if invalid:
+            raise ValueError(
+                f"joint_drop_order contains invalid criteria {invalid}. "
+                f"Valid criteria for this dataset: {self.CRITERIA}"
+            )
+        drop_order = list(dict.fromkeys(drop_order))
+        for criterion in self.CRITERIA:
+            if criterion not in drop_order:
+                drop_order.append(criterion)
+        self.joint_drop_order = drop_order
+
+        if not str(joint_overflow_bucket).strip():
+            raise ValueError("joint_overflow_bucket must be a non-empty string.")
+        self.joint_overflow_bucket = str(joint_overflow_bucket).strip()
 
         # Will be populated during splitting
         self.cluster_labels: Dict[str, Dict[str, str]] = {}
         self.unique_labels: Dict[str, List[str]] = {}
         self.client_preferences: Dict[int, Dict[str, np.ndarray]] = {}
+        self.joint_cell_preferences: Dict[Tuple[str, ...], np.ndarray] = {}
+        self._last_raw_joint_cell_counts: Dict[Tuple[str, ...], int] = {}
+        self._last_merged_joint_cell_counts: Dict[Tuple[str, ...], int] = {}
 
     def _load_cluster_labels(self) -> None:
         """Load VLM cluster labels from JSONL files for all criteria.
@@ -637,6 +671,85 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         return client_assignments
 
+    def _build_joint_cells(
+        self,
+        sample_indices: List[int],
+        sample_paths: List[str],
+    ) -> Dict[Tuple[str, ...], List[int]]:
+        """Build mapping from joint criterion cell to dataset indices."""
+        cell_to_indices: Dict[Tuple[str, ...], List[int]] = {}
+        for sample_idx, image_path in zip(sample_indices, sample_paths):
+            joint_cell = tuple(
+                self._get_cluster_label_for_sample(image_path, criterion)
+                for criterion in self.CRITERIA
+            )
+            cell_to_indices.setdefault(joint_cell, []).append(sample_idx)
+        return cell_to_indices
+
+    @classmethod
+    def _pattern_matches_cell(cls, pattern: Tuple[str, ...], cell: Tuple[str, ...]) -> bool:
+        """Return True when a wildcard pattern matches a raw joint cell."""
+        return all(p == cls._WILDCARD_TOKEN or p == c for p, c in zip(pattern, cell))
+
+    def _resolve_merged_joint_cell_key(
+        self,
+        raw_cell: Tuple[str, ...],
+        raw_cell_counts: Dict[Tuple[str, ...], int],
+    ) -> Tuple[str, ...]:
+        """Resolve rare raw joint cells to merged wildcard keys."""
+        if raw_cell_counts[raw_cell] >= self.joint_min_cell_count:
+            return raw_cell
+
+        drop_indices = [self.CRITERIA.index(criterion) for criterion in self.joint_drop_order]
+        pattern = list(raw_cell)
+        for drop_idx in drop_indices:
+            pattern[drop_idx] = self._WILDCARD_TOKEN
+            candidate = tuple(pattern)
+            pooled_count = sum(
+                count
+                for cell, count in raw_cell_counts.items()
+                if self._pattern_matches_cell(candidate, cell)
+            )
+            if pooled_count >= self.joint_min_cell_count:
+                return candidate
+
+        return tuple([self.joint_overflow_bucket] * len(self.CRITERIA))
+
+    def _merge_rare_joint_cells(
+        self,
+        raw_cell_to_indices: Dict[Tuple[str, ...], List[int]],
+    ) -> Dict[Tuple[str, ...], List[int]]:
+        """Merge rare raw joint cells using wildcard backoff patterns."""
+        raw_cell_counts = {cell: len(indices) for cell, indices in raw_cell_to_indices.items()}
+        merged: Dict[Tuple[str, ...], List[int]] = {}
+        for raw_cell, indices in raw_cell_to_indices.items():
+            merged_cell = self._resolve_merged_joint_cell_key(raw_cell, raw_cell_counts)
+            merged.setdefault(merged_cell, []).extend(indices)
+        return merged
+
+    def _assign_joint_cells_with_dirichlet(
+        self,
+        merged_cell_to_indices: Dict[Tuple[str, ...], List[int]],
+        rng: np.random.Generator,
+    ) -> Dict[int, List[int]]:
+        """Assign merged joint-cell samples to clients via Dirichlet over clients."""
+        client_assignments = {client_id: [] for client_id in range(self.n_clients)}
+        self.joint_cell_preferences = {}
+
+        for joint_cell in sorted(merged_cell_to_indices.keys()):
+            indices = merged_cell_to_indices[joint_cell]
+            probabilities = rng.dirichlet(
+                np.full(self.n_clients, self.heterogeneity, dtype=float)
+            )
+            self.joint_cell_preferences[joint_cell] = probabilities.copy()
+            clients = rng.choice(self.n_clients, size=len(indices), p=probabilities)
+            for sample_idx, client_id in zip(indices, clients):
+                client_assignments[int(client_id)].append(sample_idx)
+
+        for client_id in range(self.n_clients):
+            rng.shuffle(client_assignments[client_id])
+        return client_assignments
+
     def _validate_assignments(self, client_assignments: Dict[int, List[int]]) -> bool:
         """Validate that all clients satisfy the minimum sample constraint.
 
@@ -662,11 +775,11 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         Attempts to assign samples to clients while ensuring all clients receive
         at least min_samples_per_client samples. If the constraint is not satisfied,
-        resamples client preferences with a different seed and tries again.
+        it resamples merged-cell Dirichlet draws with a different seed and retries.
 
         The retry mechanism helps overcome unlucky preference samples that result
         in highly imbalanced assignments. Each retry uses a different random seed
-        (seed + attempt) to generate new preferences.
+        (seed + attempt).
 
         Args:
             sample_indices: List of dataset sample indices to partition.
@@ -682,20 +795,45 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                 from the final attempt in the error message.
 
         Side Effects:
-            - May resample client preferences multiple times
+            - May resample merged-cell Dirichlet probabilities multiple times
             - Prints success message if constraints satisfied after retries
         """
+        if len(sample_indices) < (self.min_samples_per_client * self.n_clients):
+            raise ValueError(
+                f"Unable to satisfy min_samples_per_client={self.min_samples_per_client}: "
+                f"need at least {self.min_samples_per_client * self.n_clients} samples, "
+                f"but received {len(sample_indices)}."
+            )
+
+        raw_cell_to_indices = self._build_joint_cells(sample_indices, sample_paths)
+        merged_cell_to_indices = self._merge_rare_joint_cells(raw_cell_to_indices)
+        self._last_raw_joint_cell_counts = {
+            cell: len(indices) for cell, indices in raw_cell_to_indices.items()
+        }
+        self._last_merged_joint_cell_counts = {
+            cell: len(indices) for cell, indices in merged_cell_to_indices.items()
+        }
+
+        logger.info(
+            "Joint-cell partitioning: %d raw cells -> %d merged cells "
+            "(min_cell_count=%d, drop_order=%s)",
+            len(self._last_raw_joint_cell_counts),
+            len(self._last_merged_joint_cell_counts),
+            self.joint_min_cell_count,
+            self.joint_drop_order,
+        )
+
         for attempt in range(self.max_retries):
-            # Resample preferences with different seed each attempt
-            if attempt > 0:
-                if self.seed is not None:
-                    np.random.seed(self.seed + attempt)
-                self._sample_client_preferences()
+            attempt_seed = None if self.seed is None else (self.seed + attempt)
+            rng = np.random.default_rng(attempt_seed)
 
-            # Assign samples
-            client_assignments = self._assign_samples_with_softmax(sample_indices, sample_paths)
+            # Assign samples from each merged joint cell
+            client_assignments = self._assign_joint_cells_with_dirichlet(
+                merged_cell_to_indices=merged_cell_to_indices,
+                rng=rng,
+            )
 
-            # Validate
+            # Validate minimum samples constraint
             if self._validate_assignments(client_assignments):
                 if attempt > 0:
                     logger.info("Satisfied constraints after %d attempts.", attempt + 1)
@@ -713,10 +851,11 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         Implements the complete splitting pipeline:
         1. Load VLM cluster labels from annotation files
-        2. Sample client preference vectors from Dirichlet distributions
-        3. Assign training samples to clients based on affinity scores
-        4. Handle validation set according to valset_type configuration
-        5. Build ClientSplit structures for each client
+        2. Build raw joint criterion cells per sample
+        3. Merge rare cells via wildcard backoff (optional)
+        4. Assign each merged cell to clients via Dirichlet(client) sampling
+        5. Handle validation set according to valset_type configuration
+        6. Build ClientSplit structures for each client
 
         Returns:
             DatasetSplits dictionary containing:
@@ -726,7 +865,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         Side Effects:
             - Populates self.cluster_labels and self.unique_labels
-            - Populates self.client_preferences
+            - Populates joint-cell assignment diagnostics/preferences
             - Prints progress messages and statistics
 
         Examples:
@@ -738,7 +877,6 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         """
 
         self._load_cluster_labels()
-        self._sample_client_preferences()
 
         train_indices = list(range(len(self.train_dataset)))
         train_paths = [self._coerce_dataset_item_to_sample(self.train_dataset[i])["image"] for i in train_indices]
@@ -794,44 +932,55 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         }
 
     def get_preference_summary(self) -> Dict[str, Any]:
-        """Get a summary of client preferences for analysis and visualization.
+        """Return partition preferences summary for the current splitter state.
 
-        Compiles statistics about each client's preferences across all criteria,
-        including their top (most preferred) label for each criterion. Useful
-        for understanding and visualizing the heterogeneity patterns created
-        by the splitting process.
+        Two summary modes are supported:
+        1. Joint-cell mode (default partitioning path): summaries of merged
+           joint cells and each cell's top client preference.
+        2. Legacy per-criterion mode: available when client_preferences were
+           sampled explicitly through _sample_client_preferences().
 
         Returns:
-            Dictionary containing:
-                - "n_clients": Number of clients
-                - "heterogeneity": Alpha parameter used
-                - "criteria": List of criteria names
-                - "{criterion}_top_preferences": For each criterion, list of dicts
-                  with keys:
-                    - "client": Client ID
-                    - "label": Top preferred label for this criterion
-                    - "preference": Preference weight for that label (float)
-
-        Raises:
-            Returns error dict if preferences haven't been sampled yet.
-
-        Examples:
-            Analyze top preferences after splitting:
-
-            >>> summary = splitter.get_preference_summary()
-            >>> f"Number of clients: {summary['n_clients']}"
-            >>> f"Alpha parameter: {summary['heterogeneity']}"
-            >>>
-            >>> # See client 0's top color preference
-            >>> color_prefs = summary['color_top_preferences']
-            >>> client_0_color = color_prefs[0]
-            >>> f"Client 0 prefers {client_0_color['label']} with weight {client_0_color['preference']:.2f}"
-            >>>
-            >>> # Analyze specialization: count how many clients prefer each label
-            >>> from collections import Counter
-            >>> color_counts = Counter(p['label'] for p in color_prefs)
-            >>> f"Most common color preference: {color_counts.most_common(1)}"
+            Dictionary with either:
+                - joint-cell fields (assignment_mode="joint_dirichlet"), or
+                - legacy per-criterion top-preference fields.
+            Returns an error dict if neither preference source exists.
         """
+        if self.joint_cell_preferences:
+            sorted_cells = sorted(
+                self._last_merged_joint_cell_counts.items(),
+                key=lambda entry: entry[1],
+                reverse=True,
+            )
+            top_cells = []
+            for cell, count in sorted_cells[: min(10, len(sorted_cells))]:
+                preferences = self.joint_cell_preferences.get(cell)
+                if preferences is None:
+                    continue
+                top_client = int(np.argmax(preferences))
+                top_cells.append(
+                    {
+                        "cell": {
+                            criterion: cell[idx] for idx, criterion in enumerate(self.CRITERIA)
+                        },
+                        "count": int(count),
+                        "top_client": top_client,
+                        "top_preference": float(preferences[top_client]),
+                    }
+                )
+
+            return {
+                "assignment_mode": "joint_dirichlet",
+                "n_clients": self.n_clients,
+                "heterogeneity": self.heterogeneity,
+                "criteria": self.CRITERIA,
+                "n_raw_joint_cells": len(self._last_raw_joint_cell_counts),
+                "n_merged_joint_cells": len(self._last_merged_joint_cell_counts),
+                "joint_min_cell_count": self.joint_min_cell_count,
+                "joint_drop_order": self.joint_drop_order,
+                "top_merged_cells": top_cells,
+            }
+
         if not self.client_preferences:
             return {"error": "Preferences not yet sampled. Run get_client_splits() first."}
 

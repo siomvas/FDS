@@ -760,9 +760,16 @@ def _load_food101(self):
     ]
     data_path = next((path for path in candidate_paths if path.exists()), candidate_paths[0])
 
-    split_file = data_path / "meta" / f"{self.split}.json"
-    if not split_file.exists():
-        raise FileNotFoundError(f"Split file {split_file} does not exist")
+    meta_dir = data_path / "meta"
+    split_candidates = [meta_dir / f"{self.split}.json"]
+    if self.split == "val":
+        # Canonical Food-101 ships train/test metadata (no val metadata).
+        split_candidates.append(meta_dir / "test.json")
+
+    split_file = next((path for path in split_candidates if path.exists()), None)
+    if split_file is None:
+        attempted = ", ".join(str(path) for path in split_candidates)
+        raise FileNotFoundError(f"Food-101 split file not found. Tried: {attempted}")
 
     images_dir = data_path / "images"
     if not images_dir.exists():

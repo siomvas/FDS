@@ -88,16 +88,30 @@ def main():
     logger.info("[Step 5] Client Preferences")
     logger.info("%s", "-" * 80)
     summary = splitter.get_preference_summary()
-
-    for criterion in splitter.CRITERIA:
-        logger.info("%s - Top preferences:", criterion.upper())
-        for client_data in summary[f"{criterion}_top_preferences"]:
+    if summary.get("assignment_mode") == "joint_dirichlet":
+        logger.info(
+            "Joint cells: raw=%s merged=%s",
+            summary.get("n_raw_joint_cells"),
+            summary.get("n_merged_joint_cells"),
+        )
+        for cell_data in summary.get("top_merged_cells", []):
             logger.info(
-                "Client %s: %s (preference=%.3f)",
-                client_data["client"],
-                client_data["label"],
-                client_data["preference"],
+                "Cell=%s count=%d top_client=%d pref=%.3f",
+                cell_data["cell"],
+                cell_data["count"],
+                cell_data["top_client"],
+                cell_data["top_preference"],
             )
+    else:
+        for criterion in splitter.CRITERIA:
+            logger.info("%s - Top preferences:", criterion.upper())
+            for client_data in summary[f"{criterion}_top_preferences"]:
+                logger.info(
+                    "Client %s: %s (preference=%.3f)",
+                    client_data["client"],
+                    client_data["label"],
+                    client_data["preference"],
+                )
 
     # Detailed analysis for first 2 clients
     logger.info("[Step 6] Detailed Client Analysis")

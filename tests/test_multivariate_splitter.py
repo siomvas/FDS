@@ -904,3 +904,77 @@ class TestIntegration:
         # Different alphas should produce different distributions
         # (This is probabilistic, but with seed should be deterministic)
         assert len(set(tuple(v) for v in client_sizes_by_alpha.values())) >= 1
+
+
+class TestJointDirichletAssignment:
+    """Tests specific to joint-cell Dirichlet assignment path."""
+
+    def test_joint_summary_after_split(self, mock_dataset_with_vlm_paths, vlm_annotation_directory):
+        """Joint splitter exposes joint-cell summary fields after splitting."""
+        from tests.conftest import MockDataset
+
+        dataset = MockDataset(mock_dataset_with_vlm_paths)
+        splitter = MultivariateDirichletSplitter(
+            train_dataset=dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=0.5,
+            cluster_labels_dir=str(vlm_annotation_directory),
+            valset_type="none",
+            min_samples_per_client=1,
+            seed=42,
+        )
+
+        splitter.get_client_splits()
+        summary = splitter.get_preference_summary()
+
+        assert summary["assignment_mode"] == "joint_dirichlet"
+        assert summary["n_raw_joint_cells"] >= 1
+        assert summary["n_merged_joint_cells"] >= 1
+        assert summary["n_raw_joint_cells"] >= summary["n_merged_joint_cells"]
+        assert isinstance(summary["top_merged_cells"], list)
+
+    def test_joint_cell_preferences_are_over_clients(self, mock_dataset_with_vlm_paths, vlm_annotation_directory):
+        """Each merged cell stores a distribution over clients (sums to 1)."""
+        from tests.conftest import MockDataset
+
+        dataset = MockDataset(mock_dataset_with_vlm_paths)
+        splitter = MultivariateDirichletSplitter(
+            train_dataset=dataset,
+            val_dataset=None,
+            n_clients=4,
+            heterogeneity=0.7,
+            cluster_labels_dir=str(vlm_annotation_directory),
+            valset_type="none",
+            min_samples_per_client=1,
+            seed=7,
+        )
+
+        splitter.get_client_splits()
+
+        assert splitter.joint_cell_preferences
+        for preferences in splitter.joint_cell_preferences.values():
+            assert len(preferences) == splitter.n_clients
+            assert np.isclose(preferences.sum(), 1.0)
+
+    def test_rare_cell_merging_reduces_cell_count(self, mock_dataset_with_vlm_paths, vlm_annotation_directory):
+        """Increasing joint_min_cell_count merges sparse raw cells."""
+        from tests.conftest import MockDataset
+
+        dataset = MockDataset(mock_dataset_with_vlm_paths)
+        splitter = MultivariateDirichletSplitter(
+            train_dataset=dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=1.0,
+            cluster_labels_dir=str(vlm_annotation_directory),
+            valset_type="none",
+            min_samples_per_client=1,
+            joint_min_cell_count=4,
+            joint_drop_order=["time", "location", "size", "main_object", "color"],
+            seed=123,
+        )
+
+        splitter.get_client_splits()
+        assert len(splitter._last_raw_joint_cell_counts) >= len(splitter._last_merged_joint_cell_counts)
+        assert len(splitter._last_raw_joint_cell_counts) > len(splitter._last_merged_joint_cell_counts)

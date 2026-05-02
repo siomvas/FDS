@@ -476,6 +476,24 @@ class TestBaseDatasetRegistry:
         assert len(dataset) == 1
         assert Path(dataset.data[0]) == image_path
 
+    def test_food101_val_split_falls_back_to_test_json(self, tmp_path):
+        """Food101 val split should read canonical test.json when val.json is absent."""
+        food101_root = tmp_path / "food-101"
+        meta_dir = food101_root / "meta"
+        images_dir = food101_root / "images" / "class_a"
+        meta_dir.mkdir(parents=True)
+        images_dir.mkdir(parents=True)
+
+        with open(meta_dir / "test.json", "w", encoding="utf-8") as handle:
+            json.dump({"class_a": ["class_a/sample_0"]}, handle)
+
+        image_path = images_dir / "sample_0.jpg"
+        Image.new("RGB", (16, 16), color=(0, 0, 0)).save(image_path)
+
+        dataset = BaseDataset("food101", str(tmp_path), "val")
+        assert len(dataset) == 1
+        assert Path(dataset.data[0]) == image_path
+
     def test_get_summary(self, tmp_path):
         """Test dataset summary generation."""
         # Create mock dataset
