@@ -399,6 +399,11 @@ class ScaffoldHook(MethodHook):
         self.initialized = False
         self.global_model_copy: Optional[torch.nn.Module] = None
         self.last_lr = 1e-3
+        self._c_global: Optional[dict] = None
+        self._c_local: Optional[dict] = None
+        # Precomputed once per round for vectorised step correction (avoids per-step Python loop).
+        self._correction_list: list = []
+        self._params_for_correction: list = []
 
     @property
     def method_name(self) -> str:
@@ -410,8 +415,32 @@ class ScaffoldHook(MethodHook):
             self.initialized = True
         global_ctrl = ctx.input_meta.get(AlgorithmConstants.SCAFFOLD_CTRL_GLOBAL)
         if global_ctrl is not None:
+            # Load onto CPU — avoids c_global sitting on GPU for the entire local
+            # training phase when load_global_controls receives GPU tensors.
             tensor_ctrl = {k: torch.as_tensor(v, dtype=model.state_dict()[k].dtype) for k, v in global_ctrl.items()}
             self.helper.load_global_controls(tensor_ctrl)
+        # Keep c_global/c_local on CPU throughout local training.  They are only
+        # needed on GPU in on_round_end for terms_update (moved there at that point).
+        # Saves ~2 model-copies of GPU memory per client during all training steps.
+        self.helper.c_global.cpu()
+        self.helper.c_local.cpu()
+        # Fetch params once per round — get_params() resets cnt so must not be
+        # called again until the next round starts.
+        self._c_global, self._c_local = self.helper.get_params()  # CPU dicts
+        # Precompute (c_global - c_local) on CPU, then move to GPU once.
+        # correction_list stays on GPU for the duration of training (needed every step),
+        # but c_global/c_local modules and dicts remain on CPU.
+        device = next(model.parameters()).device
+        self._correction_list = []
+        self._params_for_correction = []
+        for name, param in model.named_parameters():
+            if name in self._c_global:
+                diff = (self._c_global[name] - self._c_local[name]).detach().to(device)
+                self._correction_list.append(diff)
+                self._params_for_correction.append(param)
+        # Zero grads before deepcopy so gradient buffers are not copied onto GPU,
+        # halving the transient GPU spike during the copy.
+        model.zero_grad()
         self.global_model_copy = deepcopy(model).cpu()
 
     def on_step_end(
@@ -423,15 +452,36 @@ class ScaffoldHook(MethodHook):
     ) -> None:
         current_lr = float(optimizer.param_groups[0]["lr"])
         self.last_lr = current_lr
-        c_global, c_local = self.helper.get_params()
-        self.helper.model_update(model, current_lr, c_global, c_local)
+        # Vectorised SCAFFOLD correction — replaces PTScaffoldHelper.model_update's
+        # per-parameter Python loop with a single fused CUDA call.  The loop launches
+        # one kernel per parameter tensor (~200 for ConvNeXt-Small) and is the dominant
+        # cost causing the ~22× slowdown vs FedAvg on architectures with many layers.
+        if self._params_for_correction:
+            param_data = [p.data for p in self._params_for_correction]
+            torch._foreach_sub_(param_data, self._correction_list, alpha=current_lr)
+        self.helper.cnt += 1
 
     def on_round_end(self, model: torch.nn.Module, ctx: MethodContext) -> None:
         if self.global_model_copy is None:
             return
-        c_global, c_local = self.helper.get_params()
+        if self.helper.cnt == 0:
+            log.warning("SCAFFOLD: cnt=0 at round end (no training steps executed), skipping terms_update.")
+            return
         lr = max(self.last_lr, 1e-6)
-        self.helper.terms_update(model, lr, c_global, c_local, self.global_model_copy)
+        device = next(model.parameters()).device
+        self.global_model_copy = self.global_model_copy.to(device)
+        # _c_global/_c_local are state_dict snapshots (dicts of tensors) — move them explicitly
+        self._c_global = {k: v.to(device) for k, v in self._c_global.items()}
+        self._c_local = {k: v.to(device) for k, v in self._c_local.items()}
+        # Ensure c_local/c_global modules are also on device (state_dict in terms_update pulls from these)
+        self.helper.c_global.to(device)
+        self.helper.c_local.to(device)
+        self.helper.terms_update(model, lr, self._c_global, self._c_local, self.global_model_copy)
+        # Return to CPU immediately — in simulation all n clients' copies would otherwise
+        # accumulate on GPU until the next round's on_round_start replaces the reference.
+        self.global_model_copy.cpu()
+        self.helper.c_global.cpu()
+        self.helper.c_local.cpu()
 
     def export_round_meta(
         self,
@@ -443,9 +493,21 @@ class ScaffoldHook(MethodHook):
     ) -> Dict[str, Any]:
         try:
             ctrl_diff = self.helper.get_delta_controls()
-        except ValueError:
+        except ValueError as exc:
+            log.error(
+                "SCAFFOLD: get_delta_controls() failed at round %d: %s — "
+                "control diff will be empty; global control variate update skipped for this round.",
+                ctx.round_idx,
+                exc,
+            )
             ctrl_diff = {}
-        return {META_SCAFFOLD_CTRL: ctrl_diff}
+        # Filter to only float-typed model parameters — integer buffers like
+        # num_batches_tracked produce float64 deltas that break server-side
+        # numpy in-place aggregation into int64 _global_ctrl_weights.
+        model_state = model.state_dict()
+        ctrl_diff = {k: v for k, v in ctrl_diff.items()
+                     if k in model_state and model_state[k].is_floating_point()}
+        return {AlgorithmConstants.SCAFFOLD_CTRL_DIFF: ctrl_diff}
 
 
 def method_hook_from_config(config: Dict[str, Any], task_type: str) -> MethodHook:
@@ -518,18 +580,21 @@ def build_recipe(method_name: str, *, name: str, initial_model: Any, min_clients
             params_transfer_type=TransferType.DIFF,
         )
     if normalized == "scaffold":
-        return FlexibleRecipe(
-            name=name,
-            initial_model=initial_model,
-            min_clients=min_clients,
-            num_rounds=num_rounds,
-            train_script=train_script,
-            train_args=train_args,
-            aggregator=ScaffoldAggregator(),
-            shareable_generator=ScaffoldShareableGenerator(),
-            aggregator_data_kind=DataKind.WEIGHTS,
-            params_transfer_type=TransferType.FULL,
-        )
+        from nvflare.app_opt.pt.recipes.scaffold import ScaffoldRecipe
+
+        scaffold_kwargs = {
+            "name": name,
+            "min_clients": min_clients,
+            "num_rounds": num_rounds,
+            "train_script": train_script,
+            "train_args": train_args,
+        }
+        signature = inspect.signature(ScaffoldRecipe.__init__)
+        if "model" in signature.parameters:
+            scaffold_kwargs["model"] = initial_model
+        else:
+            scaffold_kwargs["initial_model"] = initial_model
+        return ScaffoldRecipe(**scaffold_kwargs)
     if normalized == "fednova":
         return FlexibleRecipe(
             name=name,

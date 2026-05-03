@@ -44,13 +44,19 @@ if args.dataset == TINY_IMAGENET:
         4: {"prompt": "Location", "exemplar": "Field", "num_classes": 5},
     }
 elif args.dataset == FOOD101:
-    criteria_choices = ["main_object", "size", "color", "angle", "lighting"]
+    criteria_choices = ["cuisine", "preparation", "composition", "texture", "formality"]
+    # criteria_choices = ["main_object", "size", "color", "angle", "lighting"]  # original criteria
     criteria_config = {
-        0: {"prompt": "Main Dish", "exemplar": "Pancake", "num_classes": 7},
-        1: {"prompt": "Size and Scale of the dish", "exemplar": "Big", "num_classes": 8},
-        2: {"prompt": "Dominant color of the dish", "exemplar": "Golden-brown", "num_classes": 8},
-        3: {"prompt": "Camera Angle", "exemplar": "Overhead", "num_classes": 5},
-        4: {"prompt": "Lighting Intensity", "exemplar": "Bright", "num_classes": 5},
+        # 0: {"prompt": "Main Dish", "exemplar": "Pancake", "num_classes": 7},
+        # 1: {"prompt": "Size and Scale of the dish", "exemplar": "Big", "num_classes": 8},
+        # 2: {"prompt": "Dominant color of the dish", "exemplar": "Golden-brown", "num_classes": 8},
+        # 3: {"prompt": "Camera Angle", "exemplar": "Overhead", "num_classes": 5},
+        # 4: {"prompt": "Lighting Intensity", "exemplar": "Bright", "num_classes": 5},
+        0: {"prompt": "cuisine or culinary origin", "exemplar": "Italian", "num_classes": 5},
+        1: {"prompt": "cooking or preparation method", "exemplar": "fried", "num_classes": 5},
+        2: {"prompt": "arrangement and structure of food components, not the serving vessel", "exemplar": "mixed", "num_classes": 4},
+        3: {"prompt": "dominant surface texture", "exemplar": "crispy", "num_classes": 4},
+        4: {"prompt": "plating style and presentation formality", "exemplar": "formal", "num_classes": 3},
     }
 elif args.dataset == ADE20K:
     criteria_choices = ["main_object", "scene", "color", "light", "size", "camera"]

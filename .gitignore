@@ -42,6 +42,8 @@ venv.bak/
 AGENTS.md
 *.npz
 *pytest_cache/
+.python-version
+logs/
 
 # Tests
 tests/.hypothesis/

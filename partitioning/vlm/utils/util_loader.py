@@ -119,7 +119,7 @@ def analyze_dataset_images(data, sample_size=100):
 #----- Load model ----
 # note: change to custom path when run
 # Model paths
-model_path = "/path/to/archive/vision-saved"
+model_path = "/path/to/data/vision-saved"
 MODEL_PATHS = {
     # vlm
     # minicpm & internVL
@@ -195,7 +195,7 @@ def load_qwen3_30b():
     model_path = MODEL_PATHS[QWEN3_30B]
     model = Qwen3VLMoeForConditionalGeneration.from_pretrained(model_path,
                                                             dtype=torch.bfloat16,
-                                                            attn_implementation="flash_attention_2",
+                                                            attn_implementation="eager",
                                                             device_map="auto")
     processor = AutoProcessor.from_pretrained(model_path)
     tokenizer = processor.tokenizer  # get the inner tokenizer

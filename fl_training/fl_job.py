@@ -334,10 +334,10 @@ def run_job(cfg: DictConfig):
                 method_args=fed_args,
             )
         client_runtime_cfg, server_runtime_cfg = _nvflare_runtime_overrides(cfg)
-        if client_runtime_cfg:
+        if client_runtime_cfg and hasattr(recipe, "add_client_config"):
             recipe.add_client_config(client_runtime_cfg)
             log.info("Applied NVFlare client runtime config overrides: %s", client_runtime_cfg)
-        if server_runtime_cfg:
+        if server_runtime_cfg and hasattr(recipe, "add_server_config"):
             recipe.add_server_config(server_runtime_cfg)
             log.info("Applied NVFlare server runtime config overrides: %s", server_runtime_cfg)
 
@@ -348,8 +348,10 @@ def run_job(cfg: DictConfig):
         # ---------------------------------------------------------------------
         log.info("Launching NVFlare Simulation: %s", cfg.name)
 
+        num_threads = cfg.fed.nvflare.get("num_threads", None)
         env = SimEnv(
             num_clients=cfg.fed.n_clients,
+            num_threads=int(num_threads) if num_threads is not None else None,
             gpu_config=gpu_config,
             workspace_root=str(workspace_path)
         )
