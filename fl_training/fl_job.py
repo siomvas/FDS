@@ -23,9 +23,16 @@ FedAvgRecipe = None
 
 
 def _is_success_status(raw_status: object) -> bool:
+    # NVFlare SimEnv can return None after a clean local simulation shutdown.
+    # Exceptions are handled separately below, so a returned None means execute()
+    # completed and should not be persisted as a false failure.
+    if raw_status is None:
+        return True
     normalized = str(raw_status).strip().lower()
     if not normalized:
         return False
+    if normalized in {"none", "null"}:
+        return True
     success_tokens = ("success", "succeeded", "complete", "completed", "ok", "done", "finished")
     return any(token in normalized for token in success_tokens)
 

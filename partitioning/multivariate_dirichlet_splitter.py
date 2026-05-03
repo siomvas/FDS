@@ -198,7 +198,8 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         "location": "output_location_train",
         "main_object": "output_main_object_train",
     }
-    _PATH_ANCHORS = ("VOC2012", "tiny-imagenet-200", "food101", "ADE20K", "bdd100k")
+    _PATH_ANCHORS = ("VOC2012", "tiny-imagenet-200", "food101", "food-101", "ADE20K", "bdd100k")
+    _PATH_ANCHOR_ALIASES = {"food-101": "food101"}
     _WILDCARD_TOKEN = "*"
 
     def __init__(
@@ -541,6 +542,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         for anchor in cls._PATH_ANCHORS:
             if anchor in parts:
                 anchor_idx = parts.index(anchor)
+                parts[anchor_idx] = cls._PATH_ANCHOR_ALIASES.get(anchor, anchor)
                 return "/".join(parts[anchor_idx:])
 
         if len(parts) >= 5:
