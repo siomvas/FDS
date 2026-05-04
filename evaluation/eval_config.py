@@ -1,7 +1,6 @@
 """
 eval_config.py - Shared Configuration & Data Structures
-Defines the contract for evaluation metrics to ensure consistency between
-the computation script (evaluate_partitions.py) and visualization script (generate_report.py).
+Defines the contract for evaluation metrics emitted by evaluate_partitions.py.
 """
 import json
 import re

@@ -586,9 +586,23 @@ class TestEdgeCases:
 # Property-Based Tests with Hypothesis
 # ============================================================================
 
-from hypothesis import given, strategies as st, settings
+try:
+    from hypothesis import given, strategies as st, settings
+
+    HAS_HYPOTHESIS = True
+except ImportError:
+    HAS_HYPOTHESIS = False
+    given = lambda *args, **kwargs: pytest.mark.skip(reason="hypothesis not installed")
+    settings = lambda *args, **kwargs: (lambda fn: fn)
+
+    class _MissingStrategies:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    st = _MissingStrategies()
 
 @pytest.mark.property
+@pytest.mark.skipif(not HAS_HYPOTHESIS, reason="hypothesis not installed")
 class TestSplitterInvariantsWithHypothesis:
     """Property-based tests for splitter invariants using Hypothesis."""
 

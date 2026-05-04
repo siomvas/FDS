@@ -31,17 +31,17 @@ Key Concepts
 VLM Annotation Format
 ---------------------
 
-This splitter expects pre-computed VLM annotations in JSONL format:
+This splitter expects pre-computed VLM annotations in JSONL or gzipped JSONL format:
 
-    {"image": "/path/to/image.jpg", "class": "warm_colors"}
-    {"image": "/path/to/image2.jpg", "class": "cool_colors"}
+    {"image": "tiny-imagenet-200/train/n01443537/images/img.JPEG", "class": "warm_colors"}
+    {"image": "tiny-imagenet-200/train/n01629819/images/img.JPEG", "class": "cool_colors"}
 
 The annotations should be organized by criterion in separate directories:
-    - output_color_train/step3_result.jsonl
-    - output_main_object_train/step3_result.jsonl
-    - output_size_train/step3_result.jsonl
-    - output_location_train/step3_result.jsonl
-    - output_time_train/step3_result.jsonl
+    - output_color_train/step3_result.jsonl.gz
+    - output_main_object_train/step3_result.jsonl.gz
+    - output_size_train/step3_result.jsonl.gz
+    - output_location_train/step3_result.jsonl.gz
+    - output_time_train/step3_result.jsonl.gz
 
 Alpha Parameter Effects
 -----------------------
@@ -100,9 +100,10 @@ See Also
 
 - DirichletSplitter: Single-criterion (label-based) heterogeneity
 - EmbeddingSplitter: Semantic clustering without explicit criteria
-- For VLM annotation generation, see: docs/MULTIVARIATE_USAGE.md
+- VLM label artifacts: resources/vlm_labels/
 """
 
+import gzip
 import json
 import logging
 from pathlib import Path
@@ -174,13 +175,13 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         "location": "output_location_train",
         "time": "output_time_train",
     }
-    CRITERIA_food = ["color", "main_object", "size", "angle", "lighting"]
+    CRITERIA_food = ["composition", "cuisine", "preparation", "texture", "formality"]
     CRITERION_TO_DIR_food = {
-        "color": "output_color_train",
-        "main_object": "output_main_object_train",
-        "size": "output_size_train",
-        "angle": "output_angle_train",
-        "lighting": "output_lighting_train",
+        "composition": "output_composition_train",
+        "cuisine": "output_cuisine_train",
+        "preparation": "output_preparation_train",
+        "texture": "output_texture_train",
+        "formality": "output_formality_train",
     }
     CRITERIA_ade20k = ["color", "main_object", "size", "scene", "light"]
     CRITERION_TO_DIR_ade20k = {
@@ -198,7 +199,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         "location": "output_location_train",
         "main_object": "output_main_object_train",
     }
-    _PATH_ANCHORS = ("VOC2012", "tiny-imagenet-200", "food101", "food-101", "ADE20K", "bdd100k")
+    _PATH_ANCHORS = ("VOC2012", "tiny-imagenet-200", "food101", "food-101", "ADE20K")
     _PATH_ANCHOR_ALIASES = {"food-101": "food101"}
     _WILDCARD_TOKEN = "*"
 
@@ -217,6 +218,8 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         joint_min_cell_count: int = 10,
         joint_drop_order: Optional[List[str]] = None,
         joint_overflow_bucket: str = "__RARE__",
+        assignment_mode: str = "product_dirichlet_balanced",
+        criterion_order: Optional[List[str]] = None,
     ):
         """Initialize the multivariate Dirichlet splitter.
 
@@ -233,11 +236,11 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             cluster_labels_dir: Path to directory containing VLM annotation JSONL
                 files. Expected structure:
                     cluster_labels_dir/
-                    ├── output_color_train/step3_result.jsonl
-                    ├── output_main_object_train/step3_result.jsonl
-                    ├── output_size_train/step3_result.jsonl
-                    ├── output_location_train/step3_result.jsonl
-                    └── output_time_train/step3_result.jsonl
+                    ├── output_color_train/step3_result.jsonl.gz
+                    ├── output_main_object_train/step3_result.jsonl.gz
+                    ├── output_size_train/step3_result.jsonl.gz
+                    ├── output_location_train/step3_result.jsonl.gz
+                    └── output_time_train/step3_result.jsonl.gz
             valset_type: Validation set configuration - "local", "global", or "none".
                 See BaseDatasetSplitter for details.
             seed: Random seed for reproducibility. Controls preference sampling
@@ -258,6 +261,11 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                 If omitted, defaults to CRITERIA order for the dataset.
             joint_overflow_bucket: Bucket name used when a rare raw cell cannot
                 reach joint_min_cell_count even after full wildcard backoff.
+            assignment_mode: Joint VLM assignment method. Supported values:
+                "joint_dirichlet", "product_dirichlet_balanced", and
+                "hierarchical_dirichlet_balanced".
+            criterion_order: Criteria order used by hierarchical assignment.
+                If omitted, uses the dataset's CRITERIA order.
 
         Raises:
             ValueError: If valset_type is invalid or incompatible with val_dataset.
@@ -353,11 +361,37 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             raise ValueError("joint_overflow_bucket must be a non-empty string.")
         self.joint_overflow_bucket = str(joint_overflow_bucket).strip()
 
+        valid_assignment_modes = {
+            "joint_dirichlet",
+            "product_dirichlet_balanced",
+            "hierarchical_dirichlet_balanced",
+        }
+        if assignment_mode not in valid_assignment_modes:
+            raise ValueError(
+                f"assignment_mode must be one of {sorted(valid_assignment_modes)}, "
+                f"got {assignment_mode!r}."
+            )
+        self.assignment_mode = assignment_mode
+
+        criterion_order = list(criterion_order) if criterion_order is not None else list(self.CRITERIA)
+        invalid_order = [criterion for criterion in criterion_order if criterion not in self.CRITERIA]
+        if invalid_order:
+            raise ValueError(
+                f"criterion_order contains invalid criteria {invalid_order}. "
+                f"Valid criteria for this dataset: {self.CRITERIA}"
+            )
+        criterion_order = list(dict.fromkeys(criterion_order))
+        for criterion in self.CRITERIA:
+            if criterion not in criterion_order:
+                criterion_order.append(criterion)
+        self.criterion_order = criterion_order
+
         # Will be populated during splitting
         self.cluster_labels: Dict[str, Dict[str, str]] = {}
         self.unique_labels: Dict[str, List[str]] = {}
         self.client_preferences: Dict[int, Dict[str, np.ndarray]] = {}
         self.joint_cell_preferences: Dict[Tuple[str, ...], np.ndarray] = {}
+        self.criterion_value_preferences: Dict[int, Dict[str, np.ndarray]] = {}
         self._last_raw_joint_cell_counts: Dict[Tuple[str, ...], int] = {}
         self._last_merged_joint_cell_counts: Dict[Tuple[str, ...], int] = {}
 
@@ -366,15 +400,17 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         Reads annotation files from the cluster_labels_dir for each criterion
         (color, main_object, size, location, time) and populates self.cluster_labels
-        and self.unique_labels. Supports both JSON array and JSONL formats.
+        and self.unique_labels. Supports JSON array, JSONL, and gzip-compressed
+        JSONL files.
 
         The method normalizes image paths to be user-independent using dataset-anchored
         suffixes when possible (e.g., "VOC2012/images/train/xxx.jpg"), with a fallback
         to the last 5 components for legacy compatibility.
 
         Raises:
-            FileNotFoundError: If any expected annotation file (step3_result.jsonl)
-                is missing from the criterion directories.
+            FileNotFoundError: If any expected annotation file
+                (step3_result.jsonl or step3_result.jsonl.gz) is missing from
+                the criterion directories.
 
         Side Effects:
             - Populates self.cluster_labels: {criterion: {image_path: label}}
@@ -385,17 +421,10 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         for criterion in self.CRITERIA:
             criterion_dir = self.cluster_labels_dir / self.CRITERION_TO_DIR[criterion]
-            jsonl_path = criterion_dir / "step3_result.jsonl"
+            jsonl_path = self._resolve_step3_path(criterion_dir)
 
-            if not jsonl_path.exists():
-                raise FileNotFoundError(
-                    f"Cluster labels not found at {jsonl_path}. "
-                    f"Please ensure VLM clustering has been run."
-                )
-
-            # Load labels for this criterion
             criterion_labels = {}
-            with open(jsonl_path, 'r') as f:
+            with self._open_step3_text(jsonl_path) as f:
                 content = f.read().strip()
 
                 # Check if it's a JSON array (starts with '[') or JSONL (starts with '{')
@@ -437,6 +466,27 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                 len(unique_labels),
                 len(criterion_labels),
             )
+
+    @staticmethod
+    def _resolve_step3_path(criterion_dir: Path) -> Path:
+        candidates = [
+            criterion_dir / "step3_result.jsonl",
+            criterion_dir / "step3_result.jsonl.gz",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        tried = ", ".join(str(path) for path in candidates)
+        raise FileNotFoundError(
+            f"Cluster labels not found. Tried: {tried}. "
+            f"Provide retained VLM labels or regenerate the criterion annotations."
+        )
+
+    @staticmethod
+    def _open_step3_text(path: Path):
+        if path.suffix == ".gz":
+            return gzip.open(path, "rt", encoding="utf-8")
+        return open(path, "r", encoding="utf-8")
 
     def _sample_client_preferences(self) -> None:
         """Sample client preference vectors from Dirichlet distributions.
@@ -752,6 +802,130 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             rng.shuffle(client_assignments[client_id])
         return client_assignments
 
+    def _balanced_cell_allocation(
+        self,
+        cell_to_indices: Dict[Tuple[str, ...], List[int]],
+        cell_scores: Dict[Tuple[str, ...], np.ndarray],
+        rng: np.random.Generator,
+    ) -> Dict[int, List[int]]:
+        """Allocate each criterion cell using scores plus label-dirichlet-style balancing."""
+        client_assignments = {client_id: [] for client_id in range(self.n_clients)}
+        target_size = sum(len(indices) for indices in cell_to_indices.values()) / self.n_clients
+
+        for cell in sorted(cell_to_indices.keys()):
+            idx_cell = np.array(cell_to_indices[cell], dtype=int)
+            rng.shuffle(idx_cell)
+            proportions = np.array(cell_scores[cell], dtype=float)
+
+            proportions = np.array(
+                [
+                    proportion * (len(client_assignments[client_id]) < target_size)
+                    for client_id, proportion in enumerate(proportions)
+                ],
+                dtype=float,
+            )
+            if proportions.sum() <= 0:
+                sizes = [len(client_assignments[client_id]) for client_id in range(self.n_clients)]
+                min_size = min(sizes)
+                proportions = np.array([1.0 if size == min_size else 0.0 for size in sizes], dtype=float)
+
+            proportions = proportions / proportions.sum()
+            split_points = (np.cumsum(proportions) * len(idx_cell)).astype(int)[:-1]
+            for client_id, chunk in enumerate(np.split(idx_cell, split_points)):
+                client_assignments[client_id].extend(chunk.tolist())
+
+        for client_id in range(self.n_clients):
+            rng.shuffle(client_assignments[client_id])
+        return client_assignments
+
+    def _criterion_value_indices(self) -> Dict[str, Dict[str, int]]:
+        """Return stable label-to-index maps for each criterion."""
+        return {
+            criterion: {label: idx for idx, label in enumerate(self.unique_labels[criterion])}
+            for criterion in self.CRITERIA
+        }
+
+    def _assign_joint_cells_with_product_dirichlet_balanced(
+        self,
+        merged_cell_to_indices: Dict[Tuple[str, ...], List[int]],
+        rng: np.random.Generator,
+    ) -> Dict[int, List[int]]:
+        """Assign cells using products of per-criterion client Dirichlet profiles."""
+        self.criterion_value_preferences = {}
+        self.joint_cell_preferences = {}
+        label_indices = self._criterion_value_indices()
+
+        for client_id in range(self.n_clients):
+            self.criterion_value_preferences[client_id] = {}
+            for criterion in self.CRITERIA:
+                n_labels = len(self.unique_labels[criterion])
+                self.criterion_value_preferences[client_id][criterion] = rng.dirichlet(
+                    np.full(n_labels, self.heterogeneity, dtype=float)
+                )
+
+        cell_scores: Dict[Tuple[str, ...], np.ndarray] = {}
+        for cell in sorted(merged_cell_to_indices.keys()):
+            log_scores = np.zeros(self.n_clients, dtype=float)
+            for client_id in range(self.n_clients):
+                for criterion_idx, criterion in enumerate(self.CRITERIA):
+                    label = cell[criterion_idx]
+                    if label in {self._WILDCARD_TOKEN, self.joint_overflow_bucket}:
+                        probability = 1.0
+                    else:
+                        label_idx = label_indices[criterion][label]
+                        probability = self.criterion_value_preferences[client_id][criterion][label_idx]
+                    log_scores[client_id] += np.log(probability + 1e-30)
+            log_scores -= log_scores.max()
+            scores = np.exp(log_scores)
+            self.joint_cell_preferences[cell] = (scores / scores.sum()).copy()
+            cell_scores[cell] = scores
+
+        return self._balanced_cell_allocation(merged_cell_to_indices, cell_scores, rng)
+
+    def _assign_joint_cells_with_hierarchical_dirichlet_balanced(
+        self,
+        merged_cell_to_indices: Dict[Tuple[str, ...], List[int]],
+        rng: np.random.Generator,
+    ) -> Dict[int, List[int]]:
+        """Assign cells by multiplying conditional client draws down a criterion tree."""
+        self.joint_cell_preferences = {}
+        criterion_to_pos = {criterion: idx for idx, criterion in enumerate(self.CRITERIA)}
+        ordered_criteria = list(self.criterion_order)
+
+        prefixes = set()
+        for cell in merged_cell_to_indices:
+            ordered = tuple(cell[criterion_to_pos[criterion]] for criterion in ordered_criteria)
+            for depth in range(len(ordered_criteria)):
+                prefixes.add(ordered[:depth])
+
+        tree: Dict[Tuple[str, ...], Dict[str, np.ndarray]] = {}
+        for prefix in sorted(prefixes):
+            depth = len(prefix)
+            criterion = ordered_criteria[depth]
+            tree[prefix] = {}
+            for label in self.unique_labels[criterion]:
+                tree[prefix][label] = rng.dirichlet(np.full(self.n_clients, self.heterogeneity, dtype=float))
+            tree[prefix][self._WILDCARD_TOKEN] = np.full(self.n_clients, 1.0 / self.n_clients, dtype=float)
+            tree[prefix][self.joint_overflow_bucket] = np.full(self.n_clients, 1.0 / self.n_clients, dtype=float)
+
+        cell_scores: Dict[Tuple[str, ...], np.ndarray] = {}
+        for cell in sorted(merged_cell_to_indices.keys()):
+            ordered = tuple(cell[criterion_to_pos[criterion]] for criterion in ordered_criteria)
+            log_scores = np.zeros(self.n_clients, dtype=float)
+            for depth, label in enumerate(ordered):
+                prefix = ordered[:depth]
+                draw = tree[prefix].get(label)
+                if draw is None:
+                    # Wildcard/backoff labels can appear outside a criterion's ordinary value set.
+                    draw = np.full(self.n_clients, 1.0 / self.n_clients, dtype=float)
+                log_scores += np.log(draw + 1e-30)
+            log_scores -= log_scores.max()
+            scores = np.exp(log_scores)
+            self.joint_cell_preferences[cell] = (scores / scores.sum()).copy()
+            cell_scores[cell] = scores
+
+        return self._balanced_cell_allocation(merged_cell_to_indices, cell_scores, rng)
+
     def _validate_assignments(self, client_assignments: Dict[int, List[int]]) -> bool:
         """Validate that all clients satisfy the minimum sample constraint.
 
@@ -817,8 +991,9 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
         }
 
         logger.info(
-            "Joint-cell partitioning: %d raw cells -> %d merged cells "
+            "Joint-cell partitioning (%s): %d raw cells -> %d merged cells "
             "(min_cell_count=%d, drop_order=%s)",
+            self.assignment_mode,
             len(self._last_raw_joint_cell_counts),
             len(self._last_merged_joint_cell_counts),
             self.joint_min_cell_count,
@@ -829,11 +1004,23 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
             attempt_seed = None if self.seed is None else (self.seed + attempt)
             rng = np.random.default_rng(attempt_seed)
 
-            # Assign samples from each merged joint cell
-            client_assignments = self._assign_joint_cells_with_dirichlet(
-                merged_cell_to_indices=merged_cell_to_indices,
-                rng=rng,
-            )
+            if self.assignment_mode == "joint_dirichlet":
+                client_assignments = self._assign_joint_cells_with_dirichlet(
+                    merged_cell_to_indices=merged_cell_to_indices,
+                    rng=rng,
+                )
+            elif self.assignment_mode == "product_dirichlet_balanced":
+                client_assignments = self._assign_joint_cells_with_product_dirichlet_balanced(
+                    merged_cell_to_indices=merged_cell_to_indices,
+                    rng=rng,
+                )
+            elif self.assignment_mode == "hierarchical_dirichlet_balanced":
+                client_assignments = self._assign_joint_cells_with_hierarchical_dirichlet_balanced(
+                    merged_cell_to_indices=merged_cell_to_indices,
+                    rng=rng,
+                )
+            else:
+                raise ValueError(f"Unsupported assignment_mode: {self.assignment_mode}")
 
             # Validate minimum samples constraint
             if self._validate_assignments(client_assignments):
@@ -944,7 +1131,7 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
 
         Returns:
             Dictionary with either:
-                - joint-cell fields (assignment_mode="joint_dirichlet"), or
+                - joint-cell fields (assignment_mode set to the active VLM assignment mode), or
                 - legacy per-criterion top-preference fields.
             Returns an error dict if neither preference source exists.
         """
@@ -972,10 +1159,11 @@ class MultivariateDirichletSplitter(BaseDatasetSplitter):
                 )
 
             return {
-                "assignment_mode": "joint_dirichlet",
+                "assignment_mode": self.assignment_mode,
                 "n_clients": self.n_clients,
                 "heterogeneity": self.heterogeneity,
                 "criteria": self.CRITERIA,
+                "criterion_order": self.criterion_order,
                 "n_raw_joint_cells": len(self._last_raw_joint_cell_counts),
                 "n_merged_joint_cells": len(self._last_merged_joint_cell_counts),
                 "joint_min_cell_count": self.joint_min_cell_count,

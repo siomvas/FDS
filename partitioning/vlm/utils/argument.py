@@ -1,10 +1,7 @@
-import os
-import shutil
 import argparse
 import logging
+import os
 from pathlib import Path
-#from dotenv import load_dotenv
-from time import strftime, localtime
 from partitioning.vlm.utils.constants import TINY_IMAGENET, FOOD101, PASCALVOC, ADE20K
 from partitioning.vlm.utils.constants import INTERNVL3_38B, INTERNVL3_8B, LLAMA33_70B, LLAMA31_8B_INSTRUCT , MINICPM26, QWEN3_8B, QWEN3_30B
 
@@ -30,6 +27,24 @@ args, _ = parser.parse_known_args()
 
 # ---output dir
 parser.add_argument("--exp_name", type=str, default="test")
+parser.add_argument(
+    "--repo-root",
+    type=Path,
+    default=Path(__file__).resolve().parents[3],
+    help="Repository root. Defaults to the checked-out FDS root.",
+)
+parser.add_argument(
+    "--vlm-data-root",
+    type=Path,
+    default=None,
+    help="Directory containing VLM prompt files and intermediate artifacts.",
+)
+parser.add_argument(
+    "--output-root",
+    type=Path,
+    default=None,
+    help="Optional directory for VLM pipeline outputs.",
+)
 
 # ---*** criteria choices and set up (depends on dataset) ***------------------
 if args.dataset == TINY_IMAGENET:
@@ -90,19 +105,15 @@ parser.add_argument("--vlm_model", type=str, default=QWEN3_30B, choices = [MINIC
 
 args = parser.parse_args()
 
-# load_dotenv()
-# args.home_path = os.getenv("HOME_PATH")
-
-# if not args.home_path:
-    #raise EnvironmentError("HOME_PATH not found in .env file. Please define it before running.")
-
-# Set this to the local git dir
-args.home_path = "/path/to/FDS/"
-
 #------ Setting the params ------- #
-args.general_data_dir = f"{args.home_path}/partitioning/vlm/data/"
-args.specific_dataset_dir = args.general_data_dir + args.dataset
-args.output_path = args.specific_dataset_dir + f"/output_{args.criteria}_{args.exp_name}"
+args.home_path = str(args.repo_root.resolve())
+data_root = args.vlm_data_root or (args.repo_root / "resources" / "vlm_labels")
+default_output_root = Path(os.environ.get("FDS_OUTPUT_ROOT", args.repo_root / "outputs")) / "vlm"
+output_root = args.output_root or (default_output_root / args.dataset)
+
+args.general_data_dir = str(data_root)
+args.specific_dataset_dir = str(data_root / args.dataset)
+args.output_path = str(output_root / f"output_{args.criteria}_{args.exp_name}")
 
 # ------ Create output folder for each run ------
 Path(args.output_path).mkdir(parents=True, exist_ok=True)

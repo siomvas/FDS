@@ -50,6 +50,7 @@ training:
   grad_clipping_value: 0.0
   amp_enabled: true
   pre_round_eval: false
+  post_round_eval: true
   grad_tracking: false # needs grad_tracking controller, to be implemented
   # Detection evaluation threshold defaults
   detection_score_threshold: 0.5

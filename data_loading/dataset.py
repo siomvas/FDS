@@ -1,4 +1,3 @@
-import csv
 import os
 import json
 import warnings
@@ -10,12 +9,10 @@ import torch
 from numbers import Integral
 from typing import Callable, List, Tuple, Dict, Any, Optional
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse, parse_qs
 from PIL import Image, UnidentifiedImageError
 from torchvision.transforms import functional as TF
 
 logger = logging.getLogger(__name__)
-_FEMNIST_SPLIT_CACHE: Dict[Tuple[str, str], Tuple[Any, Any, Any]] = {}
 
 
 class ImageDataset(Dataset):
@@ -60,11 +57,8 @@ class ImageDataset(Dataset):
     def __getitem__(self, idx: int):
         path = self.file_dataset[idx]["image"]
         try:
-            if isinstance(path, str) and path.startswith("femnist://"):
-                image = _load_virtual_femnist_image(path).convert("RGB")
-            else:
-                with Image.open(path) as img:
-                    image = img.convert("RGB")
+            with Image.open(path) as img:
+                image = img.convert("RGB")
             if self.transform:
                 return self.transform(image)
             elif self.processor:
@@ -507,6 +501,7 @@ class BaseDataset(Dataset):
         - **tiny_imagenet**: Tiny ImageNet (200 classes, 64x64 images)
         - **food101**: Food-101 (101 food categories, variable size)
         - **ade20k**: ADE20K (semantic segmentation, 150 classes)
+        - **PascalVOC**: Pascal VOC 2012 (object detection, 20 classes)
 
     Examples:
         >>> # Load existing dataset
@@ -539,12 +534,6 @@ class BaseDataset(Dataset):
         "pascal_voc": "PascalVOC",
         "pascal-voc": "PascalVOC",
         "pascalvoc": "PascalVOC",
-        "bdd100k": "BDD100K",
-        "bdd_100k": "BDD100K",
-        "bdd-100k": "BDD100K",
-        "fedisic2019": "fed_isic2019",
-        "fed_isic_2019": "fed_isic2019",
-        "fed-isic-2019": "fed_isic2019",
     }
 
     def __init__(self, dataset_name: str, base_path: str, split="train"):
@@ -840,234 +829,3 @@ def _load_pascal_voc(self):
         _require_file(mask_path, context=f"Pascal VOC annotation '{img_name}'")
         self.data.append(str(img_path))
         self.labels.append(str(mask_path))
-
-@BaseDataset.register_dataset("BDD100K") # Berkeley DeepDrive 100K
-def _load_bdd100k(self):
-    """Load BDD100K dataset."""
-    valid_splits = ["train", "val", "test"]
-    if self.split not in valid_splits:
-        raise ValueError(f"Invalid split '{self.split}'. Valid options: {valid_splits}")
-
-    data_path: Path = self.base_path / "bdd100k"
-
-    images_dir = data_path / "images" / self.split
-    masks_dir = data_path / "segmentation" / self.split
-
-    if not images_dir.exists():
-        raise FileNotFoundError(f"Images directory {images_dir} does not exist")
-    if not masks_dir.exists():
-        raise FileNotFoundError(f"Masks directory {masks_dir} does not exist")
-
-    for img_file in sorted(images_dir.glob("*.jpg")):
-        mask_file = masks_dir / (img_file.stem + ".png")
-        mask_file = _require_file(
-            masks_dir / (img_file.stem + ".png"),
-            context=f"BDD100K mask for image '{img_file.name}'",
-        )
-        self.data.append(str(img_file))
-        self.labels.append(str(mask_file))
-
-
-def _canonicalize_split_name(split: str) -> str:
-    normalized = str(split).strip().lower()
-    if normalized in {"val", "valid", "validation"}:
-        return "val"
-    if normalized in {"test", "testing"}:
-        return "test"
-    return "train"
-
-
-def _first_existing_path(base_path: Path, candidates: List[str]) -> Path:
-    for candidate in candidates:
-        path = base_path / candidate
-        if path.exists():
-            return path
-    return base_path / candidates[0]
-
-
-def _resolve_femnist_root(base_path: Path) -> Path:
-    candidates = [
-        base_path,
-        base_path / "FEMNIST",
-    ]
-    for candidate in candidates:
-        processed_dir = candidate / "processed"
-        train_file = processed_dir / "femnist_train.pt"
-        test_file = processed_dir / "femnist_test.pt"
-        users_file = processed_dir / "femnist_user_keys.pt"
-        if train_file.exists() and test_file.exists() and users_file.exists():
-            return candidate
-    return candidates[0]
-
-
-def _femnist_cache_key(root: Path, split: str) -> Tuple[str, str]:
-    return (str(root.resolve()), str(split))
-
-
-def _load_femnist_split_tensors(root: Path, split: str) -> Tuple[Any, Any, Any]:
-    cache_key = _femnist_cache_key(root, split)
-    if cache_key in _FEMNIST_SPLIT_CACHE:
-        return _FEMNIST_SPLIT_CACHE[cache_key]
-
-    processed_dir = root / "processed"
-    data_file = _require_file(
-        processed_dir / f"femnist_{split}.pt",
-        context=f"FEMNIST processed {split} tensor file",
-    )
-    _require_file(
-        processed_dir / "femnist_user_keys.pt",
-        context="FEMNIST processed user key file",
-    )
-    data_targets_users = torch.load(data_file, map_location="cpu", weights_only=False)
-    if not isinstance(data_targets_users, (tuple, list)) or len(data_targets_users) != 3:
-        raise ValueError(
-            f"FEMNIST processed file {data_file} must contain a 3-tuple of (data, targets, users)."
-        )
-    data, targets, users = data_targets_users
-    if len(data) != len(targets) or len(data) != len(users):
-        raise ValueError(
-            f"FEMNIST processed file {data_file} has mismatched lengths: "
-            f"data={len(data)} targets={len(targets)} users={len(users)}."
-        )
-    _FEMNIST_SPLIT_CACHE[cache_key] = (data, targets, users)
-    return _FEMNIST_SPLIT_CACHE[cache_key]
-
-
-def _normalize_femnist_pixels(pixels: Any) -> np.ndarray:
-    array = np.asarray(pixels)
-    if array.ndim == 1:
-        side = int(round(float(array.size) ** 0.5))
-        if side * side != array.size:
-            raise ValueError(f"FEMNIST sample has non-square flattened image of length {array.size}.")
-        array = array.reshape(side, side)
-    if array.ndim == 3 and array.shape[0] == 1:
-        array = array[0]
-    if array.ndim == 3 and array.shape[-1] == 1:
-        array = array[..., 0]
-    if array.ndim != 2:
-        raise ValueError(f"FEMNIST sample must decode to a 2D grayscale array, got shape {array.shape}.")
-
-    if np.issubdtype(array.dtype, np.floating):
-        finite = array[np.isfinite(array)]
-        if finite.size == 0:
-            raise ValueError("FEMNIST sample contains no finite pixel values.")
-        max_value = float(finite.max())
-        min_value = float(finite.min())
-        if 0.0 <= min_value and max_value <= 1.0:
-            array = array * 255.0
-        array = np.clip(np.rint(array), 0.0, 255.0).astype(np.uint8)
-    else:
-        array = np.clip(array, 0, 255).astype(np.uint8)
-
-    return array
-
-
-def _build_femnist_image_ref(root: Path, split: str, sample_idx: int) -> str:
-    encoded_root = quote(str(root.resolve()), safe="")
-    return f"femnist://sample?root={encoded_root}&split={split}&index={int(sample_idx)}"
-
-
-def _parse_femnist_image_ref(ref: str) -> Tuple[Path, str, int]:
-    parsed = urlparse(ref)
-    if parsed.scheme != "femnist":
-        raise ValueError(f"Unsupported virtual image ref scheme for FEMNIST: {ref}")
-    query = parse_qs(parsed.query)
-    root_values = query.get("root")
-    split_values = query.get("split")
-    index_values = query.get("index")
-    if not root_values or not split_values or not index_values:
-        raise ValueError(f"Invalid FEMNIST image ref: {ref}")
-    root = Path(unquote(root_values[0]))
-    split = str(split_values[0])
-    sample_idx = int(index_values[0])
-    return root, split, sample_idx
-
-
-def _load_virtual_femnist_image(ref: str) -> Image.Image:
-    root, split, sample_idx = _parse_femnist_image_ref(ref)
-    data, _, _ = _load_femnist_split_tensors(root, split)
-    pixels = data[sample_idx]
-    if isinstance(pixels, torch.Tensor):
-        pixels = pixels.detach().cpu().numpy()
-    array = _normalize_femnist_pixels(pixels)
-    return Image.fromarray(array, mode="L")
-
-
-def _normalize_fed_isic_row(row: Dict[str, Any]) -> Dict[str, str]:
-    alias_groups = {
-        "image": ("image", "image_path", "img_path", "path", "filepath", "file_path"),
-        "label": ("label", "target", "class", "diagnosis", "y"),
-        "center": ("center", "site", "client", "hospital", "center_id"),
-        "split": ("split", "partition", "subset", "fold"),
-    }
-    normalized: Dict[str, str] = {}
-    lowered = {str(k).strip().lower(): v for k, v in row.items()}
-    for canonical, aliases in alias_groups.items():
-        value = None
-        for alias in aliases:
-            if alias in lowered:
-                value = lowered[alias]
-                break
-        if value is None:
-            raise ValueError(f"FedISIC manifest row is missing required field '{canonical}'.")
-        normalized[canonical] = str(value).strip()
-    return normalized
-
-
-@BaseDataset.register_dataset("fed_isic2019")
-def _load_fed_isic2019(self):
-    valid_splits = ["train", "val", "test"]
-    if self.split not in valid_splits:
-        raise ValueError(f"Invalid split '{self.split}'. Valid options: {valid_splits}")
-
-    manifest_path = _first_existing_path(
-        self.base_path,
-        [
-            "metadata.csv",
-            "fed_isic2019.csv",
-            "fed_isic_2019.csv",
-            "manifest.csv",
-            "labels.csv",
-        ],
-    )
-    _require_file(manifest_path, context="FedISIC-2019 manifest")
-
-    canonical_split = _canonicalize_split_name(self.split)
-    with open(manifest_path, "r", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            normalized = _normalize_fed_isic_row(row)
-            row_split = _canonicalize_split_name(normalized["split"])
-            if canonical_split == "val":
-                if row_split != "val":
-                    continue
-            elif row_split != canonical_split:
-                continue
-
-            image_path = Path(normalized["image"])
-            if not image_path.is_absolute():
-                image_path = self.base_path / image_path
-            _require_file(image_path, context="FedISIC-2019 image")
-
-            self.data.append(str(image_path))
-            self.labels.append(normalized["label"])
-            self.metadata.append({"natural_client_id": normalized["center"], "split": row_split})
-
-
-@BaseDataset.register_dataset("femnist")
-def _load_femnist(self):
-    valid_splits = ["train", "val", "test"]
-    if self.split not in valid_splits:
-        raise ValueError(f"Invalid split '{self.split}'. Valid options: {valid_splits}")
-
-    requested_split = "test" if self.split in {"val", "test"} else "train"
-    femnist_root = _resolve_femnist_root(self.base_path)
-    data, targets, users = _load_femnist_split_tensors(femnist_root, requested_split)
-
-    for sample_idx, (pixels, label, user) in enumerate(zip(data, targets, users)):
-        if isinstance(label, torch.Tensor):
-            label = label.item()
-        image_ref = _build_femnist_image_ref(femnist_root, requested_split, sample_idx)
-        self.data.append(image_ref)
-        self.labels.append(str(int(label)))
-        self.metadata.append({"natural_client_id": str(user), "split": requested_split})

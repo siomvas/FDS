@@ -30,11 +30,13 @@ jobs:
       - name: Install package and extras
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[partitioning,embedding,evaluation,fl,docs,dev]"
+          python -m pip install -e ".[partitioning,embedding,evaluation,fl,dev]"
 
       - name: Compile sweep
-        run: |
-          find . -type f -name '*.py' -not -path '*/__pycache__/*' -print0 | xargs -0 python -m py_compile
+        run: git ls-files '*.py' | xargs python -m py_compile
+
+      - name: Anonymous package audit
+        run: python scripts/audit_submission.py --strict
 
       - name: Environment preflight
         run: ./scripts/preflight_env.sh
@@ -45,11 +47,15 @@ jobs:
       - name: Targeted regression tests
         run: |
           python -m pytest -q \
+            tests/test_cli_contract.py \
+            tests/test_multivariate_splitter.py \
             tests/test_data_modules.py \
             tests/test_detection_data_module.py \
-            tests/test_fl_training_engines.py \
-            tests/test_cli_contract.py
+            tests/test_fl_training_engines.py
 
-      - name: Docs smoke build (non-blocking)
-        continue-on-error: true
-        run: sphinx-build -b html docs/source docs/_build/html --keep-going
+      - name: Reproduction dry-runs
+        run: |
+          python scripts/download_datasets.py --dataset all --output-root local_data --dry-run
+          python scripts/reproduce.py partitions --dry-run
+          python scripts/reproduce.py metrics --dry-run
+          python scripts/reproduce.py fl --dry-run

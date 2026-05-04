@@ -56,12 +56,6 @@ EVALUATION_REQUIRES = [
     "vendi-score>=0.0.2",
 ]
 
-DOCS_REQUIRES = [
-    "sphinx>=7.0.0",
-    "sphinx-rtd-theme>=2.0.0",
-    "sphinx-autodoc-typehints>=2.0.0",
-]
-
 DEV_REQUIRES = [
     "pytest>=8.0.0",
     "hypothesis>=6.0.0",
@@ -72,7 +66,6 @@ EXTRAS = {
     "partitioning": _dedupe(PARTITIONING_REQUIRES),
     "embedding": _dedupe(EMBEDDING_REQUIRES),
     "evaluation": _dedupe(EVALUATION_REQUIRES),
-    "docs": _dedupe(DOCS_REQUIRES),
     "dev": _dedupe(DEV_REQUIRES),
 }
 
@@ -81,7 +74,6 @@ EXTRAS["all"] = _dedupe(
     + PARTITIONING_REQUIRES
     + EMBEDDING_REQUIRES
     + EVALUATION_REQUIRES
-    + DOCS_REQUIRES
     + DEV_REQUIRES
 )
 
@@ -96,6 +88,10 @@ PACKAGE_INCLUDE_PATTERNS = [
     "fl_training.*",
     "partitioning",
     "partitioning.*",
+    "research",
+    "research.*",
+    "utils",
+    "utils.*",
 ]
 
 

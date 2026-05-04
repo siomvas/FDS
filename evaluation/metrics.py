@@ -57,7 +57,8 @@ computation.
 
 See Also
 --------
-docs/RESEARCH_SUMMARY.md : Detailed explanation of metrics and their use cases.
+embedding.cache_manager : Persistent feature caching used by feature metrics.
+embedding.embedding_extractors : Registered feature extractors.
 """
 
 import logging

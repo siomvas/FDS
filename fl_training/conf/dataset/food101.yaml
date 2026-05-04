@@ -7,8 +7,7 @@ dataset:
   
   # Arguments passed to __init__
   args:
-    root: "${oc.env:DATASETS_ROOT}/food101"
-    # other dataset specific settings?
+    root: "${oc.env:DATASETS_ROOT}"
 
 fed:
   rounds: 100

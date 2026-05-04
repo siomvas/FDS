@@ -426,21 +426,6 @@ class TestBaseDatasetRegistry:
         assert dataset.dataset_name == "PascalVOC"
         assert len(dataset) == 1
 
-    def test_bdd100k_alias_normalization(self, tmp_path):
-        """Dataset aliases for BDD100K should normalize to canonical registry key."""
-        images_dir = tmp_path / "bdd100k" / "images" / "train"
-        masks_dir = tmp_path / "bdd100k" / "segmentation" / "train"
-        images_dir.mkdir(parents=True)
-        masks_dir.mkdir(parents=True)
-
-        image_path = images_dir / "sample_0.jpg"
-        Image.new("RGB", (16, 16), color=(0, 0, 0)).save(image_path)
-        Image.new("L", (16, 16), color=1).save(masks_dir / "sample_0.png")
-
-        dataset = BaseDataset("bdd100k", str(tmp_path), "train")
-        assert dataset.dataset_name == "BDD100K"
-        assert len(dataset) == 1
-
     def test_food101_missing_image_raises(self, tmp_path):
         """Food101 loader fails fast when metadata references missing images."""
         food101_root = tmp_path / "food101"

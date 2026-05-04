@@ -138,10 +138,6 @@ _EXPORTS = {
         "partitioning.multivariate_dirichlet_splitter",
         "MultivariateDirichletSplitter",
     ),
-    "CorrelatedMultivariateDirichletSplitter": (
-        "partitioning.correlated_multivariate_dirichlet_splitter",
-        "CorrelatedMultivariateDirichletSplitter",
-    ),
 }
 
 
@@ -160,12 +156,11 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_EXPORTS))
 
 __all__ = [
-    'BaseDatasetSplitter',
-    'ClientSplit',
-    'DatasetSplits',
-    'RandomSplitter',
-    'DirichletSplitter',
-    'EmbeddingSplitter',
-    'MultivariateDirichletSplitter',
-    'CorrelatedMultivariateDirichletSplitter',
+    "BaseDatasetSplitter",
+    "ClientSplit",
+    "DatasetSplits",
+    "RandomSplitter",
+    "DirichletSplitter",
+    "EmbeddingSplitter",
+    "MultivariateDirichletSplitter",
 ]

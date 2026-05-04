@@ -469,6 +469,30 @@ class CacheManager:
             
             # 1. Dataset Mode OR Dictionary of Path->Embedding provided
             if (dataset_name is not None) or is_path_dict_input:
+                # Merge with any existing path-indexed cache entry instead of replacing.
+                # This allows subset queries to progressively build a full dataset cache.
+                existing_path_map: Dict[str, np.ndarray] = {}
+                existing = self._memory_cache.get(cache_key)
+                if existing is None and cache_file.exists():
+                    try:
+                        loaded = np.load(cache_file, allow_pickle=True)
+                        existing = dict(loaded)
+                        self._memory_cache[cache_key] = existing
+                    except (OSError, ValueError, EOFError, pickle.UnpicklingError, zipfile.BadZipFile) as exc:
+                        logger.warning("Failed to load existing cache entry %s for merge: %s", cache_key, exc)
+                        self._evict_cache_entry(cache_key)
+                        existing = None
+                if existing is not None and existing.get("is_path_dict", False):
+                    try:
+                        stored_paths = existing["image_paths"]
+                        stored_embeddings = existing["embeddings"]
+                        existing_path_map = {
+                            str(path): np.asarray(stored_embeddings[idx])
+                            for idx, path in enumerate(stored_paths)
+                        }
+                    except (KeyError, IndexError, TypeError, ValueError) as exc:
+                        logger.warning("Malformed existing cache entry %s; rebuilding from current subset: %s", cache_key, exc)
+                        existing_path_map = {}
 
                 # If it's a list/array, we align it with rel_paths
                 if not isinstance(embeddings, dict):
@@ -482,8 +506,12 @@ class CacheManager:
                     # Create pairs with relative paths
                     path_emb_pairs = [(rel_p, embeddings[orig_p]) for rel_p, orig_p in zip(rel_paths_for_dict, orig_paths)]
 
+                merged_path_map = dict(existing_path_map)
+                for rel_path, emb in path_emb_pairs:
+                    merged_path_map[str(rel_path)] = np.asarray(emb)
+
                 # Sort by path for deterministic storage
-                sorted_pairs = sorted(path_emb_pairs, key=lambda x: x[0])
+                sorted_pairs = sorted(merged_path_map.items(), key=lambda x: x[0])
                 sorted_paths, sorted_embs = zip(*sorted_pairs)
                 
                 save_dict["is_path_dict"] = True
@@ -509,10 +537,11 @@ class CacheManager:
             self._memory_cache[cache_key] = save_dict
 
             # Update Metadata
+            cached_num_images = len(save_dict["image_paths"]) if save_dict.get("is_path_dict", False) else (len(image_paths) if image_paths else 0)
             self.metadata["entries"][cache_key] = {
                 "model_name": model_name,
                 "dataset_name": dataset_name,
-                "num_images": len(image_paths) if image_paths else 0,
+                "num_images": cached_num_images,
                 "base_path": str(base_path) if base_path else None,
                 "file": cache_file.name,
                 "config": config_entry,

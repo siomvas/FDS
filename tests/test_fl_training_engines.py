@@ -891,7 +891,7 @@ def test_model_factory_rejects_classification_arch_for_detection_task():
 
 
 def test_model_factory_wraps_adapter_oserror(monkeypatch):
-    from fl_training.models.adapters import timm as timm_adapter
+    timm_adapter = pytest.importorskip("fl_training.models.adapters.timm")
 
     def _raise_oserror(*args, **kwargs):
         raise OSError("network unavailable")

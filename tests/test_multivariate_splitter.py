@@ -15,6 +15,7 @@ Test Coverage:
 Note: Some tests are marked @pytest.mark.slow as they use real datasets.
 """
 
+import gzip
 import json
 import numpy as np
 import pytest
@@ -145,6 +146,44 @@ class TestVLMAnnotationLoading:
 
         assert "color" in splitter.cluster_labels
 
+    def test_gzipped_jsonl_format_support(self, mock_train_dataset, tmp_path):
+        """Gzipped JSONL files are supported for retained reviewer artifacts."""
+        vlm_dir = tmp_path / "vlm"
+        for criterion_dir_name in [
+            "output_color_train",
+            "output_main_object_train",
+            "output_size_train",
+            "output_location_train",
+            "output_time_train",
+        ]:
+            dir_path = vlm_dir / criterion_dir_name
+            dir_path.mkdir(parents=True)
+            file_path = dir_path / "step3_result.jsonl.gz"
+            with gzip.open(file_path, "wt", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "image": "tiny-imagenet-200/train/n01/images/img_0.JPEG",
+                            "class": "default",
+                        }
+                    )
+                    + "\n"
+                )
+
+        splitter = MultivariateDirichletSplitter(
+            train_dataset=mock_train_dataset,
+            val_dataset=None,
+            n_clients=3,
+            heterogeneity=1.0,
+            cluster_labels_dir=str(vlm_dir),
+            valset_type="none",
+            seed=42,
+        )
+
+        splitter._load_cluster_labels()
+
+        assert splitter.cluster_labels["color"]["tiny-imagenet-200/train/n01/images/img_0.JPEG"] == "default"
+
 
 # ============================================================================
 # Path Normalization Tests (Critical for Multi-User HPC)
@@ -272,7 +311,7 @@ class TestPathNormalization:
         local_path = (
             "/Users/example/FDS/local_data/VOC2012/images/train/2008_000008.jpg"
         )
-        vlm_path = "/path/to/gtai/FDS/VOC2012/images/train/2008_000008.jpg"
+        vlm_path = "/users/example/FDS/VOC2012/images/train/2008_000008.jpg"
 
         local_key = MultivariateDirichletSplitter._normalize_image_key(local_path)
         vlm_key = MultivariateDirichletSplitter._normalize_image_key(vlm_path)
@@ -922,6 +961,7 @@ class TestJointDirichletAssignment:
             cluster_labels_dir=str(vlm_annotation_directory),
             valset_type="none",
             min_samples_per_client=1,
+            assignment_mode="joint_dirichlet",
             seed=42,
         )
 
@@ -947,6 +987,7 @@ class TestJointDirichletAssignment:
             cluster_labels_dir=str(vlm_annotation_directory),
             valset_type="none",
             min_samples_per_client=1,
+            assignment_mode="joint_dirichlet",
             seed=7,
         )
 

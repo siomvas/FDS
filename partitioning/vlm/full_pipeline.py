@@ -1,7 +1,4 @@
-import step1
-import step2a
-import step2b
-import step3
+from partitioning.vlm import step1, step2a, step2b, step3
 from partitioning.vlm.utils import util_loader
 from partitioning.vlm.utils.argument import args
 import gc

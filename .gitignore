@@ -23,6 +23,8 @@ wheels/
 # Virtual environments
 .venv
 .venv-wave1-verify/
+.env
+.env.*
 env/
 venv/
 ENV/
@@ -44,6 +46,14 @@ AGENTS.md
 *pytest_cache/
 .python-version
 logs/
+.embedding_cache/
+*.ckpt
+*.pth
+*.pt
+*.tar
+*.tar.gz
+*.tgz
+*.zip
 
 # Tests
 tests/.hypothesis/
@@ -51,13 +61,18 @@ tests/.hypothesis/
 
 # Logs and partition jsons
 scripts/embedding_partitions
+embedding_cache/
+vlm_partitions/
+vlm_analysis/
 
 # Docs build output
 docs/_build/
+docs/build/
 
 # Local datasets and local validation artifacts
 local_data/
 local_artifacts/
+results/
 
 benchmark_results/
 outputs/

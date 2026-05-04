@@ -1,8 +1,10 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import AutoModel, AutoTokenizer, AutoConfig
 from transformers import Qwen3VLMoeForConditionalGeneration
+import os
 import torch
 import logging
+from pathlib import Path
 from data_loading.dataset import BaseDataset
 import math
 import torchvision.transforms as T
@@ -117,29 +119,29 @@ def analyze_dataset_images(data, sample_size=100):
 
 # model and tokenizer
 #----- Load model ----
-# note: change to custom path when run
-# Model paths
-model_path = "/path/to/data/vision-saved"
+# Model paths. Set FDS_VLM_MODEL_ROOT to the local directory that contains these
+# manually downloaded model checkpoints.
+model_path = Path(os.environ.get("FDS_VLM_MODEL_ROOT", "/path/to/local/vlm_models"))
 MODEL_PATHS = {
     # vlm
     # minicpm & internVL
-    MINICPM26: f"{model_path}/minicpm26",
-    INTERNVL3_38B: f"{model_path}/internVl3",
-    INTERNVL3_8B: f"{model_path}/internVl3_8B",
-    INTERNVL35_8B: f"{model_path}/internVl3_5",
+    MINICPM26: str(model_path / "minicpm26"),
+    INTERNVL3_38B: str(model_path / "internVl3"),
+    INTERNVL3_8B: str(model_path / "internVl3_8B"),
+    INTERNVL35_8B: str(model_path / "internVl3_5"),
 
     # qwen
-    QWEN3_8B: f"{model_path}/qwen3_8B",
-    QWEN3_30B: f"{model_path}/qwen3_30B",
+    QWEN3_8B: str(model_path / "qwen3_8B"),
+    QWEN3_30B: str(model_path / "qwen3_30B"),
 
     # llm
     # llama
-    LLAMA31_8B_INSTRUCT: f"{model_path}/llama3.1-instruct",
-    LLAMA33_70B: f"{model_path}/llama3.3"
+    LLAMA31_8B_INSTRUCT: str(model_path / "llama3.1-instruct"),
+    LLAMA33_70B: str(model_path / "llama3.3")
 }
 
 # Data path
-data_path = "/path/to/gtai/FDS"
+data_path = Path(os.environ.get("DATASETS_ROOT", "/path/to/datasets"))
 
 # Model Registry
 MODEL_REGISTRY = {}
@@ -337,7 +339,7 @@ def load_data(dataset: str, split: str="train"):
     #     split = "test"
     
     log.info("Dataset: %s", dataset)
-    data = BaseDataset(dataset, data_path, split)
+    data = BaseDataset(dataset, str(data_path), split)
     return data
 
 # Optional: Print available models

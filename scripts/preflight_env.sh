@@ -42,7 +42,7 @@ run_check "Pytest collection preflight" \
 
 if [ "${status}" -ne 0 ]; then
   echo "Preflight failed. Install required extras and re-run:"
-  echo "  pip install -e \".[partitioning,embedding,evaluation,fl,docs,dev]\""
+  echo "  pip install -e \".[partitioning,embedding,evaluation,fl,dev]\""
 else
   echo "Preflight passed."
 fi

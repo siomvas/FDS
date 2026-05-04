@@ -3,9 +3,41 @@ import base64
 import binascii
 import json
 import logging
+import os
 import re
 import importlib
 from typing import Dict, Any
+
+
+def _positive_int_env(name: str) -> int | None:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as e:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}.") from e
+    if parsed < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+    return parsed
+
+
+def _preset_thread_env() -> None:
+    num_threads = _positive_int_env("FDS_CLIENT_NUM_THREADS")
+    if num_threads is None:
+        return
+    thread_value = str(num_threads)
+    for env_name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ.setdefault(env_name, thread_value)
+
+
+_preset_thread_env()
 
 import torch
 import nvflare.client as flare
@@ -20,6 +52,24 @@ from fl_training.engines.detection import DetectionEngine
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 log = logging.getLogger("ClientEntry")
+
+
+def configure_torch_threads_from_env() -> None:
+    num_threads = _positive_int_env("FDS_CLIENT_NUM_THREADS")
+    interop_threads = _positive_int_env("FDS_CLIENT_INTEROP_THREADS")
+    if interop_threads is None:
+        interop_threads = num_threads
+
+    if num_threads is not None:
+        torch.set_num_threads(num_threads)
+        log.info("Set torch intra-op threads to %d from FDS_CLIENT_NUM_THREADS", num_threads)
+
+    if interop_threads is not None:
+        try:
+            torch.set_num_interop_threads(interop_threads)
+            log.info("Set torch inter-op threads to %d", interop_threads)
+        except RuntimeError as e:
+            log.warning("Unable to set torch inter-op threads after parallel work started: %s", e)
 
 def decode_payload(payload: str) -> Dict[str, Any]:
     """
@@ -185,6 +235,7 @@ def main():
     # or fallback, because the truth is in the payload.
     args, _ = parser.parse_known_args()
 
+    configure_torch_threads_from_env()
 
     # 1. Configuration
     flare_ctx = flare.init()
@@ -245,6 +296,7 @@ def main():
     method_hook = method_hook_from_config(cfg, task_type)
 
     pre_round_eval = bool(cfg["training"].get("pre_round_eval", False))
+    post_round_eval = bool(cfg["training"].get("post_round_eval", True))
 
     # 6. Federated Learning Loop
     while flare.is_running():
@@ -280,7 +332,7 @@ def main():
 
         # D. Evaluation (Optional but recommended for Model Selection)
         val_metrics = {}
-        if val_loader is not None:
+        if post_round_eval and val_loader is not None:
             val_metrics = engine.evaluate(val_loader)
             log.info(f"Round {input_model.current_round} Validation: {val_metrics}")
             metric_callback(val_metrics, writer, prefix="val", step_override=round_idx)
