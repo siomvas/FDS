@@ -1,0 +1,12 @@
+Answer 1: Striped
+Answer 2: Polka Dotted
+Answer 3: Metallic
+Answer 4: Matte
+Answer 5: Wood Grain
+Answer 6: Ribbed
+Answer 7: Spotted
+Answer 8: Chevron Patterned
+Answer 9: Dotted
+Answer 10: Textured
+
+Reason: The categories were formed by grouping synonymous or equivalent labels together, while ensuring each category represents the criterion of "shared foreground-object surface texture or material". For example, "striped", "diagonal stripes", "striped concentric circles", and "chevron stripes" could be grouped under "Striped" or more specific categories like "Chevron Patterned". However, to meet the requirement of exactly 10 categories, some consolidation was necessary. "Polka Dotted" encompasses "polka dots", "polka dot", and potentially "spotted" or "dotted" if they are considered similar enough, but for the sake of diversity in categories, "Spotted" and "Dotted" are kept separate. "Metallic" includes "metallic", "polished metal", "reflective metallic", and "faceted metallic". "Matte" stands alone as it describes a specific finish. "Wood Grain" is unique and represents a specific texture. "Ribbed", "Ribbed" and "Ridged" could be considered similar, but "Ribbed" is kept as it directly matches an observed label. "Chevron Patterned" includes "chevron-patterned", "chevron pattern", and "chevron stripes", offering a distinct pattern category. "Dotted" could be considered under "Polka Dotted" but is kept separate for diversity. "Textured" serves as a broad category that could encompass "bumpy", "dimpled", "scaly", "grid-textured", and potentially "rubbery" or "rubberized", though these last two might also imply a material rather than just a texture, thus "Textured" captures the essence of having a noticeable surface quality without being too specific, allowing for the inclusion of various observed labels like "mosaic", "quilted", "cartoon patterns", and "printed symbols" under a single, coherent category related to surface texture or material appearance.

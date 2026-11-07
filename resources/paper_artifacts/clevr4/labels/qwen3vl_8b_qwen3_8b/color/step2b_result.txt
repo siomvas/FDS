@@ -1,0 +1,15 @@
+Answer 1: Purple
+Answer 2: Teal
+Answer 3: Gray
+Answer 4: Green
+Answer 5: Blue
+Answer 6: Brown
+Answer 7: Yellow
+Answer 8: Red
+Answer 9: Muted Colors
+Answer 10: Metallic Colors
+
+Reason lines:
+- Purple, Teal, Gray, Green, Blue, Brown, Yellow, and Red are distinct colors that appear as standalone labels.
+- Muted Colors encompass labels like "muted olive green," "muted brownish-gray," and "muted green," which describe desaturated or less intense versions of other colors.
+- Metallic Colors include labels such as "metallic teal," "metallic purple," and "metallic red," which describe colors with a metallic sheen or luster.

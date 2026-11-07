@@ -105,4 +105,5 @@ setup(
     extras_require=EXTRAS,
     python_requires=">=3.10",
     description="FDS - Federated Dataset Simulation",
+    license="Apache-2.0",
 )

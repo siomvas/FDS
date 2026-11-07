@@ -1,0 +1,129 @@
+{
+  "best_matching_taxonomy": "color",
+  "created_at": "2026-08-01T13:52:37.600967+00:00",
+  "criterion": "color",
+  "exact_semantic_accuracy": 0.5294843794511442,
+  "ground_truth_usage": "evaluation_only_after_step3",
+  "match_methods": {
+    "contained": 1,
+    "exact": 10449,
+    "fuzzy": 1,
+    "unmatched": 80
+  },
+  "predicted_categories": [
+    "Unknown",
+    "blue",
+    "brown",
+    "gray",
+    "green",
+    "metallic colors",
+    "muted colors",
+    "purple",
+    "red",
+    "teal",
+    "yellow"
+  ],
+  "predicted_unique_count": 11,
+  "sample_count": 10531,
+  "target_is_best_by_nmi": true,
+  "taxonomy_comparisons": {
+    "color": {
+      "ari": 0.5865291904525259,
+      "completeness": 0.7193145466837927,
+      "homogeneity": 0.7022937098120503,
+      "hungarian_accuracy": 0.7139872756623302,
+      "hungarian_matched_count": 7519,
+      "hungarian_predicted_to_true": {
+        "blue": "blue",
+        "brown": "brown",
+        "gray": "gray",
+        "green": "green",
+        "metallic colors": "yellow",
+        "muted colors": "pink",
+        "purple": "purple",
+        "red": "red",
+        "teal": "cyan",
+        "yellow": "orange"
+      },
+      "nmi": 0.7107022334796227,
+      "v_measure": 0.7107022334796227
+    },
+    "count": {
+      "ari": 0.0002488693980216153,
+      "completeness": 0.0024960572150298744,
+      "homogeneity": 0.0024369189493569582,
+      "hungarian_accuracy": 0.11404425030861266,
+      "hungarian_matched_count": 1201,
+      "hungarian_predicted_to_true": {
+        "blue": "9",
+        "brown": "2",
+        "gray": "8",
+        "green": "1",
+        "metallic colors": "7",
+        "muted colors": "4",
+        "purple": "10",
+        "red": "5",
+        "teal": "6",
+        "yellow": "3"
+      },
+      "nmi": 0.002466133596954662,
+      "v_measure": 0.002466133596954662
+    },
+    "shape": {
+      "ari": 0.0021101215963429685,
+      "completeness": 0.008161852872927132,
+      "homogeneity": 0.008019264153759642,
+      "hungarian_accuracy": 0.12581901054030956,
+      "hungarian_matched_count": 1325,
+      "hungarian_predicted_to_true": {
+        "blue": "sphere",
+        "brown": "cube",
+        "gray": "cone",
+        "green": "monkey",
+        "metallic colors": "gear",
+        "muted colors": "teapot",
+        "purple": "cylinder",
+        "red": "star",
+        "teal": "torus",
+        "yellow": "diamond"
+      },
+      "nmi": 0.008089930264292338,
+      "v_measure": 0.00808993026429234
+    },
+    "texture": {
+      "ari": 0.014586383687565915,
+      "completeness": 0.04316133931565951,
+      "homogeneity": 0.04214678989259736,
+      "hungarian_accuracy": 0.16123824897920425,
+      "hungarian_matched_count": 1698,
+      "hungarian_predicted_to_true": {
+        "blue": "brick",
+        "brown": "circles",
+        "gray": "emojis",
+        "green": "wave",
+        "metallic colors": "metal",
+        "muted colors": "zigzag",
+        "purple": "chessboard",
+        "red": "checkered",
+        "teal": "star",
+        "yellow": "rubber"
+      },
+      "nmi": 0.042648031705849056,
+      "v_measure": 0.042648031705849056
+    }
+  },
+  "true_categories": [
+    "blue",
+    "brown",
+    "cyan",
+    "gray",
+    "green",
+    "orange",
+    "pink",
+    "purple",
+    "red",
+    "yellow"
+  ],
+  "true_unique_count": 10,
+  "unknown_count": 80
+}

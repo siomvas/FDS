@@ -1,0 +1,129 @@
+{
+  "best_matching_taxonomy": "shape",
+  "created_at": "2026-08-01T13:42:44.922584+00:00",
+  "criterion": "shape",
+  "exact_semantic_accuracy": 0.0,
+  "ground_truth_usage": "evaluation_only_after_step3",
+  "match_methods": {
+    "contained": 1,
+    "exact": 10493,
+    "fuzzy": 24,
+    "unmatched": 13
+  },
+  "predicted_categories": [
+    "Unknown",
+    "bulbous",
+    "conical",
+    "cuboid-like",
+    "cylindrical",
+    "geometric",
+    "polyhedral",
+    "ring-shaped",
+    "sphere-like",
+    "star-shaped",
+    "symmetrical"
+  ],
+  "predicted_unique_count": 11,
+  "sample_count": 10531,
+  "target_is_best_by_nmi": true,
+  "taxonomy_comparisons": {
+    "color": {
+      "ari": 0.00021220219690038568,
+      "completeness": 0.002810752228097316,
+      "homogeneity": 0.0025606663336900865,
+      "hungarian_accuracy": 0.11394929256480867,
+      "hungarian_matched_count": 1200,
+      "hungarian_predicted_to_true": {
+        "bulbous": "green",
+        "conical": "red",
+        "cuboid-like": "brown",
+        "cylindrical": "yellow",
+        "geometric": "blue",
+        "polyhedral": "orange",
+        "ring-shaped": "pink",
+        "sphere-like": "gray",
+        "star-shaped": "purple",
+        "symmetrical": "cyan"
+      },
+      "nmi": 0.00267988745246402,
+      "v_measure": 0.00267988745246402
+    },
+    "count": {
+      "ari": 0.0017138286121098315,
+      "completeness": 0.007450353086332634,
+      "homogeneity": 0.006787250789911265,
+      "hungarian_accuracy": 0.12297027822618935,
+      "hungarian_matched_count": 1295,
+      "hungarian_predicted_to_true": {
+        "bulbous": "3",
+        "conical": "7",
+        "cuboid-like": "8",
+        "cylindrical": "9",
+        "geometric": "2",
+        "polyhedral": "10",
+        "ring-shaped": "5",
+        "sphere-like": "6",
+        "star-shaped": "4",
+        "symmetrical": "1"
+      },
+      "nmi": 0.007103360271836621,
+      "v_measure": 0.007103360271836621
+    },
+    "shape": {
+      "ari": 0.5484871569790488,
+      "completeness": 0.7050287286943974,
+      "homogeneity": 0.6463727873640032,
+      "hungarian_accuracy": 0.6809419808185357,
+      "hungarian_matched_count": 7171,
+      "hungarian_predicted_to_true": {
+        "Unknown": "torus",
+        "bulbous": "teapot",
+        "conical": "cone",
+        "cuboid-like": "cube",
+        "cylindrical": "cylinder",
+        "polyhedral": "diamond",
+        "ring-shaped": "gear",
+        "sphere-like": "sphere",
+        "star-shaped": "star",
+        "symmetrical": "monkey"
+      },
+      "nmi": 0.6744278130855725,
+      "v_measure": 0.6744278130855725
+    },
+    "texture": {
+      "ari": 0.003291158135127115,
+      "completeness": 0.009073535542439655,
+      "homogeneity": 0.008267546132556671,
+      "hungarian_accuracy": 0.12733833444117368,
+      "hungarian_matched_count": 1341,
+      "hungarian_predicted_to_true": {
+        "bulbous": "rubber",
+        "conical": "emojis",
+        "cuboid-like": "brick",
+        "cylindrical": "wave",
+        "geometric": "checkered",
+        "polyhedral": "chessboard",
+        "ring-shaped": "metal",
+        "sphere-like": "circles",
+        "star-shaped": "star",
+        "symmetrical": "zigzag"
+      },
+      "nmi": 0.008651810202898241,
+      "v_measure": 0.008651810202898241
+    }
+  },
+  "true_categories": [
+    "cone",
+    "cube",
+    "cylinder",
+    "diamond",
+    "gear",
+    "monkey",
+    "sphere",
+    "star",
+    "teapot",
+    "torus"
+  ],
+  "true_unique_count": 10,
+  "unknown_count": 13
+}

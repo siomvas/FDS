@@ -1,0 +1,14 @@
+Answer 1: One
+Answer 2: Two
+Answer 3: Three
+Answer 4: Four
+Answer 5: Five
+Answer 6: Six
+Answer 7: Seven
+Answer 8: Eight
+Answer 9: Nine
+Answer 10: Many
+
+Reason 1: The observed labels already express distinct numerical values, so we can directly map them to their corresponding categories.
+Reason 2: The label "multiple" is consolidated into the category "Many", as it implies more than one object but does not specify an exact number.
+Reason 3: The categories are named concisely and uniquely to represent the semantic criterion "number of foreground objects".

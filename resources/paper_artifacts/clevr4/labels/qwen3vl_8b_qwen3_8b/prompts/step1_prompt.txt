@@ -1,0 +1,3 @@
+Describe the image while focusing exclusively on the [__CRITERION__].
+[__CRITERION_GUIDANCE__]
+Do not discuss any other visual criterion. Avoid proper nouns. Answer in no more than 40 tokens.

@@ -1,0 +1,68 @@
+{
+  "annotations": "clevr_4_10k/clevr_4_annots.json",
+  "annotations_sha256": "fba922a00216bbc3641f7f03a117a9f5e6a0956edde1f66062ff399225219fd6",
+  "first_image_ids": [
+    "CLEVR_new_000000",
+    "CLEVR_new_000001",
+    "CLEVR_new_000002"
+  ],
+  "last_image_ids": [
+    "CLEVR_new_010528",
+    "CLEVR_new_010529",
+    "CLEVR_new_010530"
+  ],
+  "ordered_id_sha256": "f8ff5b4ea9ab483befa17fbb8ea4e28b0051adad5d870b7a97b31af0d5749197",
+  "sample_count": 10531,
+  "semantic_step1": "outputs/semantic_pipeline_internvl35_38b_llama33_70b/output_texture_10k/step1_result.jsonl",
+  "semantic_step1_sha256": "97fa12b1e7bd5a91513c279965333a44708a8ea33e096399095d7a47157923ea",
+  "taxonomy_counts": {
+    "color": {
+      "blue": 1041,
+      "brown": 1056,
+      "cyan": 1068,
+      "gray": 1024,
+      "green": 1088,
+      "orange": 1008,
+      "pink": 1062,
+      "purple": 1076,
+      "red": 1036,
+      "yellow": 1072
+    },
+    "count": {
+      "1": 1047,
+      "10": 1047,
+      "2": 1050,
+      "3": 1045,
+      "4": 1012,
+      "5": 1044,
+      "6": 1090,
+      "7": 1069,
+      "8": 1049,
+      "9": 1078
+    },
+    "shape": {
+      "cone": 1304,
+      "cube": 1145,
+      "cylinder": 1137,
+      "diamond": 994,
+      "gear": 1033,
+      "monkey": 919,
+      "sphere": 1130,
+      "star": 649,
+      "teapot": 985,
+      "torus": 1235
+    },
+    "texture": {
+      "brick": 1083,
+      "checkered": 1031,
+      "chessboard": 1051,
+      "circles": 1136,
+      "emojis": 999,
+      "metal": 1070,
+      "rubber": 1018,
+      "star": 1022,
+      "wave": 1072,
+      "zigzag": 1049
+    }
+  }
+}

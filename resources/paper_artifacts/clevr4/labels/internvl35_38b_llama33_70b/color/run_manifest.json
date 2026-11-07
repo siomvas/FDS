@@ -1,0 +1,95 @@
+{
+  "annotation_sha256": "fba922a00216bbc3641f7f03a117a9f5e6a0956edde1f66062ff399225219fd6",
+  "best_matching_taxonomy": "color",
+  "completed_at": "2026-08-01T22:32:21.859261+00:00",
+  "completed_stages": [
+    "step1",
+    "step2a",
+    "step2b",
+    "step3",
+    "validate"
+  ],
+  "criterion": "color",
+  "criterion_config": {
+    "guidance": "Describe the color shared by the foreground objects. Ignore the floor, walls, lighting cast, shadows, and background colors.",
+    "num_classes": 10,
+    "prompt_label": "shared foreground-object color"
+  },
+  "dataset": "clevr_4_10k_v1",
+  "dataset_root": "clevr_4_10k",
+  "device": "cuda:0",
+  "ground_truth_usage": "evaluation_only_after_step3",
+  "internvl_max_tiles": 12,
+  "llm_attention_backend": "flash_attention_2",
+  "llm_batch_size_requested": 32,
+  "llm_model": "meta-llama/Llama-3.3-70B-Instruct",
+  "llm_revision": "6f6073b423013f6a7d4d9f39144961bfbfbc386b",
+  "max_pixels": 100352,
+  "min_label_frequency": 31,
+  "original_started_at": "2026-08-01T08:18:44.433977+00:00",
+  "prompt_sha256": {
+    "step1_prompt.txt": "69a98ddf32d81b340ef9cfd52add35fcccf9cd8de5c5042a42e280bfb08760f2",
+    "step2a_prompt.txt": "23bdfe785af836cfdb24c659cdd97e723e4cd8fcbd16b8dd1f3dfeeddfc76443",
+    "step2b_prompt.txt": "6bf03940cf5fbe9f00cfc3bc2bd62eb5055fa1cc0fa15e3eaef34e618f2818bb",
+    "step3_prompt.txt": "157de28dfd708e9cfe6715e25cac6136ab74659b7d3df8aa29b94ed4694f078e"
+  },
+  "runtime": {
+    "cuda": "12.8",
+    "cuda_device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "cuda_device_count_visible": 2,
+    "flash_attn": "2.8.3",
+    "torch": "2.8.0+cu128",
+    "transformers": "4.57.6"
+  },
+  "sample_count": 10531,
+  "seed": 42,
+  "source_sha256": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+  "source_sha256s": {
+    "internvl_adapter": "69beb337b550e36d357399781753d2deb847e0e9468ff72eec05b987a33679fa",
+    "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+    "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+  },
+  "stage_source_sha256s": {
+    "step1": {
+      "internvl_adapter": "69beb337b550e36d357399781753d2deb847e0e9468ff72eec05b987a33679fa",
+      "pipeline": "aaed11d3b8296048ed97d0883f447f91eaede4900f943f41c0cc6d1c8cf23bff"
+    },
+    "step2a": {
+      "internvl_adapter": "69beb337b550e36d357399781753d2deb847e0e9468ff72eec05b987a33679fa",
+      "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+      "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+    },
+    "step2b": {
+      "internvl_adapter": "69beb337b550e36d357399781753d2deb847e0e9468ff72eec05b987a33679fa",
+      "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+      "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+    },
+    "step3": {
+      "internvl_adapter": "69beb337b550e36d357399781753d2deb847e0e9468ff72eec05b987a33679fa",
+      "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+      "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+    },
+    "validate": {
+      "internvl_adapter": "69beb337b550e36d357399781753d2deb847e0e9468ff72eec05b987a33679fa",
+      "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+      "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+    }
+  },
+  "started_at": "2026-08-01T20:56:02.273467+00:00",
+  "status": "complete",
+  "step2a_completed_at": "2026-08-01T22:16:49.859946+00:00",
+  "step2b_completed_at": "2026-08-01T22:17:17.886279+00:00",
+  "step3_completed_at": "2026-08-01T22:32:21.651577+00:00",
+  "target_is_best_by_nmi": true,
+  "true_criteria": [
+    "texture",
+    "shape",
+    "color",
+    "count"
+  ],
+  "validate_completed_at": "2026-08-01T22:32:21.859271+00:00",
+  "vlm_attention_backend": "flash_attention_2",
+  "vlm_batch_size_requested": 4,
+  "vlm_model": "OpenGVLab/InternVL3_5-38B",
+  "vlm_revision": "de99855be3642cd44fe97c9b72d70e5ce2c07f69"
+}

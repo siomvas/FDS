@@ -2,6 +2,11 @@
   "datasets": {
     "ade20k": {
       "criteria": {
+        "camera": {
+          "directory": "output_camera_train",
+          "label_count": 25574,
+          "labels": "step3_result.jsonl"
+        },
         "color": {
           "directory": "output_color_train",
           "label_count": 25574,

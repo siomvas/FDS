@@ -1,0 +1,125 @@
+{
+  "best_matching_taxonomy": "texture",
+  "created_at": "2026-08-01T21:35:53.567575+00:00",
+  "criterion": "texture",
+  "exact_semantic_accuracy": 0.0,
+  "ground_truth_usage": "evaluation_only_after_step3",
+  "match_methods": {
+    "exact": 10531
+  },
+  "predicted_categories": [
+    "chevron patterned",
+    "dotted",
+    "matte",
+    "metallic",
+    "polka dotted",
+    "ribbed",
+    "spotted",
+    "striped",
+    "textured",
+    "wood grain"
+  ],
+  "predicted_unique_count": 10,
+  "sample_count": 10531,
+  "target_is_best_by_nmi": true,
+  "taxonomy_comparisons": {
+    "color": {
+      "ari": 0.0024993681676221064,
+      "completeness": 0.01288848377908879,
+      "homogeneity": 0.011534020373143859,
+      "hungarian_accuracy": 0.1301870667552939,
+      "hungarian_matched_count": 1371,
+      "hungarian_predicted_to_true": {
+        "chevron patterned": "purple",
+        "dotted": "cyan",
+        "matte": "red",
+        "metallic": "pink",
+        "polka dotted": "green",
+        "ribbed": "blue",
+        "spotted": "gray",
+        "striped": "orange",
+        "textured": "yellow",
+        "wood grain": "brown"
+      },
+      "nmi": 0.01217369304640732,
+      "v_measure": 0.01217369304640732
+    },
+    "count": {
+      "ari": 0.0005144740245741325,
+      "completeness": 0.0033948986823566316,
+      "homogeneity": 0.0030380318040099824,
+      "hungarian_accuracy": 0.11774760231696894,
+      "hungarian_matched_count": 1240,
+      "hungarian_predicted_to_true": {
+        "chevron patterned": "5",
+        "dotted": "1",
+        "matte": "6",
+        "metallic": "7",
+        "polka dotted": "9",
+        "ribbed": "10",
+        "spotted": "2",
+        "striped": "8",
+        "textured": "3",
+        "wood grain": "4"
+      },
+      "nmi": 0.003206566646491582,
+      "v_measure": 0.0032065666464915826
+    },
+    "shape": {
+      "ari": 0.02360555804608582,
+      "completeness": 0.0663618897355018,
+      "homogeneity": 0.059764522157506106,
+      "hungarian_accuracy": 0.17006931915297693,
+      "hungarian_matched_count": 1791,
+      "hungarian_predicted_to_true": {
+        "chevron patterned": "cube",
+        "dotted": "star",
+        "matte": "torus",
+        "metallic": "monkey",
+        "polka dotted": "teapot",
+        "ribbed": "cylinder",
+        "spotted": "diamond",
+        "striped": "cone",
+        "textured": "gear",
+        "wood grain": "sphere"
+      },
+      "nmi": 0.0628906597751433,
+      "v_measure": 0.06289065977514331
+    },
+    "texture": {
+      "ari": 0.35289479600651136,
+      "completeness": 0.5547703539409323,
+      "homogeneity": 0.4965486254884745,
+      "hungarian_accuracy": 0.5051751970373184,
+      "hungarian_matched_count": 5320,
+      "hungarian_predicted_to_true": {
+        "chevron patterned": "checkered",
+        "dotted": "emojis",
+        "matte": "rubber",
+        "metallic": "metal",
+        "polka dotted": "circles",
+        "ribbed": "zigzag",
+        "spotted": "star",
+        "striped": "wave",
+        "textured": "brick",
+        "wood grain": "chessboard"
+      },
+      "nmi": 0.524047338821246,
+      "v_measure": 0.524047338821246
+    }
+  },
+  "true_categories": [
+    "brick",
+    "checkered",
+    "chessboard",
+    "circles",
+    "emojis",
+    "metal",
+    "rubber",
+    "star",
+    "wave",
+    "zigzag"
+  ],
+  "true_unique_count": 10,
+  "unknown_count": 0
+}

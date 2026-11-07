@@ -1,0 +1,89 @@
+{
+  "annotation_sha256": "fba922a00216bbc3641f7f03a117a9f5e6a0956edde1f66062ff399225219fd6",
+  "best_matching_taxonomy": "texture",
+  "completed_at": "2026-08-01T13:32:54.229895+00:00",
+  "completed_stages": [
+    "step1",
+    "step2a",
+    "step2b",
+    "step3",
+    "validate"
+  ],
+  "criterion": "texture",
+  "criterion_config": {
+    "guidance": "Describe the most discriminative visible surface texture or material shared by the foreground objects. If a repeated motif, tiling, or printed marking is present, describe its visual structure precisely rather than stopping at generic finish words such as smooth, matte, or shiny. Use material or finish as the primary description only for genuinely unpatterned surfaces. Ignore object color, the floor, walls, shadows, and background.",
+    "num_classes": 10,
+    "prompt_label": "shared foreground-object surface texture or material"
+  },
+  "dataset": "clevr_4_10k_v1",
+  "dataset_root": "clevr_4_10k",
+  "device": "cuda:0",
+  "ground_truth_usage": "evaluation_only_after_step3",
+  "internvl_max_tiles": 12,
+  "llm_attention_backend": "sdpa",
+  "llm_batch_size_requested": 32,
+  "llm_model": "Qwen/Qwen3-8B",
+  "llm_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+  "max_pixels": 401408,
+  "min_label_frequency": 31,
+  "original_started_at": "2026-08-01T00:22:48.482162+00:00",
+  "prompt_sha256": {
+    "step1_prompt.txt": "69a98ddf32d81b340ef9cfd52add35fcccf9cd8de5c5042a42e280bfb08760f2",
+    "step2a_prompt.txt": "23bdfe785af836cfdb24c659cdd97e723e4cd8fcbd16b8dd1f3dfeeddfc76443",
+    "step2b_prompt.txt": "6bf03940cf5fbe9f00cfc3bc2bd62eb5055fa1cc0fa15e3eaef34e618f2818bb",
+    "step3_prompt.txt": "157de28dfd708e9cfe6715e25cac6136ab74659b7d3df8aa29b94ed4694f078e"
+  },
+  "runtime": {
+    "cuda": "12.8",
+    "cuda_device": "NVIDIA RTX PRO 4500 Blackwell",
+    "cuda_device_count_visible": 2,
+    "flash_attn": null,
+    "torch": "2.9.1+cu128",
+    "transformers": "4.57.6"
+  },
+  "sample_count": 10531,
+  "seed": 42,
+  "source_sha256": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+  "source_sha256s": {
+    "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+    "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+  },
+  "stage_source_sha256s": {
+    "step1": {
+      "pipeline": "7cad890bf86177e64411a3ba4da849eb214977b46fca1d1a9fa4a449804cc4a1"
+    },
+    "step2a": {
+      "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+      "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+    },
+    "step2b": {
+      "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+      "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+    },
+    "step3": {
+      "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+      "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+    },
+    "validate": {
+      "pipeline": "847e29baa526ddb0839f4f64b237f2ec893dd37b94e43d00028bcda6b5e2c4f1",
+      "runner": "7f9a8e630acb0aaa8edad225b16baef60b42f796e74251d374f453768b4cd966"
+    }
+  },
+  "started_at": "2026-08-01T13:17:30.060005+00:00",
+  "status": "complete",
+  "step2a_completed_at": "2026-08-01T13:26:45.291971+00:00",
+  "step2b_completed_at": "2026-08-01T13:27:05.456665+00:00",
+  "step3_completed_at": "2026-08-01T13:32:53.485106+00:00",
+  "target_is_best_by_nmi": true,
+  "true_criteria": [
+    "texture",
+    "shape",
+    "color",
+    "count"
+  ],
+  "validate_completed_at": "2026-08-01T13:32:54.229912+00:00",
+  "vlm_attention_backend": "model_default",
+  "vlm_batch_size_requested": 4,
+  "vlm_model": "Qwen/Qwen3-VL-8B-Instruct",
+  "vlm_revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b"
+}

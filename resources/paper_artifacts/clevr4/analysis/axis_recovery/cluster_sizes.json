@@ -1,0 +1,468 @@
+{
+  "best_scattering_control": "wavelet_scattering-64-3",
+  "best_scattering_selection": "highest seed-0 texture NMI",
+  "k": 10,
+  "ordered_id_sha256": "f8ff5b4ea9ab483befa17fbb8ea4e28b0051adad5d870b7a97b31af0d5749197",
+  "partitions": [
+    {
+      "cluster_sizes": [
+        1023,
+        1172,
+        1194,
+        1113,
+        1296,
+        981,
+        892,
+        1391,
+        704,
+        765
+      ],
+      "config": "UAE",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        523,
+        1299,
+        2123,
+        966,
+        973,
+        1634,
+        1130,
+        513,
+        525,
+        845
+      ],
+      "config": "clip-base-patch16",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        1129,
+        1151,
+        1675,
+        515,
+        1019,
+        904,
+        1139,
+        987,
+        785,
+        1227
+      ],
+      "config": "dinov2-base",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        892,
+        1137,
+        1021,
+        1137,
+        1300,
+        1012,
+        998,
+        1129,
+        1238,
+        667
+      ],
+      "config": "dinov2-base",
+      "p_removed": 0,
+      "seed": 1
+    },
+    {
+      "cluster_sizes": [
+        1137,
+        667,
+        1021,
+        1300,
+        1137,
+        998,
+        1012,
+        1129,
+        1238,
+        892
+      ],
+      "config": "dinov2-base",
+      "p_removed": 0,
+      "seed": 2
+    },
+    {
+      "cluster_sizes": [
+        1313,
+        529,
+        714,
+        1113,
+        1421,
+        968,
+        1349,
+        1995,
+        123,
+        1006
+      ],
+      "config": "dinov2-base",
+      "p_removed": 10,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        1129,
+        1263,
+        229,
+        1145,
+        897,
+        1010,
+        987,
+        1209,
+        1603,
+        1059
+      ],
+      "config": "dinov2-base",
+      "p_removed": 1,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        416,
+        1020,
+        990,
+        1771,
+        1242,
+        741,
+        1112,
+        1161,
+        1135,
+        943
+      ],
+      "config": "dinov2-base",
+      "p_removed": 2,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        1062,
+        1124,
+        2833,
+        920,
+        1120,
+        511,
+        1182,
+        476,
+        649,
+        654
+      ],
+      "config": "dinov2-base",
+      "p_removed": 3,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        663,
+        804,
+        949,
+        1298,
+        896,
+        1878,
+        1443,
+        1737,
+        534,
+        329
+      ],
+      "config": "dinov2-base",
+      "p_removed": 5,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        1150,
+        1078,
+        1099,
+        1304,
+        912,
+        967,
+        1305,
+        1037,
+        662,
+        1017
+      ],
+      "config": "inception_v3",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        938,
+        1150,
+        712,
+        1415,
+        994,
+        1229,
+        785,
+        816,
+        1131,
+        1361
+      ],
+      "config": "mae-base",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        916,
+        839,
+        943,
+        927,
+        1516,
+        1061,
+        1124,
+        1555,
+        1006,
+        644
+      ],
+      "config": "mae-base",
+      "p_removed": 10,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        838,
+        1567,
+        1350,
+        990,
+        823,
+        1195,
+        1068,
+        874,
+        1005,
+        821
+      ],
+      "config": "mae-base",
+      "p_removed": 1,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        888,
+        1012,
+        1291,
+        1178,
+        843,
+        579,
+        1440,
+        1214,
+        1752,
+        334
+      ],
+      "config": "mae-base",
+      "p_removed": 2,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        791,
+        1155,
+        1122,
+        1148,
+        1256,
+        1037,
+        688,
+        826,
+        726,
+        1782
+      ],
+      "config": "mae-base",
+      "p_removed": 3,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        867,
+        808,
+        1142,
+        891,
+        1700,
+        952,
+        939,
+        1556,
+        883,
+        793
+      ],
+      "config": "mae-base",
+      "p_removed": 5,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        377,
+        1762,
+        882,
+        1027,
+        841,
+        844,
+        693,
+        982,
+        2471,
+        652
+      ],
+      "config": "raw_pixel_resizer-64",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        1126,
+        999,
+        1888,
+        535,
+        1376,
+        1020,
+        1212,
+        854,
+        758,
+        763
+      ],
+      "config": "siglip-base-patch16-224",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        643,
+        1142,
+        703,
+        2430,
+        403,
+        969,
+        1767,
+        886,
+        708,
+        880
+      ],
+      "config": "sparse_random_projection_resizer",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        990,
+        2083,
+        752,
+        1579,
+        1018,
+        525,
+        785,
+        908,
+        736,
+        1155
+      ],
+      "config": "wavelet_scattering-128-3",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        938,
+        642,
+        816,
+        1670,
+        1043,
+        770,
+        697,
+        845,
+        2347,
+        763
+      ],
+      "config": "wavelet_scattering-224-2",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        892,
+        1671,
+        2314,
+        860,
+        903,
+        845,
+        743,
+        623,
+        597,
+        1083
+      ],
+      "config": "wavelet_scattering-224-3",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        677,
+        488,
+        748,
+        2000,
+        790,
+        1549,
+        1070,
+        1254,
+        714,
+        1241
+      ],
+      "config": "wavelet_scattering-224-4",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        807,
+        728,
+        1510,
+        909,
+        1137,
+        1055,
+        1073,
+        584,
+        2046,
+        682
+      ],
+      "config": "wavelet_scattering-64-3",
+      "p_removed": 0,
+      "seed": 0
+    },
+    {
+      "cluster_sizes": [
+        871,
+        1055,
+        1161,
+        949,
+        1063,
+        681,
+        851,
+        1407,
+        533,
+        1960
+      ],
+      "config": "wavelet_scattering-64-3",
+      "p_removed": 0,
+      "seed": 1
+    },
+    {
+      "cluster_sizes": [
+        1518,
+        584,
+        913,
+        568,
+        1937,
+        843,
+        1412,
+        1124,
+        757,
+        875
+      ],
+      "config": "wavelet_scattering-64-3",
+      "p_removed": 0,
+      "seed": 2
+    }
+  ],
+  "sample_count": 10531
+}

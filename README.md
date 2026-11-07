@@ -1,11 +1,16 @@
-# FDS
+# FDS: Federated Dataset Simulation
 
 FDS is a federated dataset simulation package for studying visual client
 heterogeneity in federated learning. It provides dataset loaders, splitters,
 embedding extraction and caching, partition metrics, and FL training entrypoints
 for the four datasets used in the paper.
 
-This repository is prepared for anonymous review. Replace every placeholder path below with paths on your machine.
+This is the code of *Federated Dataset Simulation: Inducing Label-Free Heterogeneity
+Across Tasks* (NeurIPS 2026, Evaluations and Datasets Track,
+[OpenReview](https://openreview.net/forum?id=oIgrH55uFj)), released as reviewed,
+with the artifacts of the paper's validation experiments added under
+`resources/paper_artifacts/`. Replace every placeholder path below with paths on
+your machine.
 
 ## Package Scope
 
@@ -30,6 +35,8 @@ The public package covers these components:
 - `resources/vlm_labels/`: retained reviewer VLM criterion labels and prompts
   for reproducing VLM-based partitions without rerunning the expensive VLM
   annotation pipeline.
+- `resources/paper_artifacts/`: Clevr-4 and Food-4c artifacts of the paper's
+  validation experiments (Section 3.5, Figure 1 and Appendix F).
 - `scripts/`: portable reviewer entrypoints for dataset preparation,
   reproduction, and environment checks.
 
@@ -341,3 +348,19 @@ python scripts/reproduce.py metrics \
   --cache-dir "$FDS_CACHE_DIR" \
   --subsample 100
 ```
+
+## Citation
+
+```bibtex
+@inproceedings{siomos2026federated,
+  title     = {Federated Dataset Simulation: Inducing Label-Free Heterogeneity Across Tasks},
+  author    = {Siomos, Vasilis and Ngo, Lam and Passerat-Palmbach, Jonathan and Tarroni, Giacomo},
+  booktitle = {The Fortieth Annual Conference on Neural Information Processing Systems Evaluations and Datasets Track},
+  year      = {2026},
+  url       = {https://openreview.net/forum?id=oIgrH55uFj}
+}
+```
+
+## License
+
+Apache License 2.0. See `LICENSE`.

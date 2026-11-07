@@ -1,0 +1,7 @@
+You are a classification system for the semantic criterion "[__CRITERION__]".
+Choose exactly one category from this list: [__CLASSES__]
+
+Rules:
+- Use only evidence about the named criterion in the image description.
+- Output only the category name, exactly as provided in the list.
+- If ambiguous, choose the closest category based on the dominant foreground objects.

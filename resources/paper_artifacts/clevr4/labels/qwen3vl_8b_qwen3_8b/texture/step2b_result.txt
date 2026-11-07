@@ -1,0 +1,22 @@
+Answer 1: Checkered Pattern  
+Answer 2: Glossy Surface  
+Answer 3: Matte Surface  
+Answer 4: Metallic Finish  
+Answer 5: Patterned Texture  
+Answer 6: Colored Surface  
+Answer 7: Embossed Design  
+Answer 8: Textured Material  
+Answer 9: Uniform Surface  
+Answer 10: Grainy Texture  
+
+Reason:  
+- "Checkered pattern" and "glossy checkered pattern" are consolidated into "Checkered Pattern".  
+- "Glossy" and "glossy checkered pattern" are grouped under "Glossy Surface".  
+- "Matte plastic", "matte yellow surface", "matte green surface", "matte speckled surface", "matte purple surface", "matte red material", "matte teal surface", "matte brown surface", "matte diagonal stripes", "matte blue surface", "matte pinkish uniform surface", "matte pink uniform surface", "matte gray uniform texture", "matte gray smooth surface", and "matte speckled surface" are grouped under "Matte Surface".  
+- "Metallic" and "metallic gold finish" are grouped under "Metallic Finish".  
+- "Embossed pattern", "embossed star patterns", and "engraved pattern" are grouped under "Embossed Design".  
+- "Wood grain texture" is grouped under "Grainy Texture".  
+- "Checkered patterned surface" and "checkerboard pattern" are grouped under "Patterned Texture".  
+- "Matte yellow surface", "matte green surface", "matte red material", "matte teal surface", "matte brown surface", "matte blue surface", "matte pinkish uniform surface", "matte pink uniform surface", "matte gray uniform texture", and "matte gray smooth surface" are grouped under "Colored Surface".  
+- "Matte uniform surface" and "matte gray smooth surface" are grouped under "Uniform Surface".  
+- "Textured material" and "matte speckled surface" are grouped under "Textured Material".

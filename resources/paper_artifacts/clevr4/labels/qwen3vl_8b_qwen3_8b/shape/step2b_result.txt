@@ -1,0 +1,18 @@
+Answer 1: Sphere-like  
+Answer 2: Cuboid-like  
+Answer 3: Cylindrical  
+Answer 4: Conical  
+Answer 5: Star-shaped  
+Answer 6: Polyhedral  
+Answer 7: Ring-shaped  
+Answer 8: Symmetrical  
+Answer 9: Bulbous  
+Answer 10: Geometric  
+
+Reason:  
+- "Sphere", "spherical" and "bulbous" are consolidated into "Sphere-like" and "Bulbous" to capture variations in roundness.  
+- "Cube", "pyramid", "dodecahedron", and "polyhedron" are grouped into "Cuboid-like" and "Polyhedral" to represent distinct geometric solids.  
+- "Cylinder", "torus", and "ring" are grouped into "Cylindrical" and "Ring-shaped" to capture variations in cylindrical and ring-like shapes.  
+- "Cone", "dome", and "teapot" are grouped into "Conical" to represent cone-like structures.  
+- "Star", "five-pointed star", and "diamond" are grouped into "Star-shaped" to capture variations in star-like and diamond-like shapes.  
+- "Gear", "cross", and "hexagonal prism" are grouped into "Symmetrical" to represent symmetrical and structured shapes.
