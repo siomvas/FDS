@@ -1,0 +1,4 @@
+Answer 1: Day
+Answer 2: Night
+Answer 3: Unknown
+Answer 4: Sunset/Dusk

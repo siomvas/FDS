@@ -1,0 +1,74 @@
+# @package _global_
+
+# -----------------------------------------------------------------------------
+# 1. Menu Selection
+# -----------------------------------------------------------------------------
+defaults:
+  - _self_
+  - dataset: tiny_imagenet
+  - model: resnet18
+
+# -----------------------------------------------------------------------------
+# 2. Experiment Identification
+# -----------------------------------------------------------------------------
+
+seed: 99
+name: "${dataset.name}_${model.name}_${fed.method}_seed_${seed}"
+
+
+# -----------------------------------------------------------------------------
+# 3. FL Layer Settings
+# -----------------------------------------------------------------------------
+fed:
+  method: fedavg
+  rounds: 100
+  n_clients: 10
+
+  args: {} # Additional arguments for the FL method can be added here
+  nvflare:
+    client:
+      # Safer runtime defaults for high-latency/loaded pods.
+      task_check_timeout: 600.0
+      task_check_interval: 10.0
+      submit_task_result_timeout: 300.0
+
+# -----------------------------------------------------------------------------
+# 4. Training Hyperparameters (overriden by dataset and model configs)
+# -----------------------------------------------------------------------------
+training:
+
+  loss: cross_entropy
+  lr: 1e-2
+  batch_size: 64
+  drop_last: false
+  local_steps: 1 # can be steps or epochs, depending on steps_or_epochs
+  steps_or_epochs: epochs
+  scheduler: none
+  optim_resume: resume
+  lr_min: 1e-5
+  grad_clipping_type: none
+  grad_clipping_value: 0.0
+  amp_enabled: true
+  pre_round_eval: false
+  post_round_eval: true
+  grad_tracking: false # needs grad_tracking controller, to be implemented
+  # Detection evaluation threshold defaults
+  detection_score_threshold: 0.5
+  detection_map_iou_threshold: 0.5
+  # Segmentation label validation policy: "error" (fail-fast) or "ignore"
+  segmentation_out_of_range_policy: error
+  optimizer:
+    class_name: SGD
+    args:
+      momentum: 0.9
+      weight_decay: 0.0
+
+# -----------------------------------------------------------------------------
+# 5. System & Paths
+# -----------------------------------------------------------------------------
+system:
+  gpu_ids: [0]
+
+paths:
+  output_dir: "${hydra:runtime.cwd}/outputs"
+  data_loading_root: "../data_loading"

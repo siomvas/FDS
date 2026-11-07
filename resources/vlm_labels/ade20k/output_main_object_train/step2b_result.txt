@@ -1,0 +1,5 @@
+Answer 1: Building
+Answer 2: Furniture
+Answer 3: Vehicle
+Answer 4: Person
+Answer 5: Nature

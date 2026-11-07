@@ -1,0 +1,29 @@
+# @package _global_
+
+dataset:
+  name: "food101"
+  class_path: data_loading.data_modules.Food101DataModule
+  dataset_splits: "${oc.env:food101_chosen_split_path}"
+  
+  # Arguments passed to __init__
+  args:
+    root: "${oc.env:DATASETS_ROOT}"
+
+fed:
+  rounds: 100
+
+training:
+  task_type: "classification"
+  num_classes: 101
+  loss: cross_entropy
+  batch_size: 64
+  lr: 1e-2
+  local_steps: 1
+  steps_or_epochs: epochs
+  scheduler: none
+  lr_min: 1e-5
+  optimizer:
+    class_name: SGD
+    args:
+      momentum: 0.9
+      weight_decay: 0.0

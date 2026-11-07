@@ -1,0 +1,7 @@
+You will be given a description of an image. Your job is to determine the [__CRITERION__] within the image based on the provided description. Please respond in a single word. For example, given the following description:
+
+"""
+A bowl of golden-brown, crispy fried arancini arranged elegantly with a small ramekin of marinara sauce and a sprig of fresh basil, presented in a formal restaurant style.
+"""
+
+An exemplar answer is "[__EXEMPLAR__]".

@@ -1,0 +1,6 @@
+Answer 1: Animal
+Answer 2: Person
+Answer 3: Vehicle
+Answer 4: Nature
+Answer 5: Unanimated Object
+Answer 6: Building

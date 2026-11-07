@@ -1,0 +1,61 @@
+name: FDS CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quick-pass:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: setup.py
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          docker system prune -af
+
+      - name: Install package and extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[partitioning,embedding,evaluation,fl,dev]"
+
+      - name: Compile sweep
+        run: git ls-files '*.py' | xargs python -m py_compile
+
+      - name: Anonymous package audit
+        run: python scripts/audit_submission.py --strict
+
+      - name: Environment preflight
+        run: ./scripts/preflight_env.sh
+
+      - name: Test collection
+        run: python -m pytest --collect-only -q
+
+      - name: Targeted regression tests
+        run: |
+          python -m pytest -q \
+            tests/test_cli_contract.py \
+            tests/test_multivariate_splitter.py \
+            tests/test_data_modules.py \
+            tests/test_detection_data_module.py \
+            tests/test_fl_training_engines.py
+
+      - name: Reproduction dry-runs
+        run: |
+          python scripts/download_datasets.py --dataset all --output-root local_data --dry-run
+          python scripts/reproduce.py partitions --dry-run
+          python scripts/reproduce.py metrics --dry-run
+          python scripts/reproduce.py fl --dry-run

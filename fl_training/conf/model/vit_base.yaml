@@ -1,0 +1,15 @@
+# @package _global_
+model:
+  name: vit_base_patch16_224
+  provider: timm
+  args:
+    pretrained: true
+    # framework (provider) / task specific args
+    # e.g. drop_rate: 0.2 for stochastic depth in timm
+
+training:
+  lr: 3e-4
+  optimizer:
+    class_name: AdamW
+    args:
+       weight_decay: 0.0

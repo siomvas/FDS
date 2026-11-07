@@ -1,0 +1,36 @@
+# @package _global_
+
+dataset:
+  name: "pascal_voc"
+  class_path: data_loading.data_modules.PascalVOCDataModule
+  dataset_splits: "${oc.env:pascal_voc_chosen_split_path}"
+
+  # Arguments passed to __init__
+  args:
+    data_dir: "${oc.env:DATASETS_ROOT}"
+    split_file: "${oc.env:pascal_voc_chosen_split_path}"
+    num_workers: 0
+    detection_label_offset: 1
+    detection_box_format: "auto"
+
+fed:
+  rounds: 100
+
+training:
+  task_type: "detection"
+  # Pascal VOC has 20 foreground classes; detection backends usually reserve
+  # class 0 for background.
+  num_classes: 21
+  loss: cross_entropy
+  batch_size: 2
+  drop_last: true
+  lr: 5e-3
+  local_steps: 1
+  steps_or_epochs: epochs
+  scheduler: none
+  lr_min: 1e-6
+  optimizer:
+    class_name: SGD
+    args:
+      momentum: 0.9
+      weight_decay: 0.0

@@ -1,0 +1,5 @@
+Answer 1: Indoors
+Answer 2: Urban Outdoors
+Answer 3: Nature Outdoors
+Answer 4: Aquatic
+Answer 5: Unknown

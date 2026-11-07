@@ -1,0 +1,144 @@
+{
+  "datasets": {
+    "ade20k": {
+      "criteria": {
+        "color": {
+          "directory": "output_color_train",
+          "label_count": 25574,
+          "labels": "step3_result.jsonl"
+        },
+        "light": {
+          "directory": "output_light_train",
+          "label_count": 25574,
+          "labels": "step3_result.jsonl"
+        },
+        "main_object": {
+          "directory": "output_main_object_train",
+          "label_count": 25574,
+          "labels": "step3_result.jsonl"
+        },
+        "scene": {
+          "directory": "output_scene_train",
+          "label_count": 25574,
+          "labels": "step3_result.jsonl"
+        },
+        "size": {
+          "directory": "output_size_train",
+          "label_count": 25574,
+          "labels": "step3_result.jsonl"
+        }
+      },
+      "prompts": [
+        "step1_prompt.txt",
+        "step2a_prompt.txt",
+        "step2b_prompt.txt",
+        "step3_prompt.txt"
+      ]
+    },
+    "food101": {
+      "criteria": {
+        "composition": {
+          "directory": "output_composition_train",
+          "label_count": 75750,
+          "labels": "step3_result.jsonl"
+        },
+        "cuisine": {
+          "directory": "output_cuisine_train",
+          "label_count": 75750,
+          "labels": "step3_result.jsonl"
+        },
+        "formality": {
+          "directory": "output_formality_train",
+          "label_count": 75750,
+          "labels": "step3_result.jsonl"
+        },
+        "preparation": {
+          "directory": "output_preparation_train",
+          "label_count": 75750,
+          "labels": "step3_result.jsonl"
+        },
+        "texture": {
+          "directory": "output_texture_train",
+          "label_count": 75750,
+          "labels": "step3_result.jsonl"
+        }
+      },
+      "prompts": [
+        "step1_prompt.txt",
+        "step2a_prompt.txt",
+        "step2b_prompt.txt",
+        "step3_prompt.txt"
+      ]
+    },
+    "pascal_voc": {
+      "criteria": {
+        "color": {
+          "directory": "output_color_train",
+          "label_count": 5717,
+          "labels": "step3_result.jsonl"
+        },
+        "light": {
+          "directory": "output_light_train",
+          "label_count": 5717,
+          "labels": "step3_result.jsonl"
+        },
+        "location": {
+          "directory": "output_location_train",
+          "label_count": 5717,
+          "labels": "step3_result.jsonl"
+        },
+        "main_object": {
+          "directory": "output_main_object_train",
+          "label_count": 5717,
+          "labels": "step3_result.jsonl"
+        },
+        "size": {
+          "directory": "output_size_train",
+          "label_count": 5717,
+          "labels": "step3_result.jsonl"
+        }
+      },
+      "prompts": [
+        "step1_prompt.txt",
+        "step2a_prompt.txt",
+        "step2b_prompt.txt",
+        "step3_prompt.txt"
+      ]
+    },
+    "tiny_imagenet": {
+      "criteria": {
+        "color": {
+          "directory": "output_color_train",
+          "label_count": 100000,
+          "labels": "step3_result.jsonl"
+        },
+        "location": {
+          "directory": "output_location_train",
+          "label_count": 100000,
+          "labels": "step3_result.jsonl"
+        },
+        "main_object": {
+          "directory": "output_main_object_train",
+          "label_count": 100000,
+          "labels": "step3_result.jsonl"
+        },
+        "size": {
+          "directory": "output_size_train",
+          "label_count": 100000,
+          "labels": "step3_result.jsonl"
+        },
+        "time": {
+          "directory": "output_time_train",
+          "label_count": 100000,
+          "labels": "step3_result.jsonl"
+        }
+      },
+      "prompts": [
+        "step1_prompt.txt",
+        "step2a_prompt.txt",
+        "step2b_prompt.txt",
+        "step3_prompt.txt"
+      ]
+    }
+  }
+}

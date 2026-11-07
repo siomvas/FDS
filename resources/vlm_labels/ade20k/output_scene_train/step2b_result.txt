@@ -1,0 +1,4 @@
+Answer 1: Urban Outdoors
+Answer 2: Residential Indoors
+Answer 3: Natural Outdoors
+Answer 4: Office Indoors

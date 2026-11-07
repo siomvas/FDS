@@ -1,0 +1,16 @@
+# @package _global_
+model:
+  name: resnet18
+  provider: timm
+  args:
+    pretrained: true
+    # framework (provider) / task specific args
+    # e.g. drop_rate: 0.2 for stochastic depth in timm
+    
+training:
+  lr: 1e-2
+  optimizer:
+    class_name: SGD
+    args:
+       momentum: 0.9
+       weight_decay: 0.0

@@ -1,0 +1,7 @@
+Answer 1: Brown/Yellow
+Answer 2: Red
+Answer 3: Green
+Answer 4: Blue
+Answer 5: Black
+Answer 6: White
+Answer 7: Otherd
