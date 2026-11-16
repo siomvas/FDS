@@ -8,8 +8,8 @@ for the four datasets used in the paper.
 This is the code of *Federated Dataset Simulation: Inducing Label-Free Heterogeneity
 Across Tasks* (NeurIPS 2026, Evaluations and Datasets Track,
 [OpenReview](https://openreview.net/forum?id=oIgrH55uFj)), released as reviewed,
-with the artifacts of the paper's validation experiments added under
-`resources/paper_artifacts/`. Replace every placeholder path below with paths on
+with the artifacts of the paper's validation experiments and the code behind
+them added (`resources/paper_artifacts/`). Replace every placeholder path below with paths on
 your machine.
 
 ## Package Scope
@@ -32,7 +32,7 @@ The public package covers these components:
   comparing federated partitions.
 - `fl_training/`: Hydra/NVFlare-compatible FL training configs, model factory,
   and task engines for classification, segmentation, and detection.
-- `resources/vlm_labels/`: retained reviewer VLM criterion labels and prompts
+- `resources/vlm_labels/`: the VLM criterion labels and prompts
   for reproducing VLM-based partitions without rerunning the expensive VLM
   annotation pipeline.
 - `resources/paper_artifacts/`: Clevr-4 and Food-4c artifacts of the paper's
@@ -40,7 +40,7 @@ The public package covers these components:
 - `partitioning/vlm/CLEVR4.md`: the Clevr-4 validation of the semantic
   pipeline, with the code that produced those artifacts
   (`partitioning/vlm/clevr4_pipeline.py` and the `scripts/*clevr4*` entrypoints).
-- `scripts/`: portable reviewer entrypoints for dataset preparation,
+- `scripts/`: portable entrypoints for dataset preparation,
   reproduction, and environment checks.
 
 The package intentionally excludes the old Sphinx docs tree, generated reports,
@@ -83,7 +83,7 @@ validation set.
 
 ## Installation
 
-Use Python 3.10 or newer. The full reviewer install is:
+Use Python 3.10 or newer. The full install is:
 
 ```bash
 python3 -m venv .venv
@@ -171,7 +171,7 @@ The public splitters produce the same client split schema:
 - `MultivariateDirichletSplitter`: VLM criterion split that combines multiple
   annotation dimensions such as object, color, lighting, scene, or style.
 
-Generate the paper-scope reviewer splits with:
+Generate the paper-scope splits with:
 
 ```bash
 python scripts/reproduce.py partitions \
@@ -227,7 +227,7 @@ wavelet scattering features.
 
 ## VLM Labels And Provenance
 
-Reviewer-ready VLM labels are stored under:
+The VLM labels are stored under:
 
 ```text
 resources/vlm_labels/
@@ -242,12 +242,12 @@ Each dataset contains one folder per criterion, for example
   prompts used by the VLM annotation process.
 
 The splitter can read both `.jsonl` and `.jsonl.gz` step-3 files. The retained
-plain JSONL files are used here so reviewers can open the labels directly
+plain JSONL files are used here so the labels can be opened directly
 without archive-tool differences. Step-3 records contain only `image` and
 `class`: `image` is a dataset-anchored relative path, and `class` is the
 criterion label. Private absolute paths, source annotation paths, generated
 descriptions, and local provenance fields are not retained. Regenerating VLM
-labels is expensive and optional; the default reviewer reproduction path uses
+labels is expensive and optional; the default reproduction path uses
 the retained artifacts.
 
 The optional generation pipeline under `partitioning/vlm/` expects local model
@@ -275,7 +275,7 @@ client split files. The current public surface includes:
   testing, Vendi score, intrinsic dimensionality, k-NN separability, centroid
   distance, and feature variance.
 
-Run the reviewer metric wrapper after generating splits:
+Run the metric wrapper after generating splits:
 
 ```bash
 python scripts/reproduce.py metrics \
@@ -353,6 +353,8 @@ python scripts/reproduce.py metrics \
 ```
 
 ## Citation
+
+GitHub's "Cite this repository" button reads `CITATION.cff`.
 
 ```bibtex
 @inproceedings{siomos2026federated,

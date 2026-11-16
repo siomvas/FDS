@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+type: software
+title: "FDS: Federated Dataset Simulation"
+authors:
+  - family-names: Siomos
+    given-names: Vasilis
+  - family-names: Ngo
+    given-names: Lam
+  - family-names: Passerat-Palmbach
+    given-names: Jonathan
+  - family-names: Tarroni
+    given-names: Giacomo
+repository-code: "https://github.com/siomvas/fds"
+url: "https://openreview.net/forum?id=oIgrH55uFj"
+license: Apache-2.0
+preferred-citation:
+  type: conference-paper
+  title: "Federated Dataset Simulation: Inducing Label-Free Heterogeneity Across Tasks"
+  authors:
+    - family-names: Siomos
+      given-names: Vasilis
+    - family-names: Ngo
+      given-names: Lam
+    - family-names: Passerat-Palmbach
+      given-names: Jonathan
+    - family-names: Tarroni
+      given-names: Giacomo
+  collection-title: "The Fortieth Annual Conference on Neural Information Processing Systems Evaluations and Datasets Track"
+  year: 2026
+  url: "https://openreview.net/forum?id=oIgrH55uFj"

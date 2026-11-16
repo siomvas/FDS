@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Portable reproduction entrypoints for reviewer-facing FDS experiments."""
+"""Portable reproduction entrypoints for the FDS experiments."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    partitions = subparsers.add_parser("partitions", help="Generate reviewer split JSON files.")
+    partitions = subparsers.add_parser("partitions", help="Generate split JSON files.")
     _add_common_dataset_args(partitions)
     partitions.add_argument("--output-root", type=Path, default=Path("outputs/reproduction"))
     partitions.add_argument("--vlm-root", type=Path, default=Path("resources/vlm_labels"))
