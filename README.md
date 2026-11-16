@@ -298,6 +298,8 @@ different embedding extractor.
   and Pascal VOC detection.
 - `fl_training/run_experiment.py`: main training entrypoint used by the
   reproduction wrapper.
+- `examples/nvflare/`: a short NVFlare run on an FDS partition, with its
+  validation record.
 
 Run one FL command per generated split file:
 
