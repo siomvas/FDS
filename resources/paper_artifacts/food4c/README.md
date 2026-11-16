@@ -8,4 +8,8 @@ The Food-4c human annotations come from Liu et al., *Organizing Unstructured Ima
 python resources/paper_artifacts/food4c/redundancy.py /path/to/annotation_food4c.json
 ```
 
-The agreement between the pipeline's cuisine labels and the human cuisine labels (AMI 0.503 over 68,250 images, with the human labels coarsened to five cuisines) is not yet part of this release.
+`agreement.py` reproduces the agreement between the pipeline's cuisine labels and the human cuisine labels: AMI 0.503, ARI 0.465 and direct agreement on 73.0% of 68,250 images, with the 15 human cuisine values coarsened to the pipeline's five. It also prints the AMI of the pipeline's other criteria with the same human labels (0.092 for preparation, 0.018 for texture). The coarsening is documented at the top of the script.
+
+```bash
+python resources/paper_artifacts/food4c/agreement.py /path/to/annotation_food4c.json
+```
