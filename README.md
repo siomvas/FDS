@@ -37,6 +37,9 @@ The public package covers these components:
   annotation pipeline.
 - `resources/paper_artifacts/`: Clevr-4 and Food-4c artifacts of the paper's
   validation experiments (Section 3.5, Figure 1 and Appendix F).
+- `partitioning/vlm/CLEVR4.md`: the Clevr-4 validation of the semantic
+  pipeline, with the code that produced those artifacts
+  (`partitioning/vlm/clevr4_pipeline.py` and the `scripts/*clevr4*` entrypoints).
 - `scripts/`: portable reviewer entrypoints for dataset preparation,
   reproduction, and environment checks.
 

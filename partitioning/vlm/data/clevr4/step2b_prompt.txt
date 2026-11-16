@@ -1,0 +1,9 @@
+You are given [__LEN__] observed labels and their occurrence counts for the semantic criterion "[__CRITERION__]".
+Consolidate synonymous or equivalent labels into exactly [__NUM_CLASSES_CLUSTER__] general categories. Each category must represent the criterion itself, not another visual property.
+Ground every category in at least one supplied observed label. When the observed labels already express enough distinct meanings, do not invent an unused catch-all category such as "other" or "multiple".
+
+Return exactly [__NUM_CLASSES_CLUSTER__] lines in this form:
+Answer 1: category
+Answer 2: category
+
+Continue through Answer [__NUM_CLASSES_CLUSTER__]. Category names must be unique and concise. You may add Reason lines after all Answer lines, but do not add other Answer lines.
