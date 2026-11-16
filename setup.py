@@ -96,8 +96,8 @@ PACKAGE_INCLUDE_PATTERNS = [
 
 
 setup(
-    name="fds",
-    version="0.1.0",
+    name="federated-dataset-simulation",
+    version="1.0.0",
     packages=find_packages(include=PACKAGE_INCLUDE_PATTERNS),
     package_dir={"": "."},
     py_modules=[],
