@@ -1,0 +1,9 @@
+"""Run a Fluke-backed downstream FL evaluation matrix."""
+
+from __future__ import annotations
+
+from .runner import main
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

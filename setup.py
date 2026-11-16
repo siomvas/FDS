@@ -25,6 +25,13 @@ FL_REQUIRES = [
     "scipy>=1.10.0",
 ]
 
+# fluke is pinned to a commit of its main branch rather than a release, because the
+# adapter relies on fixes made after the latest release.
+FLUKE_GIT_REVISION = "df3a2018a4c264e1601b0da4ad508ade17373d18"
+FLUKE_REQUIRES = [
+    f"fluke-fl @ git+https://github.com/makgyver/fluke.git@{FLUKE_GIT_REVISION}",
+]
+
 PARTITIONING_REQUIRES = [
     "numpy>=1.24.0",
     "scipy>=1.10.0",
@@ -63,6 +70,7 @@ DEV_REQUIRES = [
 
 EXTRAS = {
     "fl": _dedupe(FL_REQUIRES),
+    "fluke": _dedupe(FLUKE_REQUIRES),
     "partitioning": _dedupe(PARTITIONING_REQUIRES),
     "embedding": _dedupe(EMBEDDING_REQUIRES),
     "evaluation": _dedupe(EVALUATION_REQUIRES),
@@ -99,6 +107,7 @@ setup(
     name="federated-dataset-simulation",
     version="1.0.0",
     packages=find_packages(include=PACKAGE_INCLUDE_PATTERNS),
+    package_data={"fl_training.fluke_downstream_fl_evaluation": ["configs/*.yaml"]},
     package_dir={"": "."},
     py_modules=[],
     install_requires=CORE_REQUIRES,

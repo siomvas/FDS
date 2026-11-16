@@ -300,6 +300,8 @@ different embedding extractor.
   reproduction wrapper.
 - `examples/nvflare/`: a short NVFlare run on an FDS partition, with its
   validation record.
+- `fl_training/fluke_downstream_fl_evaluation/`: FedAvg and six other aggregation
+  methods through fluke, for the paper's comparison of methods on Tiny ImageNet.
 
 Run one FL command per generated split file:
 

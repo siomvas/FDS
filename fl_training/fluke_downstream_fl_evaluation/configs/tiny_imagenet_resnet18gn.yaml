@@ -1,0 +1,69 @@
+# Aggregation methods on Tiny ImageNet with fluke: ResNet-18 with GroupNorm, trained from scratch.
+# One process runs one cell of the matrix (--task-index). Paths and the seed come from
+# the environment; see the README of this package.
+run:
+  output_root: ${FDS_RUNS_ROOT}/fluke_tiny_imagenet_resnet18gn
+  seed: ${FDS_FLUKE_SEED}
+  # Without a device entry, runs use CUDA when it is available and the CPU otherwise.
+  personalized_eval_every_round: false
+  eval_every: 1
+  # Keep the best and the final global model.
+  save_checkpoints: true
+
+dataset:
+  name: tiny_imagenet
+  root: ${FDS_DATASETS_ROOT}
+  verify_images: true
+
+model:
+  # Tiny ImageNet is natively 64x64, and a model trained from scratch gains nothing from
+  # upsampling.
+  name: fluke_resnet18gn
+  image_size: 64
+  normalization: group
+
+protocol:
+  n_clients: 10
+  rounds: 100
+  eligible_perc: 1.0
+  local_epochs: 1
+
+training:
+  loss: CrossEntropyLoss
+  batch_size: 64
+  # Set to zero on hosts without spare cores.
+  num_workers: 4
+  pin_memory: true
+  optimizer:
+    name: SGD
+    lr: 0.01
+    momentum: 0.9
+    weight_decay: 0.0
+  # Fluke clients always step a scheduler, so this one keeps the learning rate constant.
+  scheduler:
+    name: StepLR
+    step_size: 1
+    gamma: 1.0
+
+# Methods that train one global model. Any other catalog key or fluke class path can be
+# added, provided the method works with the model.
+algorithms:
+  - key: fedavg
+  - key: feddyn
+  - key: fednova
+  - key: fedprox
+  - key: fedsam
+  - key: scaffold
+  - key: fedlc
+
+partitions:
+  - id: dirichlet_alpha_0.1
+    path: ${FDS_SPLITS_ROOT}/tiny_imagenet/dirichlet_n10_alpha0.1_seed42.json
+  - id: geometric
+    path: ${FDS_SPLITS_ROOT}/tiny_imagenet/geometric_n10.json
+  - id: semantic_alpha_0.1
+    path: ${FDS_SPLITS_ROOT}/tiny_imagenet/vlm_n10_alpha0.1_seed42.json
+
+# More values, for example [1, 5], add the number of local epochs as an axis of the matrix.
+matrix:
+  local_epochs: [1]
