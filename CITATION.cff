@@ -12,6 +12,7 @@ authors:
   - family-names: Tarroni
     given-names: Giacomo
 repository-code: "https://github.com/siomvas/fds"
+doi: "10.5281/zenodo.24309901"
 url: "https://openreview.net/forum?id=oIgrH55uFj"
 license: Apache-2.0
 preferred-citation:
@@ -29,3 +30,7 @@ preferred-citation:
   collection-title: "The Fortieth Annual Conference on Neural Information Processing Systems Evaluations and Datasets Track"
   year: 2026
   url: "https://openreview.net/forum?id=oIgrH55uFj"
+  identifiers:
+    - type: doi
+      value: "10.48550/arXiv.2611.19975"
+      description: "arXiv version of the paper"

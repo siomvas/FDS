@@ -1,5 +1,10 @@
 # FDS: Federated Dataset Simulation
 
+[![Paper](https://img.shields.io/badge/NeurIPS-2026-blue)](https://openreview.net/forum?id=oIgrH55uFj)
+[![arXiv](https://img.shields.io/badge/arXiv-2611.19975-b31b1b.svg)](https://arxiv.org/abs/2611.19975)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24309901.svg)](https://doi.org/10.5281/zenodo.24309901)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 FDS is a federated dataset simulation package for studying visual client
 heterogeneity in federated learning. It provides dataset loaders, splitters,
 embedding extraction and caching, partition metrics, and FL training entrypoints
@@ -7,7 +12,7 @@ for the four datasets used in the paper.
 
 This is the code of *Federated Dataset Simulation: Inducing Label-Free Heterogeneity
 Across Tasks* (NeurIPS 2026, Evaluations and Datasets Track,
-[OpenReview](https://openreview.net/forum?id=oIgrH55uFj)), released as reviewed,
+[arXiv](https://arxiv.org/abs/2611.19975), [OpenReview](https://openreview.net/forum?id=oIgrH55uFj)), released as reviewed,
 with the artifacts of the paper's validation experiments and the code behind
 them added (`resources/paper_artifacts/`). Replace every placeholder path below with paths on
 your machine.
@@ -358,7 +363,8 @@ python scripts/reproduce.py metrics \
 
 ## Citation
 
-GitHub's "Cite this repository" button reads `CITATION.cff`.
+GitHub's "Cite this repository" button reads `CITATION.cff`. The code is archived on Zenodo under
+[10.5281/zenodo.24309901](https://doi.org/10.5281/zenodo.24309901), which resolves to the latest version.
 
 ```bibtex
 @inproceedings{siomos2026federated,
@@ -366,6 +372,8 @@ GitHub's "Cite this repository" button reads `CITATION.cff`.
   author    = {Siomos, Vasilis and Ngo, Lam and Passerat-Palmbach, Jonathan and Tarroni, Giacomo},
   booktitle = {The Fortieth Annual Conference on Neural Information Processing Systems Evaluations and Datasets Track},
   year      = {2026},
+  eprint    = {2611.19975},
+  archivePrefix = {arXiv},
   url       = {https://openreview.net/forum?id=oIgrH55uFj}
 }
 ```
