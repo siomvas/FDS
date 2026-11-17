@@ -1,5 +1,6 @@
 # FDS: Federated Dataset Simulation
 
+[![Project page](https://img.shields.io/badge/Project-page-232323)](https://siomvas.github.io/FDS/)
 [![Paper](https://img.shields.io/badge/NeurIPS-2026-blue)](https://openreview.net/forum?id=oIgrH55uFj)
 [![arXiv](https://img.shields.io/badge/arXiv-2611.19975-b31b1b.svg)](https://arxiv.org/abs/2611.19975)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24309901.svg)](https://doi.org/10.5281/zenodo.24309901)
